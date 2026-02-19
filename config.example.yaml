@@ -1,0 +1,83 @@
+# MENE config.yaml v3.0 — .md Cache + DB + Letta Memory Block Edition
+
+# === 서버 ===
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# === 모델 설정 ===
+models:
+  narration: "claude-sonnet-4-5-20250929"
+  extraction: "gemini-2.0-flash"
+  curator: "claude-sonnet-4-5-20250929"
+  embedding: "text-embedding-3-small"  # "local" → all-MiniLM-L6-v2
+
+# === API 키 ===
+api_keys:
+  anthropic: "${ANTHROPIC_API_KEY}"
+  openai: "${OPENAI_API_KEY}"
+  google: "${GOOGLE_API_KEY}"
+
+# === 토큰 예산 ===
+token_budget:
+  total_context_max: 128000
+  dynamic_context_max: 1500
+  md_cache_max: 600
+  lorebook_max: 800
+  state_briefing_max: 200
+  graph_context_max: 300
+  state_block_instruction: 100
+
+# === .md 캐시 설정 ===
+md_cache:
+  enabled: true
+  cache_dir: "cache/sessions"
+  files:
+    - state.md
+    - relations.md
+    - story.md
+    - lore.md
+  atomic_write: true
+
+# === 프롬프트 캐싱 ===
+prompt_caching:
+  enabled: true
+  strategy: "md_prefix"
+
+# === 큐레이터 설정 (Letta) ===
+curator:
+  interval: 10
+  enabled: true
+  memory_block_schema:
+    - narrative_summary
+    - curation_decisions
+    - contradiction_log
+  compress_story_after_turns: 50
+
+# === 다이나믹 로어북 ===
+dynamic_lorebook:
+  character_layers: ["A1", "A2", "A3", "A4"]
+  decay_threshold: 5
+  propagation_depth: 2
+
+# === 그래프 설정 ===
+graph:
+  db_path: "db/graph.kuzu"
+  mode: "on-disk"
+  max_hop: 3
+  hybrid_rerank: true
+
+# === 세션 ===
+session:
+  auto_save: true
+  auto_save_interval: 5
+  default_world: "my_world"
+
+# === 모듈 통합 (Phase 4) ===
+modules:
+  rpg:
+    enabled: false
+    config: "data/modules/rpg_stats.yaml"
+  map:
+    enabled: false
+    config: "data/modules/map_graph.yaml"
