@@ -10,9 +10,10 @@ db/
 cache/
 logs/turns/
 
-# Environment
+# Environment & Secrets
 .env
 *.env
+config.yaml
 
 # IDE
 .vscode/
