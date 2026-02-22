@@ -255,45 +255,45 @@ ChromaDB 재검색:    ▼
 
 ### 전체 요청 흐름
 
+```mermaid
+flowchart LR
+    Client["RisuAI / SillyTavern"]
+
+    Proxy["SAGA Proxy :8000"]
+    SubA["Sub-A<br/>Context Builder<br/>(동기, LLM 없음)"]
+    LLM["LLM API<br/>(Narration)"]
+    SubB["Sub-B<br/>Extractor<br/>(비동기)"]
+    Flash["LLM API<br/>(Flash extraction)"]
+    Curator["Curator<br/>(N턴마다 비동기)"]
+
+    SQLite["SQLite<br/>(상태 KV)"]
+    Kuzu["Kuzu<br/>(그래프)"]
+    Chroma["ChromaDB<br/>(벡터)"]
+    Cache[".md 캐시<br/>state / relations / story / lore"]
+
+    %% 요청 흐름
+    Client -- "POST /v1/chat/completions" --> Proxy
+    Proxy -- "1. 컨텍스트 조립" --> SubA
+    SubA -. "읽기" .-> Cache
+    SubA -. "읽기" .-> Kuzu
+    SubA -. "읽기" .-> Chroma
+
+    Proxy -- "2. LLM 호출" --> LLM
+    LLM --> Proxy
+    Proxy -- "응답 (state block 제거)" --> Client
+
+    %% 비동기 후처리 (Proxy가 둘 다 fire)
+    Proxy -. "3. create_task" .-> SubB
+    Proxy -. "4. create_task (N턴마다)" .-> Curator
+
+    SubB -- "파싱 실패 시" --> Flash
+    SubB -- "쓰기" --> SQLite
+    SubB -- "쓰기" --> Kuzu
+    SubB -- "쓰기" --> Chroma
+    SubB -- "원자적 갱신" --> Cache
 ```
-┌──────────────┐     POST /v1/chat/completions     ┌──────────────────┐
-│   RisuAI /   │ ─────────────────────────────────▶ │                  │
-│ SillyTavern  │ ◀───────────────────────────────── │   SAGA Proxy     │
-│   (Client)   │      응답 (state block 제거됨)      │   :8000          │
-└──────────────┘                                    │                  │
-                                                    │  ┌────────────┐ │     ┌──────────────┐
-                                                    │  │  Sub-A     │ │────▶│  LLM API     │
-                                                    │  │  Context   │ │◀────│  (Anthropic/  │
-                                                    │  │  Builder   │ │     │   Google/     │
-                                                    │  └────────────┘ │     │   OpenAI)     │
-                                                    │        │        │     └──────────────┘
-                                                    │  ┌─────▼──────┐ │
-                                                    │  │  Sub-B     │ │ (비동기, 유저 대기 없음)
-                                                    │  │  Extractor │ │
-                                                    │  └─────┬──────┘ │
-                                                    │        │        │
-                                                    │  ┌─────▼──────┐ │
-                                                    │  │  Curator   │ │ (N턴마다 비동기)
-                                                    │  └────────────┘ │
-                                                    └────────┼────────┘
-                                                             │
-                                              ┌──────────────┼──────────────┐
-                                              ▼              ▼              ▼
-                                        ┌──────────┐  ┌──────────┐  ┌──────────┐
-                                        │  SQLite   │  │   Kuzu   │  │ ChromaDB │
-                                        │ (상태 KV) │  │ (그래프)  │  │  (벡터)  │
-                                        └──────────┘  └──────────┘  └──────────┘
-                                              │              │              │
-                                              └──────────────┼──────────────┘
-                                                             ▼
-                                                    ┌────────────────┐
-                                                    │  .md 캐시 (4파일) │
-                                                    │  state.md       │
-                                                    │  relations.md   │
-                                                    │  story.md       │
-                                                    │  lore.md        │
-                                                    └────────────────┘
-```
+
+> **핵심**: Sub-A = **읽기 전용** (DB→컨텍스트), Sub-B = **쓰기 전용** (파싱→DB→캐시), LLM 호출은 **Proxy가 직접** 수행한다. Sub-B와 Curator는 Proxy가 독립적으로 `asyncio.create_task()`하며, Sub-B → Curator 종속 관계는 없다.
 
 ### 요청 처리 단계
 
