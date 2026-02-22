@@ -1,10 +1,10 @@
 """World data loader — CHARACTERS.md / LOREBOOK.md / WORLD.md → Kuzu + ChromaDB."""
 import os
 import logging
-from mene.storage.graph_db import GraphDB
-from mene.storage.vector_db import VectorDB
-from mene.storage.md_cache import MdCache
-from mene.utils.parsers import parse_characters_md, parse_lorebook_md
+from saga.storage.graph_db import GraphDB
+from saga.storage.vector_db import VectorDB
+from saga.storage.md_cache import MdCache
+from saga.utils.parsers import parse_characters_md, parse_lorebook_md
 
 logger = logging.getLogger(__name__)
 

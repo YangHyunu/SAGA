@@ -3,7 +3,7 @@
 후보 풀(벡터 검색 결과) × 그래프 게이트(Kuzu) × 규칙 게이트 → 활성화 대상 결정
 """
 import logging
-from mene.utils.tokens import count_tokens
+from saga.utils.tokens import count_tokens
 
 logger = logging.getLogger(__name__)
 

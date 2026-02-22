@@ -1,4 +1,4 @@
-"""MENE Proxy Server — FastAPI OpenAI-compatible endpoint."""
+"""SAGA Proxy Server — FastAPI OpenAI-compatible endpoint."""
 import asyncio
 import json
 import time
@@ -7,28 +7,28 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
-from mene.config import load_config, MeneConfig
-from mene.models import (
+from saga.config import load_config, SagaConfig
+from saga.models import (
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
     Choice, Usage, ChatCompletionChunk, StreamChoice, StreamDelta,
     StatusResponse, SessionInfo
 )
-from mene.storage.sqlite_db import SQLiteDB
-from mene.storage.graph_db import GraphDB
-from mene.storage.vector_db import VectorDB
-from mene.storage.md_cache import MdCache
-from mene.llm.client import LLMClient
-from mene.agents.context_builder import ContextBuilder
-from mene.agents.post_turn import PostTurnExtractor
-from mene.agents.curator import CuratorRunner
-from mene.session import SessionManager
-from mene.utils.tokens import count_tokens, count_messages_tokens
-from mene.utils.parsers import strip_state_block
+from saga.storage.sqlite_db import SQLiteDB
+from saga.storage.graph_db import GraphDB
+from saga.storage.vector_db import VectorDB
+from saga.storage.md_cache import MdCache
+from saga.llm.client import LLMClient
+from saga.agents.context_builder import ContextBuilder
+from saga.agents.post_turn import PostTurnExtractor
+from saga.agents.curator import CuratorRunner
+from saga.session import SessionManager
+from saga.utils.tokens import count_tokens, count_messages_tokens
+from saga.utils.parsers import strip_state_block
 
 logger = logging.getLogger(__name__)
 
 # Global instances
-config: MeneConfig = None
+config: SagaConfig = None
 sqlite_db: SQLiteDB = None
 graph_db: GraphDB = None
 vector_db: VectorDB = None
@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
     global context_builder, post_turn, curator, session_mgr
 
     # Load config
-    config_path = os.environ.get("MENE_CONFIG", "config.yaml")
+    config_path = os.environ.get("SAGA_CONFIG", "config.yaml")
     config = load_config(config_path)
 
     # Ensure directories exist
@@ -81,17 +81,17 @@ async def lifespan(app: FastAPI):
     # Initialize session manager
     session_mgr = SessionManager(sqlite_db, graph_db, vector_db, md_cache, config)
 
-    logger.info(f"[MENE] Server initialized. Listening on {config.server.host}:{config.server.port}")
+    logger.info(f"[SAGA] Server initialized. Listening on {config.server.host}:{config.server.port}")
 
     yield
 
     # Cleanup
     await sqlite_db.close()
     await llm_client.close()
-    logger.info("[MENE] Server shutdown complete")
+    logger.info("[SAGA] Server shutdown complete")
 
 
-app = FastAPI(title="MENE RP Agent Proxy", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="SAGA RP Agent Proxy", version="3.0.0", lifespan=lifespan)
 
 
 # ============================================================
@@ -104,7 +104,7 @@ async def chat_completions(request: ChatCompletionRequest):
     try:
         return await _handle_chat(request)
     except Exception as e:
-        logger.error(f"[MENE] Chat error: {e}", exc_info=True)
+        logger.error(f"[SAGA] Chat error: {e}", exc_info=True)
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 async def _handle_chat(request: ChatCompletionRequest):
@@ -174,10 +174,10 @@ async def _handle_chat(request: ChatCompletionRequest):
 
     # Build response
     resp = ChatCompletionResponse(
-        id=f"chatcmpl-mene-{session_id}-{turn_number}",
+        id=f"chatcmpl-saga-{session_id}-{turn_number}",
         object="chat.completion",
         created=int(time.time()),
-        model=request.model or "mene-proxy",
+        model=request.model or "saga-proxy",
         choices=[Choice(
             index=0,
             message=ChatMessage(role="assistant", content=clean_response),
@@ -204,10 +204,10 @@ async def _stream_response(session_id, session, augmented_messages, request, las
     ):
         full_response += chunk
         sse_chunk = ChatCompletionChunk(
-            id=f"chatcmpl-mene-{session_id}",
+            id=f"chatcmpl-saga-{session_id}",
             object="chat.completion.chunk",
             created=int(time.time()),
-            model=request.model or "mene-proxy",
+            model=request.model or "saga-proxy",
             choices=[StreamChoice(
                 index=0,
                 delta=StreamDelta(content=chunk),
@@ -247,7 +247,7 @@ def _build_cacheable_messages(original_messages, cached_prefix, dynamic_suffix):
         if config.prompt_caching.enabled and cached_prefix:
             # Add cached prefix to system message with cache_control
             messages[system_idx] = dict(messages[system_idx])
-            messages[system_idx]["content"] += f"\n\n[--- MENE Dynamic Context ---]\n{cached_prefix}"
+            messages[system_idx]["content"] += f"\n\n[--- SAGA Dynamic Context ---]\n{cached_prefix}"
 
             if "claude" in config.models.narration.lower():
                 messages[system_idx]["cache_control"] = {"type": "ephemeral"}
@@ -259,11 +259,11 @@ def _build_cacheable_messages(original_messages, cached_prefix, dynamic_suffix):
             messages[system_idx] = dict(messages[system_idx])
             content = messages[system_idx]["content"]
             if cached_prefix or dynamic_suffix:
-                content += f"\n\n[--- MENE Dynamic Context ---]\n{cached_prefix}\n\n{dynamic_suffix}"
+                content += f"\n\n[--- SAGA Dynamic Context ---]\n{cached_prefix}\n\n{dynamic_suffix}"
             messages[system_idx]["content"] = content
     else:
         # No system message — create one
-        sys_content = f"[--- MENE Dynamic Context ---]\n{cached_prefix}\n\n{dynamic_suffix}"
+        sys_content = f"[--- SAGA Dynamic Context ---]\n{cached_prefix}\n\n{dynamic_suffix}"
         messages.insert(0, {"role": "system", "content": sys_content})
 
     return messages

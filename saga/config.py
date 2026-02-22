@@ -1,8 +1,8 @@
 """
-mene/config.py — Configuration loading with Pydantic models.
+saga/config.py — Configuration loading with Pydantic models.
 
 Loads config.yaml, expands ${ENV_VAR} references, and exposes a global
-`config` singleton of type MeneConfig.
+`config` singleton of type SagaConfig.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ class ModulesConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class MeneConfig(BaseModel):
+class SagaConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
@@ -147,14 +147,14 @@ def _expand_env_vars(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def load_config(path: str | Path = "config.yaml") -> MeneConfig:
-    """Load and parse a MENE config YAML file.
+def load_config(path: str | Path = "config.yaml") -> SagaConfig:
+    """Load and parse a SAGA config YAML file.
 
     Args:
         path: Path to the YAML config file.
 
     Returns:
-        A fully populated :class:`MeneConfig` instance.
+        A fully populated :class:`SagaConfig` instance.
 
     Raises:
         FileNotFoundError: If the config file does not exist.
@@ -168,7 +168,7 @@ def load_config(path: str | Path = "config.yaml") -> MeneConfig:
         raw: Dict[str, Any] = yaml.safe_load(fh) or {}
 
     expanded = _expand_env_vars(raw)
-    return MeneConfig.model_validate(expanded)
+    return SagaConfig.model_validate(expanded)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ def load_config(path: str | Path = "config.yaml") -> MeneConfig:
 #: Global config instance.  Populated when the module is first imported via
 #: :func:`load_config`, or manually replaced by calling ``load_config``
 #: and assigning the result here.
-config: MeneConfig = MeneConfig()
+config: SagaConfig = SagaConfig()
 
 
 def _init_global_config(path: str = "config.yaml") -> None:

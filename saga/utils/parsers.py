@@ -105,7 +105,7 @@ def strip_state_block(response_text: str) -> str:
     # Remove ```state...``` block
     cleaned = STATE_BLOCK_PATTERN.sub('', response_text)
     # Also remove the instruction header if present
-    cleaned = re.sub(r'\[--- MENE State Tracking ---\].*?```', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'\[--- SAGA State Tracking ---\].*?```', '', cleaned, flags=re.DOTALL)
     return cleaned.strip()
 
 

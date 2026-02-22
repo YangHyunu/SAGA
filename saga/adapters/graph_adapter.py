@@ -22,7 +22,7 @@ class GraphAdapter(ABC):
 class KuzuAdapter(GraphAdapter):
     """Primary graph adapter using Kuzu embedded DB."""
     def __init__(self, graph_db):
-        from mene.storage.graph_db import GraphDB
+        from saga.storage.graph_db import GraphDB
         self.graph_db: GraphDB = graph_db
 
     def query_relationships(self, session_id, character, depth=2):

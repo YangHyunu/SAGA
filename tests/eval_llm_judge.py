@@ -1,6 +1,6 @@
-"""MENE LLM-as-a-Judge Evaluation Script v2.
+"""SAGA LLM-as-a-Judge Evaluation Script v2.
 
-Evaluates the MENE RP proxy on:
+Evaluates the SAGA RP proxy on:
   1. Response Speed (latency ms)
   2. Token Efficiency (input/output tokens)
   3. Scenario Plausibility (cross-provider LLM judge scoring)
@@ -16,7 +16,7 @@ Architect review fixes applied:
 Usage:
   python3 tests/eval_llm_judge.py [--server URL] [--judge-model MODEL] [--judge-provider PROVIDER]
 
-Requires: MENE server running (python3 -m mene)
+Requires: SAGA server running (python3 -m saga)
 """
 
 import asyncio
@@ -32,7 +32,7 @@ import statistics
 # Configuration
 # ──────────────────────────────────────────────
 
-MENE_URL = os.environ.get("MENE_URL", "http://localhost:8000")
+SAGA_URL = os.environ.get("SAGA_URL", "http://localhost:8000")
 # Cross-provider judge: use Anthropic by default to avoid same-provider bias
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gpt-4.1")
 JUDGE_PROVIDER = os.environ.get("JUDGE_PROVIDER", "openai")  # "anthropic" or "openai"
@@ -40,7 +40,7 @@ TIMEOUT = 120.0
 
 # Add project root to path for token counting
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from mene.utils.tokens import count_tokens
+from saga.utils.tokens import count_tokens
 
 # ──────────────────────────────────────────────
 # Test Scenarios (diverse RP situations)
@@ -257,15 +257,15 @@ class EvalResult:
 
 async def send_chat(client: httpx.AsyncClient, system: str, messages: list[dict],
                     max_tokens: int = 2048) -> tuple[str, float, int, int]:
-    """Send a chat completion request to MENE and return (response, latency_ms, in_tokens, out_tokens)."""
+    """Send a chat completion request to SAGA and return (response, latency_ms, in_tokens, out_tokens)."""
     all_messages = [{"role": "system", "content": system}] + messages
     input_tokens = count_tokens("\n".join(m["content"] for m in all_messages))
 
     t0 = time.time()
     resp = await client.post(
-        f"{MENE_URL}/v1/chat/completions",
+        f"{SAGA_URL}/v1/chat/completions",
         json={
-            "model": "mene-eval",
+            "model": "saga-eval",
             "messages": all_messages,
             "max_tokens": max_tokens,
             "temperature": 0.7,
@@ -359,12 +359,12 @@ async def judge_response(client: httpx.AsyncClient, scenario: dict,
     return await call_judge(client, prompt, api_keys)
 
 
-async def evaluate_single_turn(mene_client, judge_client, scenario, api_keys) -> EvalResult:
+async def evaluate_single_turn(saga_client, judge_client, scenario, api_keys) -> EvalResult:
     """Evaluate a standard single-turn scenario."""
     result = EvalResult(scenario["id"], scenario["name"], scenario["category"])
 
     response_text, latency_ms, in_tok, out_tok = await send_chat(
-        mene_client, scenario["system"],
+        saga_client, scenario["system"],
         [{"role": "user", "content": scenario["user"]}],
     )
     result.response_text = response_text
@@ -378,7 +378,7 @@ async def evaluate_single_turn(mene_client, judge_client, scenario, api_keys) ->
     return result
 
 
-async def evaluate_multi_turn(mene_client, judge_client, scenario, api_keys) -> EvalResult:
+async def evaluate_multi_turn(saga_client, judge_client, scenario, api_keys) -> EvalResult:
     """Evaluate a real multi-turn scenario by sending sequential turns."""
     result = EvalResult(scenario["id"], scenario["name"], scenario["category"])
 
@@ -391,7 +391,7 @@ async def evaluate_multi_turn(mene_client, judge_client, scenario, api_keys) -> 
     for turn in scenario["turns"]:
         conversation.append(turn)
         resp_text, lat, in_t, out_t = await send_chat(
-            mene_client, scenario["system"], conversation,
+            saga_client, scenario["system"], conversation,
         )
         total_latency += lat
         total_in += in_t
@@ -417,7 +417,7 @@ async def evaluate_multi_turn(mene_client, judge_client, scenario, api_keys) -> 
 
 
 async def evaluate_negative(judge_client, scenario, api_keys) -> EvalResult:
-    """Evaluate a pre-injected bad response (no MENE call) to calibrate judge floor."""
+    """Evaluate a pre-injected bad response (no SAGA call) to calibrate judge floor."""
     result = EvalResult(scenario["id"], scenario["name"], scenario["category"])
     result.is_negative = True
     result.response_text = scenario["injected_response"]
@@ -431,16 +431,16 @@ async def evaluate_negative(judge_client, scenario, api_keys) -> EvalResult:
     return result
 
 
-async def evaluate_scenario(mene_client, judge_client, scenario, api_keys) -> EvalResult:
+async def evaluate_scenario(saga_client, judge_client, scenario, api_keys) -> EvalResult:
     """Route to the correct evaluation method."""
     result = None
     try:
         if scenario.get("is_negative_test"):
             result = await evaluate_negative(judge_client, scenario, api_keys)
         elif scenario.get("multi_turn"):
-            result = await evaluate_multi_turn(mene_client, judge_client, scenario, api_keys)
+            result = await evaluate_multi_turn(saga_client, judge_client, scenario, api_keys)
         else:
-            result = await evaluate_single_turn(mene_client, judge_client, scenario, api_keys)
+            result = await evaluate_single_turn(saga_client, judge_client, scenario, api_keys)
     except Exception as e:
         if result is None:
             result = EvalResult(scenario["id"], scenario["name"], scenario["category"])
@@ -455,13 +455,13 @@ async def evaluate_scenario(mene_client, judge_client, scenario, api_keys) -> Ev
 def generate_report(results: list[EvalResult]) -> str:
     lines = []
     lines.append("=" * 70)
-    lines.append("  MENE RP Proxy — LLM-as-a-Judge Evaluation Report v2")
+    lines.append("  SAGA RP Proxy — LLM-as-a-Judge Evaluation Report v2")
     lines.append("=" * 70)
     lines.append(f"  Judge Model: {JUDGE_MODEL} ({JUDGE_PROVIDER})")
     lines.append(f"  Narration Model: gpt-4.1-mini (OpenAI)")
     cross = "YES" if JUDGE_PROVIDER != "openai" else f"NO (cross-tier: {JUDGE_MODEL} vs gpt-4.1-mini)"
     lines.append(f"  Cross-Provider: {cross}")
-    lines.append(f"  Server: {MENE_URL}")
+    lines.append(f"  Server: {SAGA_URL}")
     lines.append(f"  Scenarios: {len(results)}")
     lines.append(f"  Date: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("")
@@ -486,7 +486,7 @@ def generate_report(results: list[EvalResult]) -> str:
             lines.append(f"  Output Tokens: {r.output_tokens:,}")
             lines.append(f"  Response Length: {len(r.response_text)} chars")
         else:
-            lines.append(f"  [Injected bad response for calibration — no MENE call]")
+            lines.append(f"  [Injected bad response for calibration — no SAGA call]")
         lines.append("")
 
         # Judge Scores
@@ -617,8 +617,8 @@ async def main():
     args = sys.argv[1:]
     for i, arg in enumerate(args):
         if arg == "--server" and i + 1 < len(args):
-            global MENE_URL
-            MENE_URL = args[i + 1]
+            global SAGA_URL
+            SAGA_URL = args[i + 1]
         elif arg == "--judge-model" and i + 1 < len(args):
             global JUDGE_MODEL
             JUDGE_MODEL = args[i + 1]
@@ -653,22 +653,22 @@ async def main():
         return 1
 
     print(f"Starting evaluation: {len(SCENARIOS)} scenarios")
-    print(f"Server: {MENE_URL}")
+    print(f"Server: {SAGA_URL}")
     print(f"Judge: {JUDGE_MODEL} ({JUDGE_PROVIDER}) — cross-provider: {JUDGE_PROVIDER != 'openai'}")
     print()
 
     # Check server is running
     async with httpx.AsyncClient(timeout=5) as check:
         try:
-            r = await check.get(f"{MENE_URL}/api/status")
+            r = await check.get(f"{SAGA_URL}/api/status")
             status = r.json()
             print(f"Server status: {status.get('status')} (v{status.get('version')})")
         except Exception as e:
-            print(f"ERROR: Cannot reach MENE server at {MENE_URL}: {e}")
+            print(f"ERROR: Cannot reach SAGA server at {SAGA_URL}: {e}")
             return 1
 
     results = []
-    mene_client = httpx.AsyncClient(timeout=TIMEOUT)
+    saga_client = httpx.AsyncClient(timeout=TIMEOUT)
     judge_client = httpx.AsyncClient(timeout=60)
 
     try:
@@ -680,7 +680,7 @@ async def main():
                 label += f" [{len(scenario['turns'])} turns]"
             print(f"\n[{i}/{len(SCENARIOS)}] {scenario['id']}: {label}...", end=" ", flush=True)
 
-            result = await evaluate_scenario(mene_client, judge_client, scenario, api_keys)
+            result = await evaluate_scenario(saga_client, judge_client, scenario, api_keys)
             results.append(result)
 
             if result.error:
@@ -694,7 +694,7 @@ async def main():
                 else:
                     print(f"OK ({result.latency_ms:.0f}ms, score: {avg:.1f}/5)")
     finally:
-        await mene_client.aclose()
+        await saga_client.aclose()
         await judge_client.aclose()
 
     # Generate and print report

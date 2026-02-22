@@ -1,7 +1,7 @@
-"""MENE Integration Tests — 각 컴포넌트 자동 검증 스크립트.
+"""SAGA Integration Tests — 각 컴포넌트 자동 검증 스크립트.
 
-사용법: python3 tests/test_mene_integration.py
-서버가 실행 중이어야 합니다 (python3 -m mene)
+사용법: python3 tests/test_saga_integration.py
+서버가 실행 중이어야 합니다 (python3 -m saga)
 """
 import asyncio
 import httpx
@@ -89,7 +89,7 @@ async def test_session_apis():
 
 async def test_state_block_parsing():
     """4. State block 파싱 테스트 (로컬, 서버 불필요)"""
-    from mene.utils.parsers import parse_state_block, strip_state_block
+    from saga.utils.parsers import parse_state_block, strip_state_block
 
     # 정상 케이스
     test1 = """나레이션 텍스트입니다.
@@ -163,7 +163,7 @@ async def test_memory_search():
 
 async def main():
     print("=" * 60)
-    print("MENE Integration Test Suite")
+    print("SAGA Integration Test Suite")
     print("=" * 60)
 
     print("\n[1] 서버 상태")

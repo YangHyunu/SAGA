@@ -1,5 +1,5 @@
 """
-mene/models.py — Pydantic request/response models for the MENE RP proxy.
+saga/models.py — Pydantic request/response models for the SAGA RP proxy.
 
 Covers:
 - OpenAI-compatible chat completion request/response

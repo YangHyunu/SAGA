@@ -5,16 +5,16 @@
 """
 import asyncio
 import logging
-from mene.storage.sqlite_db import SQLiteDB
-from mene.storage.graph_db import GraphDB
-from mene.storage.vector_db import VectorDB
-from mene.storage.md_cache import MdCache
-from mene.utils.tokens import count_tokens, truncate_to_budget
+from saga.storage.sqlite_db import SQLiteDB
+from saga.storage.graph_db import GraphDB
+from saga.storage.vector_db import VectorDB
+from saga.storage.md_cache import MdCache
+from saga.utils.tokens import count_tokens, truncate_to_budget
 
 logger = logging.getLogger(__name__)
 
 # State tracking instruction appended to every turn
-STATE_BLOCK_INSTRUCTION = """[--- MENE State Tracking ---]
+STATE_BLOCK_INSTRUCTION = """[--- SAGA State Tracking ---]
 응답 마지막에 아래 형식의 상태 블록을 추가해주세요:
 ```state
 location: 현재 위치

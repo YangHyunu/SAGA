@@ -24,7 +24,7 @@ class LettaCuratorAdapter(CuratorAdapter):
             from letta import create_client
             self.client = create_client()
             self.agent = self.client.create_agent(
-                name="mene_curator",
+                name="saga_curator",
                 model=self.config.models.curator,
                 memory=self.client.create_block(
                     label="narrative_memory",
