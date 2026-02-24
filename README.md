@@ -1,8 +1,6 @@
-# Research Note — 2026
+# SAGA RP Agent Proxy v3.0
 
-## Stateful Graph RAG 기반 Context Engineering 프록시
-
-### SAGA RP Agent Proxy v3.0
+## Stateful Agent Graph Architecture — Stateful Graph RAG 기반 Context Engineering 프록시
 
 ---
 
@@ -78,7 +76,7 @@ SAGA는 다음 연구와 프로젝트들의 아이디어를 결합하고 확장�
 - **Graph RAG** [[3]](#ref-3) — Microsoft Research가 제안한 그래프 기반 RAG. 벡터 검색만으로 포착하기 어려운 관계 기반 질의를 그래프 확장으로 보완한다. SAGA는 이 아이디어를 Kuzu + ChromaDB 하이브리드 리랭킹으로 구현했다.
 - **RAG** [[4]](#ref-4) — 검색 증강 생성의 원형. 외부 저장소에서 관련 문서를 검색하여 LLM 프롬프트에 주입하는 기본 패턴.
 - **LLM-as-a-Judge** [[5]](#ref-5) — LLM을 평가자로 사용하는 방법론. SAGA는 크로스 프로바이더 저지 + 네거티브 캘리브레이션으로 편향을 완화했다.
-- **코히바블랙의 Research Note** [[2]](#ref-2) — Letta 기반 RP 에이전트의 실전 적용기. 같은 문제(RP 장기 세션의 상태 유실)를 "에이전트 자기편집 다회 호출"로 풀었다. SAGA는 이를 벤치마크 삼아 "프록시 기반 1회 호출 + 비동기 추출"이라는 다른 아키텍처를 선택했다.
+- **코히바블랙의 연구** [[2]](#ref-2) — Letta 기반 RP 에이전트의 실전 적용기. 같은 문제(RP 장기 세션의 상태 유실)를 "에이전트 자기편집 다회 호출"로 풀었다. SAGA는 이를 벤치마크 삼아 "프록시 기반 1회 호출 + 비동기 추출"이라는 다른 아키텍처를 선택했다.
 - **에이전트 컨텍스트 관리의 .md 수렴** — Claude Code, OpenClaw, oh-my-claudecode(OMC), Codex, Letta Code MemFS[[6]](#ref-6) 등 아키텍처가 다른 에이전트 시스템들이 공통적으로 마크다운을 컨텍스트 관리 형식으로 채택하고 있다. "에이전트가 무엇이 중요한지 스스로 판단하여 .md 메모를 갱신한다"는 패러다임에서 영감을 받아, SAGA의 .md 캐시 설계와 Letta Curator의 Memory Block 자기편집 구조로 이어졌다.
 
 ### 접근 방식
@@ -454,7 +452,7 @@ Curator는 Letta의 자기편집 패턴을 **비동기 후처리에서만** 사�
 
 ### Kuzu 그래프 스키마
 
-**노드 5종:**
+**5개의 노드** (예시입니다. 확장할 수 있습니다):
 
 | 노드 | 주요 속성 | 용도 |
 |------|----------|------|
@@ -464,7 +462,7 @@ Curator는 Letta의 자기편집 패턴을 **비동기 후처리에서만** 사�
 | **Event** | name, event_type, description, turn | 세계 이벤트, 퀘스트 |
 | **Lore** | name, lore_type, layer (A1~A4) | 로어북 엔트리 |
 
-**엣지 10종:**
+**8개의 엣지** (예시입니다. 확장할 수 있습니다):
 
 | 엣지 | From → To | 속성 | 의미 |
 |------|-----------|------|------|
@@ -474,10 +472,8 @@ Curator는 Letta의 자기편집 패턴을 **비동기 후처리에서만** 사�
 | ADJACENT | Location → Location | direction, cost, conditions | 지도 연결 |
 | INVOLVED_IN | Character → Event | role | 이벤트 참여 |
 | CAUSED | Event → Event | description | 인과 관계 |
-| KNOWS | Character → Lore | confidence | 로어 지식 |
 | RELATED | Lore → Lore | relation | 로어 간 연결 |
 | HAS_LORE | Location → Lore | — | 장소별 로어 |
-| ITEM_LORE | Item → Lore | note | 아이템별 로어 |
 
 **노드 ID 형식:** `{session_id}_{entity_name}` (예: `abc123de_아리아`)
 
@@ -598,7 +594,6 @@ Anthropic의 [Prompt Caching](https://docs.anthropic.com/en/docs/build-with-clau
 **SAGA의 한계:**
 - **추출 정확도**: State Block 파싱 품질에 의존. LLM이 State Block을 잘못 출력하면 상태 오염 발생. 경량 LLM 폴백으로 완화하지만 완벽하지 않음
 - **1턴 지연**: 상태 갱신이 비동기이므로, 변경 사항이 DB에 반영되기 전에 다음 턴이 시작될 수 있음 (asyncio.Event 락으로 순서 보장하지만, 극단적으로 빠른 입력 시 경합 가능)
-- **그래프 스키마 경직성**: 현재 5종 노드 + 10종 엣지로 고정. 새로운 개체 유형을 추가하려면 스키마 변경 필요
 - **단일 세션 한정**: 세션 간 상태 공유 미지원. 같은 월드의 다른 세션은 독립적
 
 ---
@@ -849,7 +844,7 @@ saga/
     curator.py             # 큐레이터: N턴마다 서사 관리
   storage/
     sqlite_db.py           # SQLite (세션, 턴 로그, 이벤트 큐)
-    graph_db.py            # Kuzu 그래프 DB (5종 노드, 10종 엣지)
+    graph_db.py            # Kuzu 그래프 DB (5개의 노드, 8개의 엣지)
     vector_db.py           # ChromaDB (로어북, 에피소드)
     md_cache.py            # .md 파일 캐시 (원자적 읽기/쓰기)
   lorebook/
@@ -890,7 +885,7 @@ tests/
 **[1]** Packer, C., Wooders, S., Lin, K., Fang, V., Patil, S. G., Stoica, I., & Gonzalez, J. E. (2023). *MemGPT: Towards LLMs as Operating Systems.* arXiv:2310.08560. — LLM에 가상 메모리 계층(Main Context / Archival Storage / Recall Storage)을 부여하여 무한 컨텍스트를 시뮬레이션. SAGA의 Curator가 채택한 Memory Block 자기편집 패턴의 원형. https://arxiv.org/abs/2310.08560
 
 <a id="ref-2"></a>
-**[2]** 코히바블랙. (2025). *Letta 기반 RP 에이전트 Research Note.* arca.live 창작 AI 채널. — Letta Step Loop를 RP 도메인에 적용한 실전 적용기. 에이전트가 다회 호출로 Memory Block을 자기편집하는 접근 방식의 효과와 한계를 실증. SAGA가 "프록시 기반 1회 호출" 아키텍처를 선택하게 된 직접적 벤치마크.
+**[2]** 코히바블랙. (2025). *Letta를 이용한 장기기억 향상 및 AI 채팅 경험 향상 연구 초록.* [arca.live AI 채팅 채널](https://arca.live/b/characterai/162255622). — Letta Step Loop를 RP 도메인에 적용한 실전 적용기. 에이전트가 다회 호출로 Memory Block을 자기편집하는 접근 방식의 효과와 한계를 실증. SAGA가 "프록시 기반 1회 호출" 아키텍처를 선택하게 된 직접적 벤치마크.
 
 <a id="ref-3"></a>
 **[3]** Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S., & Larson, J. (2024). *From Local to Global: A Graph RAG Approach to Query-Focused Summarization.* arXiv:2404.16130. — 벡터 검색에 그래프 커뮤니티 구조를 결합하여 글로벌 질의에 대한 RAG 품질을 향상. SAGA의 Kuzu N-hop 확장 + ChromaDB 하이브리드 리랭킹의 이론적 기반. https://arxiv.org/abs/2404.16130
