@@ -1,10 +1,8 @@
 import os
-import re
 import yaml
-from datetime import datetime
 
-MD_FILES = ["state.md", "relations.md", "story.md", "lore.md"]
-MD_KEYS = ["state", "relations", "story", "lore"]
+STABLE_FILE = "stable_prefix.md"  # BP2 cache target
+LIVE_FILE = "live_state.md"       # dynamic, no cache
 
 
 class MdCache:
@@ -19,151 +17,177 @@ class MdCache:
         return os.path.join(self.cache_dir, session_id)
 
     # ------------------------------------------------------------------ #
-    # Read / write
+    # Read
     # ------------------------------------------------------------------ #
 
-    async def read_cache(self, session_id: str) -> dict:
-        """Read all 4 .md files and return dict with keys state/relations/story/lore.
-        Missing files return empty string for that key."""
-        session_dir = self.get_session_dir(session_id)
-        cache: dict[str, str] = {}
-        for filename, key in zip(MD_FILES, MD_KEYS):
-            filepath = os.path.join(session_dir, filename)
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    cache[key] = f.read()
-            except FileNotFoundError:
-                cache[key] = ""
-        return cache
+    async def read_stable(self, session_id: str) -> str:
+        """Read stable_prefix.md. Returns empty string if not found."""
+        filepath = os.path.join(self.get_session_dir(session_id), STABLE_FILE)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
 
-    async def write_cache_atomic(
+    async def read_live(self, session_id: str) -> str:
+        """Read live_state.md. Returns empty string if not found."""
+        filepath = os.path.join(self.get_session_dir(session_id), LIVE_FILE)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
+
+    # ------------------------------------------------------------------ #
+    # Write
+    # ------------------------------------------------------------------ #
+
+    async def write_stable(self, session_id: str, content: str):
+        """Atomic write of stable_prefix.md. Called rarely (Curator cycle).
+
+        Increments version counter from existing frontmatter, then prepends
+        fresh frontmatter before writing.
+        """
+        current_version = self.get_stable_version(session_id)
+        new_version = current_version + 1
+
+        frontmatter = f"---\nversion: {new_version}\nsession_id: {session_id}\n---\n"
+        body = self._strip_frontmatter(content)
+        full_content = frontmatter + body
+
+        filepath = os.path.join(self.get_session_dir(session_id), STABLE_FILE)
+        self._write_atomic(filepath, full_content)
+
+    async def write_live(
         self,
         session_id: str,
         turn: int,
-        contents: dict,
-        changed: list[str] = None,
+        state_block: dict,
+        player_context: dict,
     ):
-        """Atomic write: write to .tmp then os.replace for each file.
-        contents dict has filename keys like 'state.md'."""
-        session_dir = self.get_session_dir(session_id)
-        os.makedirs(session_dir, exist_ok=True)
+        """Build and write live_state.md from current game state.
+        Called every turn by Post-Turn.
 
-        frontmatter = self._make_frontmatter(turn, session_id, changed)
+        state_block keys used: location, hp, max_hp, mood, nearby_npcs, recent_events
+        player_context keys used: (merged on top of state_block if present)
+        """
+        merged = {**state_block, **player_context}
 
-        for filename in MD_FILES:
-            if filename not in contents:
-                continue
-            filepath = os.path.join(session_dir, filename)
-            tmp_path = filepath + ".tmp"
-            # Strip existing frontmatter from supplied content, then prepend fresh one
-            body = self._strip_frontmatter(contents[filename])
-            full_content = frontmatter + body
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(full_content)
-            os.replace(tmp_path, filepath)
+        location = merged.get("location", "알 수 없음")
+        hp = merged.get("hp", "?")
+        max_hp = merged.get("max_hp", "?")
+        mood = merged.get("mood", "보통")
+        nearby_npcs: list = merged.get("nearby_npcs", [])
+        recent_events: list = merged.get("recent_events", [])
 
-    # ------------------------------------------------------------------ #
-    # Frontmatter helpers
-    # ------------------------------------------------------------------ #
+        lines = [f"---\nturn: {turn}\n---\n"]
 
-    def _make_frontmatter(
-        self, turn: int, session_id: str, changed: list[str] = None
+        lines.append("## 현재 상태")
+        lines.append(f"- 위치: {location}")
+        lines.append(f"- HP: {hp}/{max_hp}")
+        lines.append(f"- 기분: {mood}")
+        lines.append("")
+
+        lines.append("## 주변 인물")
+        if nearby_npcs:
+            for npc in nearby_npcs:
+                if isinstance(npc, dict):
+                    name = npc.get("name", "이름 없음")
+                    rel_type = npc.get("rel_type", npc.get("relation", "알 수 없음"))
+                    strength = npc.get("strength", npc.get("intimacy", "?"))
+                    lines.append(f"- {name} (관계: {rel_type}, 친밀도: {strength})")
+                else:
+                    lines.append(f"- {npc}")
+        else:
+            lines.append("- 없음")
+        lines.append("")
+
+        lines.append("## 최근 이벤트")
+        if recent_events:
+            for event in recent_events:
+                if isinstance(event, dict):
+                    t = event.get("turn", "?")
+                    desc = event.get("description", event.get("event", str(event)))
+                    lines.append(f"- Turn {t}: {desc}")
+                else:
+                    lines.append(f"- {event}")
+        else:
+            lines.append("- 없음")
+        lines.append("")
+
+        full_content = "\n".join(lines)
+        filepath = os.path.join(self.get_session_dir(session_id), LIVE_FILE)
+        self._write_atomic(filepath, full_content)
+
+    async def build_stable_content(
+        self,
+        characters: list,
+        lore_entries: list,
+        world_config: str = "",
     ) -> str:
-        data: dict = {
-            "turn": turn,
-            "session_id": session_id,
-            "updated_at": datetime.utcnow().isoformat(),
-        }
-        if changed:
-            data["changed"] = changed
-        yaml_str = yaml.dump(data, allow_unicode=True, default_flow_style=False).strip()
-        return f"---\n{yaml_str}\n---\n"
+        """Build stable_prefix.md content from DB data.
+        Called by Curator or on session init.
+        Does NOT write the file — caller should pass result to write_stable().
+        """
+        lines = []
 
-    @staticmethod
-    def _strip_frontmatter(content: str) -> str:
-        """Remove YAML frontmatter block (between --- markers) from the top of content."""
-        if not content:
-            return content
-        stripped = content.lstrip()
-        if not stripped.startswith("---"):
-            return content
-        # Find closing ---
-        rest = stripped[3:]
-        end_idx = rest.find("---")
-        if end_idx == -1:
-            return content
-        return rest[end_idx + 3:].lstrip("\n")
+        lines.append("## 세계관")
+        lines.append(world_config.strip() if world_config else "")
+        lines.append("")
+
+        lines.append("## 등장인물")
+        for char in characters:
+            if isinstance(char, dict):
+                name = char.get("name", "이름 없음")
+                traits = char.get("traits", char.get("description", ""))
+                lines.append(f"### {name}")
+                if traits:
+                    lines.append(f"- 특성: {traits}")
+            else:
+                lines.append(f"### {char}")
+            lines.append("")
+
+        lines.append("## 로어")
+        for entry in lore_entries:
+            if isinstance(entry, dict):
+                name = entry.get("name", entry.get("title", "이름 없음"))
+                content = entry.get("content", entry.get("description", ""))
+                lines.append(f"### {name}")
+                lines.append(content.strip() if content else "")
+            else:
+                lines.append(str(entry))
+            lines.append("")
+
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
-    # Cache inspection
+    # Helpers
     # ------------------------------------------------------------------ #
 
-    def get_cache_turn(self, md_cache: dict) -> int:
-        """Extract turn from state.md YAML frontmatter."""
-        state_content = md_cache.get("state", "")
-        if not state_content:
-            return -1
+    def get_stable_version(self, session_id: str) -> int:
+        """Return version number from stable_prefix.md frontmatter. -1 if not found."""
+        filepath = os.path.join(self.get_session_dir(session_id), STABLE_FILE)
         try:
-            fm = self._parse_frontmatter(state_content)
-            return int(fm.get("turn", -1))
-        except Exception:
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except FileNotFoundError:
+            return -1
+        fm = self._parse_frontmatter(content)
+        try:
+            return int(fm.get("version", -1))
+        except (TypeError, ValueError):
             return -1
 
-    def is_fresh(self, md_cache: dict, current_turn: int) -> bool:
-        """Check if cache is fresh (turn diff <= 1)."""
-        cache_turn = self.get_cache_turn(md_cache)
-        if cache_turn < 0:
-            return False
-        return abs(current_turn - cache_turn) <= 1
-
-    def extract_keywords(self, md_cache: dict) -> list[str]:
-        """Extract keywords from story.md '핵심 키워드' section."""
-        story_content = md_cache.get("story", "")
-        if not story_content:
-            return []
-        body = self._strip_frontmatter(story_content)
-        # Look for section header containing '핵심 키워드'
-        pattern = re.compile(
-            r"#{1,4}\s*핵심\s*키워드[^\n]*\n(.*?)(?=\n#{1,4}\s|\Z)",
-            re.DOTALL,
-        )
-        match = pattern.search(body)
-        if not match:
-            return []
-        section_text = match.group(1)
-        keywords = []
-        for line in section_text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            # Support bullet lists (-, *, •) or comma-separated
-            line = re.sub(r"^[-*•]\s*", "", line)
-            if "," in line:
-                keywords.extend(kw.strip() for kw in line.split(",") if kw.strip())
-            elif line:
-                keywords.append(line)
-        return keywords
-
-    def format_as_prefix(self, md_cache: dict, max_tokens: int) -> str:
-        """Format 4 .md files as prompt caching prefix.
-        Strips frontmatter from each and joins with double newlines.
-        Truncates to roughly max_tokens characters (1 token ~= 4 chars)."""
-        parts = []
-        for key in MD_KEYS:
-            content = md_cache.get(key, "")
-            if content:
-                body = self._strip_frontmatter(content)
-                if body.strip():
-                    parts.append(body.strip())
-        combined = "\n\n".join(parts)
-        # Rough token budget: 1 token ~= 4 chars
-        char_limit = max_tokens * 4
-        if len(combined) > char_limit:
-            combined = combined[:char_limit]
-        return combined
+    def _write_atomic(self, filepath: str, content: str):
+        """Write content atomically using tmp + replace pattern."""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        tmp_path = filepath + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, filepath)
 
     # ------------------------------------------------------------------ #
-    # Internal
+    # Frontmatter (kept for compatibility and internal use)
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -181,3 +205,17 @@ class MdCache:
             return yaml.safe_load(yaml_str) or {}
         except yaml.YAMLError:
             return {}
+
+    @staticmethod
+    def _strip_frontmatter(content: str) -> str:
+        """Remove YAML frontmatter block (between --- markers) from the top of content."""
+        if not content:
+            return content
+        stripped = content.lstrip()
+        if not stripped.startswith("---"):
+            return content
+        rest = stripped[3:]
+        end_idx = rest.find("---")
+        if end_idx == -1:
+            return content
+        return rest[end_idx + 3:].lstrip("\n")

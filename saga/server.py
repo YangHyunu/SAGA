@@ -15,7 +15,6 @@ from saga.models import (
     StatusResponse, SessionInfo
 )
 from saga.storage.sqlite_db import SQLiteDB
-from saga.storage.graph_db import GraphDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.llm.client import LLMClient
@@ -31,7 +30,6 @@ logger = logging.getLogger(__name__)
 # Global instances
 config: SagaConfig = None
 sqlite_db: SQLiteDB = None
-graph_db: GraphDB = None
 vector_db: VectorDB = None
 md_cache: MdCache = None
 llm_client: LLMClient = None
@@ -44,7 +42,7 @@ session_mgr: SessionManager = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize all components on startup, cleanup on shutdown."""
-    global config, sqlite_db, graph_db, vector_db, md_cache, llm_client
+    global config, sqlite_db, vector_db, md_cache, llm_client
     global context_builder, post_turn, curator, session_mgr
 
     # Load config
@@ -60,9 +58,6 @@ async def lifespan(app: FastAPI):
     sqlite_db = SQLiteDB(db_path="db/state.db")
     await sqlite_db.initialize()
 
-    graph_db = GraphDB(db_path=config.graph.db_path)
-    graph_db.initialize()
-
     vector_db = VectorDB(db_path="db/chroma")
     vector_db.initialize()
 
@@ -72,15 +67,15 @@ async def lifespan(app: FastAPI):
     llm_client = LLMClient(config)
 
     # Initialize agents
-    context_builder = ContextBuilder(sqlite_db, graph_db, vector_db, md_cache, config)
-    post_turn = PostTurnExtractor(sqlite_db, graph_db, vector_db, md_cache, llm_client, config)
-    curator = CuratorRunner(sqlite_db, graph_db, vector_db, md_cache, llm_client, config)
+    context_builder = ContextBuilder(sqlite_db, vector_db, md_cache, config)
+    post_turn = PostTurnExtractor(sqlite_db, vector_db, md_cache, llm_client, config)
+    curator = CuratorRunner(sqlite_db, vector_db, md_cache, llm_client, config)
 
     if config.curator.enabled:
         curator.initialize()
 
     # Initialize session manager
-    session_mgr = SessionManager(sqlite_db, graph_db, vector_db, md_cache, config)
+    session_mgr = SessionManager(sqlite_db, vector_db, md_cache, config)
 
     logger.info(f"[SAGA] Server initialized. Listening on {config.server.host}:{config.server.port}")
 
@@ -249,9 +244,12 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix):
     """Build messages with 3-breakpoint prompt caching structure.
 
     BP1: system prompt (절대 안 변함)
-    BP2: 대화 히스토리 중간 지점 (이전 턴 내용은 안 변함)
+    BP2: 대화 히스토리 중간 지점 assistant (이전 턴 내용은 안 변함)
     BP3: 대화 히스토리 마지막 assistant (직전 턴까지 안 변함)
-    Dynamic: md_prefix + dynamic_suffix → 캐시 안 함 (매턴 변하니까)
+    Dynamic: md_prefix + dynamic_suffix → 마지막 user 메시지 직전에 삽입 (캐시 밖)
+
+    핵심: 동적 컨텍스트를 BP 뒤에 배치해야 BP2/BP3 캐시가 유효함.
+    [시스템+BP1] → [대화...BP2...BP3] → [동적 컨텍스트] → [유저 입력]
     """
     messages = list(original_messages)
     system_idx = next((i for i, m in enumerate(messages) if m["role"] == "system"), None)
@@ -262,20 +260,6 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix):
         # BP1: system prompt (세션 내내 동일)
         messages[system_idx] = dict(messages[system_idx])
         messages[system_idx]["cache_control"] = {"type": "ephemeral"}
-
-        # md_prefix + dynamic_suffix → 캐시 안 건다 (매턴 바뀌니까)
-        context_block = ""
-        if md_prefix:
-            context_block += f"[--- SAGA Context Cache ---]\n{md_prefix}\n\n"
-        if dynamic_suffix:
-            context_block += f"[--- SAGA Dynamic ---]\n{dynamic_suffix}"
-
-        if context_block:
-            messages.insert(system_idx + 1, {
-                "role": "system",
-                "content": context_block,
-                # cache_control 없음!
-            })
 
         # 대화 히스토리에서 assistant 메시지 위치 찾기
         assistant_indices = [
@@ -299,7 +283,31 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix):
             messages[last_idx] = dict(messages[last_idx])
             messages[last_idx]["cache_control"] = {"type": "ephemeral"}
 
-        # 마지막 user 메시지는 캐시 밖 (현재 입력) — 건드리지 않음
+        # 동적 컨텍스트: 마지막 user 메시지에 prepend로 삽입
+        # ⚠️ system role로 삽입하면 _call_anthropic에서 system 배열로 호이스팅되어
+        # BP1~BP3 사이 prefix가 매 턴 바뀌므로 캐시가 무효화됨
+        # → user 메시지에 prepend하면 모든 BP 뒤에 위치하므로 캐시 유지
+        context_block = ""
+        if md_prefix:
+            context_block += f"[--- SAGA Context Cache ---]\n{md_prefix}\n\n"
+        if dynamic_suffix:
+            context_block += f"[--- SAGA Dynamic ---]\n{dynamic_suffix}"
+
+        if context_block:
+            last_user_idx = None
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "user":
+                    last_user_idx = i
+                    break
+
+            if last_user_idx is not None:
+                messages[last_user_idx] = dict(messages[last_user_idx])
+                messages[last_user_idx]["content"] = context_block + "\n\n" + messages[last_user_idx]["content"]
+            else:
+                messages.append({
+                    "role": "user",
+                    "content": context_block,
+                })
 
     else:
         # Non-Claude or caching disabled
@@ -346,21 +354,14 @@ async def get_session_state(session_id: str):
 
 @app.get("/api/sessions/{session_id}/graph")
 async def get_session_graph(session_id: str):
-    summary = graph_db.get_graph_summary(session_id)
+    summary = await sqlite_db.get_state_summary(session_id)
     return {"session_id": session_id, "graph_summary": summary}
 
 @app.get("/api/sessions/{session_id}/cache")
 async def get_session_cache(session_id: str):
-    cache_data = await md_cache.read_cache(session_id)
-    turn = md_cache.get_cache_turn(cache_data)
-    return {"session_id": session_id, "cache_turn": turn, "files": list(cache_data.keys()), "has_content": any(bool(v) for v in cache_data.values())}
-
-@app.post("/api/sessions/{session_id}/cache/regen")
-async def regenerate_cache(session_id: str):
-    md_contents = await context_builder._build_md_from_db(session_id)
-    turn = await sqlite_db.get_turn_count(session_id)
-    await md_cache.write_cache_atomic(session_id, turn, {f"{k}.md": v for k, v in md_contents.items()})
-    return {"status": "regenerated", "turn": turn}
+    stable = await md_cache.read_stable(session_id)
+    live = await md_cache.read_live(session_id)
+    return {"session_id": session_id, "stable_prefix": bool(stable), "live_state": bool(live)}
 
 @app.get("/api/sessions/{session_id}/turns")
 async def get_turn_logs(session_id: str, from_turn: int = 0, to_turn: int | None = None):
@@ -372,6 +373,36 @@ async def reset_session(session_id: str):
     await session_mgr.reset_session(session_id)
     return {"status": "reset", "session_id": session_id}
 
+@app.post("/api/reset-all")
+async def reset_all():
+    """Full factory reset: SQLite + ChromaDB + MdCache all cleared."""
+    import shutil, os
+    # 1. SQLite: drop all data
+    sessions = await sqlite_db.list_sessions()
+    for s in sessions:
+        await sqlite_db.reset_session(s["id"])
+        await sqlite_db._db.execute("DELETE FROM sessions WHERE id = ?", (s["id"],))
+    await sqlite_db._db.commit()
+
+    # 2. ChromaDB: delete and recreate collections
+    try:
+        vector_db.delete_all_data()
+    except Exception:
+        # Fallback: wipe directory
+        chroma_path = "db/chroma"
+        if os.path.exists(chroma_path):
+            shutil.rmtree(chroma_path)
+            os.makedirs(chroma_path)
+        vector_db.initialize()
+
+    # 3. MdCache: clear all session dirs
+    cache_dir = md_cache.cache_dir
+    if os.path.exists(cache_dir):
+        shutil.rmtree(cache_dir)
+        os.makedirs(cache_dir)
+
+    return {"status": "reset_all", "sessions_cleared": len(sessions)}
+
 @app.get("/api/memory/search")
 async def search_memory(q: str, session: str = "", collection: str = "episodes"):
     if not session:
@@ -382,12 +413,11 @@ async def search_memory(q: str, session: str = "", collection: str = "episodes")
         return vector_db.search_episodes(session, q, n_results=10)
 
 @app.get("/api/graph/query")
-async def graph_query(cypher: str, session: str = ""):
-    try:
-        result = graph_db.conn.execute(cypher)
-        rows = []
-        while result.has_next():
-            rows.append(result.get_next())
-        return {"results": rows}
-    except Exception as e:
-        raise HTTPException(400, str(e))
+async def graph_query(q: str = "", session: str = ""):
+    """Query state data (replaced Cypher graph queries)."""
+    if not session:
+        return {"error": "session parameter required"}
+    chars = await sqlite_db.get_session_characters(session)
+    rels = await sqlite_db.get_relationships(session)
+    events = await sqlite_db.get_recent_events(session, limit=10)
+    return {"characters": chars, "relationships": rels, "recent_events": events}

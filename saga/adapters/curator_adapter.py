@@ -56,7 +56,7 @@ class LettaCuratorAdapter(CuratorAdapter):
 
         try:
             base_url = self.config.curator.letta_base_url
-            self.client = Letta(base_url=base_url)
+            self.client = Letta(base_url=base_url, timeout=100.0)
             # Verify connection by listing agents
             list(self.client.agents.list())
             self._initialized = True
@@ -102,28 +102,66 @@ class LettaCuratorAdapter(CuratorAdapter):
         logger.info(f"[Curator] Created new agent '{agent_name}' (id={agent.id}) with {len(memory_blocks)} memory block(s)")
         return agent
 
+    def _recreate_agent(self, session_id: str) -> Any:
+        """Delete and recreate agent when context window is exceeded."""
+        agent_name = f"saga_curator_{session_id}"
+        old_agent = self._agents.pop(session_id, None)
+        if old_agent:
+            try:
+                self.client.agents.delete(old_agent.id)
+                logger.info(f"[Curator] Deleted overflowed agent '{agent_name}' (id={old_agent.id})")
+            except Exception as e:
+                logger.warning(f"[Curator] Failed to delete old agent: {e}")
+        return self._get_or_create_agent(session_id)
+
     async def run(self, session_id: str, context: dict) -> dict:
         if not self._initialized:
             raise RuntimeError("Letta curator not initialized")
 
         agent = self._get_or_create_agent(session_id)
         prompt = self._build_prompt(session_id, context)
-        response = self.client.agents.messages.create(
-            agent_id=agent.id,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return self._parse_response(response)
+        try:
+            response = self.client.agents.messages.create(
+                agent_id=agent.id,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return self._parse_response(response)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "context_window_exceeded" in err_str or "too many tokens" in err_str or "400" in err_str:
+                logger.warning(f"[Curator] Context window exceeded for session {session_id}, recreating agent")
+                agent = self._recreate_agent(session_id)
+                response = self.client.agents.messages.create(
+                    agent_id=agent.id,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return self._parse_response(response)
+            raise
 
     def _build_prompt(self, session_id: str, context: dict) -> str:
+        # Truncate individual sections to prevent context overflow
+        MAX_SECTION = 3000  # chars per section
+
+        graph_summary = (context.get('graph_summary', '없음') or '없음')[:MAX_SECTION]
+        episodes_text = (context.get('episodes_text', '없음') or '없음')[:MAX_SECTION]
+
+        # Truncate turn logs: keep only last 5 turns, limit total size
+        turn_logs = context.get('turn_logs', [])
+        if len(turn_logs) > 5:
+            turn_logs = turn_logs[-5:]
+        turn_logs_str = json.dumps(turn_logs, ensure_ascii=False, indent=2)[:MAX_SECTION]
+
+        contradictions_str = '없음'
+        if context.get('contradictions'):
+            contradictions_str = json.dumps(context['contradictions'], ensure_ascii=False)[:MAX_SECTION]
+
         return (
             f"세션 {session_id}의 큐레이션 요청입니다. 현재 턴: {context.get('turn_number', '?')}\n\n"
-            f"[그래프 상태]\n{context.get('graph_summary', '없음')}\n\n"
-            f"[최근 에피소드 기억]\n{context.get('episodes_text', '없음')}\n\n"
-            f"[최근 턴 로그]\n{json.dumps(context.get('turn_logs', []), ensure_ascii=False, indent=2)}\n\n"
-            f"[탐지된 모순]\n"
-            + (json.dumps(context.get('contradictions', []), ensure_ascii=False)
-               if context.get('contradictions') else '없음')
-            + "\n\n분석 및 실행:\n"
+            f"[그래프 상태]\n{graph_summary}\n\n"
+            f"[최근 에피소드 기억]\n{episodes_text}\n\n"
+            f"[최근 턴 로그]\n{turn_logs_str}\n\n"
+            f"[탐지된 모순]\n{contradictions_str}\n\n"
+            "분석 및 실행:\n"
             "1. 서사 모순이 있는지? 있으면 수정 방법은?\n"
             "2. 앞으로 촉발될 이벤트가 있는지?\n"
             "3. story.md 압축 필요?\n"

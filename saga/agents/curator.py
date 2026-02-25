@@ -1,10 +1,7 @@
 """Letta Curator — N턴마다 비동기 실행. Memory Block 기반 서사 판단 연속성."""
-import asyncio
 import json
 import logging
-from datetime import datetime
 from saga.storage.sqlite_db import SQLiteDB
-from saga.storage.graph_db import GraphDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.adapters.curator_adapter import LettaCuratorAdapter, DirectLLMCuratorAdapter
@@ -13,9 +10,8 @@ logger = logging.getLogger(__name__)
 
 
 class CuratorRunner:
-    def __init__(self, sqlite_db: SQLiteDB, graph_db: GraphDB, vector_db: VectorDB, md_cache: MdCache, llm_client, config):
+    def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client, config):
         self.sqlite_db = sqlite_db
-        self.graph_db = graph_db
         self.vector_db = vector_db
         self.md_cache = md_cache
         self.llm_client = llm_client
@@ -69,9 +65,7 @@ class CuratorRunner:
                     logger.error(f"[Curator] Fallback also failed: {e2}")
 
     async def _gather_context(self, session_id, turn_number):
-        loop = asyncio.get_event_loop()
-
-        graph_summary = await loop.run_in_executor(None, self.graph_db.get_graph_summary, session_id)
+        graph_summary = await self.sqlite_db.get_state_summary(session_id)
 
         recent_episodes = self.vector_db.search_episodes(session_id, "최근 일어난 일", n_results=20)
         episodes_text = ""
@@ -85,7 +79,7 @@ class CuratorRunner:
         from_turn = max(0, turn_number - self.config.curator.interval)
         turn_logs = await self.sqlite_db.get_turn_logs(session_id, from_turn=from_turn, to_turn=turn_number)
 
-        contradictions = self.graph_db.detect_contradictions(session_id)
+        contradictions = await self.sqlite_db.detect_contradictions(session_id)
 
         return {
             "turn_number": turn_number,
@@ -110,12 +104,7 @@ class CuratorRunner:
 
     async def _auto_generate_lore(self, session_id: str, turn_number: int):
         """Detect entities without lore and auto-generate lore entries."""
-        loop = asyncio.get_event_loop()
-
-        # Find entities that have no linked Lore nodes
-        entities = await loop.run_in_executor(
-            None, self.graph_db.get_entities_without_lore, session_id
-        )
+        entities = await self.sqlite_db.get_entities_without_lore(session_id)
         if not entities:
             return
 
@@ -131,7 +120,6 @@ class CuratorRunner:
 
     async def _generate_single_lore(self, session_id: str, turn_number: int, entity: dict):
         """Generate lore for a single entity using episodes and graph context."""
-        loop = asyncio.get_event_loop()
         entity_name = entity.get("name", "")
         entity_type = entity.get("entity_type", "character")
 
@@ -149,21 +137,16 @@ class CuratorRunner:
                 ep_lines.append(f"- [Turn {turn}] {doc[:300]}")
             episodes_text = "\n".join(ep_lines[:8])
 
-        # Get graph relationships for this entity
+        # Get relationships for this entity
         relationships = []
         if entity_type == "character":
-            char_id = self.graph_db._node_id(session_id, entity_name)
-            try:
-                result = self.graph_db.conn.execute(
-                    """
-                    MATCH (c:Character {id: $cid})-[e:RELATES_TO]->(other:Character)
-                    RETURN other.name AS target, e.rel_type AS rel_type, e.strength AS strength
-                    """,
-                    {"cid": char_id},
-                )
-                relationships = self.graph_db._result_to_list(result)
-            except RuntimeError:
-                pass
+            rels = await self.sqlite_db.get_relationships(session_id, entity_name)
+            relationships = [
+                {"target": r.get("to_name") if r.get("from_name") == entity_name else r.get("from_name"),
+                 "rel_type": r.get("rel_type", ""),
+                 "strength": r.get("strength", 0)}
+                for r in rels
+            ]
 
         rel_text = "\n".join(
             f"- {r.get('target')}: {r.get('rel_type')} (강도 {r.get('strength')})"
@@ -234,19 +217,16 @@ class CuratorRunner:
         lore_type = lore_data.get("lore_type", entity_type)
         priority = lore_data.get("priority", 50)
 
-        # Store in KuzuDB
-        await loop.run_in_executor(
-            None, self.graph_db.create_lore,
-            session_id, f"lore_{entity_name}",
-            lore_type, "core", keywords, content,
-            priority, "{}", "{}",
-            True, json.dumps(source_turns[:5]),
-        )
-
-        # Link to entity
-        await loop.run_in_executor(
-            None, self.graph_db.link_lore,
-            session_id, entity_type, entity_name, f"lore_{entity_name}"
+        # Store in SQLite
+        await self.sqlite_db.create_lore(
+            session_id=session_id,
+            name=f"lore_{entity_name}",
+            lore_type=lore_type,
+            keywords=keywords,
+            content=content,
+            priority=priority,
+            auto_generated=True,
+            source_turns=json.dumps(source_turns[:5]),
         )
 
         # Store in ChromaDB for vector search
@@ -269,7 +249,8 @@ class CuratorRunner:
         logger.info(f"[Curator] Auto-generated lore for '{entity_name}' ({lore_type}, priority={priority})")
 
     async def _compress_story_md(self, session_id, turn_number, compressed_summary):
-        now = datetime.now().isoformat()
-        frontmatter = f'---\nupdated_at: "{now}"\nturn: {turn_number}\nsession_id: {session_id}\nchanged: [compressed]\n---\n\n'
-        content = frontmatter + compressed_summary
-        await self.md_cache.write_cache_atomic(session_id, turn_number, {"story.md": content})
+        """Update stable prefix with compressed story summary."""
+        chars = await self.sqlite_db.get_session_characters(session_id)
+        lore = await self.sqlite_db.get_all_lore(session_id)
+        content = await self.md_cache.build_stable_content(chars, lore, compressed_summary)
+        await self.md_cache.write_stable(session_id, content)

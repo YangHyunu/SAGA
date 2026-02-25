@@ -1,11 +1,11 @@
 # SAGA RP Agent Proxy v3.0
 
-## Stateful Agent Graph Architecture — Stateful Graph RAG 기반 Context Engineering 프록시
+## Stateful Agent Architecture — Stateful RAG 기반 Context Engineering 프록시
 
 ---
 
 > **한 줄 요약:** 매 턴 1회 LLM 호출만으로 장기 RP 세션의 상태 일관성을 유지하는 OpenAI-compatible 프록시.
-> 그래프 DB + 벡터 DB + .md 캐시를 조합하여, 프론트엔드 수정 없이 동적 컨텍스트를 자동 주입한다.
+> SQLite + 벡터 DB + .md 캐시를 조합하여, 프론트엔드 수정 없이 동적 컨텍스트를 자동 주입한다.
 
 ---
 
@@ -14,7 +14,7 @@
 1. [용어 설명](#1-용어-설명)
 2. [연구 개요](#2-연구-개요)
 3. [기존 방식의 한계](#3-기존-방식의-한계)
-4. [SAGA의 접근: Stateful Graph RAG](#4-saga의-접근-stateful-graph-rag)
+4. [SAGA의 접근: Stateful RAG](#4-saga의-접근-stateful-rag)
 5. [시스템 아키텍처](#5-시스템-아키텍처)
 6. [3-Agent 파이프라인](#6-3-agent-파이프라인)
 7. [스토리지 설계](#7-스토리지-설계)
@@ -73,7 +73,7 @@ RP(롤플레이) 챗봇은 수십~수백 턴에 걸친 장기 세션에서 구�
 SAGA는 다음 연구와 프로젝트들의 아이디어를 결합하고 확장한다:
 
 - **MemGPT / Letta** [[1]](#ref-1) — LLM에 가상 메모리 계층을 부여하여 무한 컨텍스트를 시뮬레이션하는 OS 패러다임을 제안. Letta의 "Step Loop" — 에이전트가 자기 Memory Block을 읽고 편집하는 다회 호출 패턴 — 은 RP 도메인에서 코히바블랙 [[2]](#ref-2) 에 의해 실증적으로 검증되었다. SAGA의 Curator는 이 패턴을 비동기 후처리에서 차용하되, 유저 대기 경로에서는 사용하지 않는 트레이드오프를 택했다.
-- **Graph RAG** [[3]](#ref-3) — Microsoft Research가 제안한 그래프 기반 RAG. 벡터 검색만으로 포착하기 어려운 관계 기반 질의를 그래프 확장으로 보완한다. SAGA는 이 아이디어를 Kuzu + ChromaDB 하이브리드 리랭킹으로 구현했다.
+- **Graph RAG** [[3]](#ref-3) — Microsoft Research가 제안한 그래프 기반 RAG. 벡터 검색만으로 포착하기 어려운 관계 기반 질의를 그래프 확장으로 보완한다. SAGA는 이 아이디어를 SQLite + ChromaDB 조합으로 구현했다.
 - **RAG** [[4]](#ref-4) — 검색 증강 생성의 원형. 외부 저장소에서 관련 문서를 검색하여 LLM 프롬프트에 주입하는 기본 패턴.
 - **LLM-as-a-Judge** [[5]](#ref-5) — LLM을 평가자로 사용하는 방법론. SAGA는 크로스 프로바이더 저지 + 네거티브 캘리브레이션으로 편향을 완화했다.
 - **코히바블랙의 연구** [[2]](#ref-2) — Letta 기반 RP 에이전트의 실전 적용기. 같은 문제(RP 장기 세션의 상태 유실)를 "에이전트 자기편집 다회 호출"로 풀었다. SAGA는 이를 벤치마크 삼아 "프록시 기반 1회 호출 + 비동기 추출"이라는 다른 아키텍처를 선택했다.
@@ -83,8 +83,8 @@ SAGA는 다음 연구와 프로젝트들의 아이디어를 결합하고 확장�
 
 OpenAI-compatible 프록시로 클라이언트와 LLM 사이에 위치하여:
 
-1. **매 턴 요청 시** — 3종 DB에서 현재 상태와 관련 컨텍스트를 검색, 프롬프트에 주입 (동기, ~35ms)
-2. **매 턴 응답 후** — LLM 응답에서 상태 변화를 추출, 3종 DB를 갱신 (비동기, 유저 대기 없음)
+1. **매 턴 요청 시** — 2종 DB에서 현재 상태와 관련 컨텍스트를 검색, 프롬프트에 주입 (동기, ~35ms)
+2. **매 턴 응답 후** — LLM 응답에서 상태 변화를 추출, 2종 DB를 갱신 (비동기, 유저 대기 없음)
 3. **N턴마다** — 서사 모순 탐지, 장기 서사 압축, 이벤트 스케줄링 (비동기)
 
 ---
@@ -128,15 +128,14 @@ SAGA는 이 트레이드오프를 다르게 풀었다:
 
 ---
 
-## 4. SAGA의 접근: Stateful Graph RAG
+## 4. SAGA의 접근: Stateful RAG
 
 ### 핵심 아이디어: Read-Write 순환
 
 ```
                     ┌──────────────────────────────┐
-                    │         3종 DB 저장소          │
-                    │  Kuzu(그래프) + ChromaDB(벡터)  │
-                    │      + SQLite(상태 KV)         │
+                    │         2종 DB 저장소          │
+                    │  SQLite(상태) + ChromaDB(벡터)  │
                     └──────┬───────────────┬────────┘
                    READ    │               │  WRITE
                 (동기 ~35ms)│               │(비동기)
@@ -155,8 +154,8 @@ SAGA는 이 트레이드오프를 다르게 풀었다:
 
 매 턴은 두 단계로 구성된다:
 
-1. **READ** (동기): Sub-A가 3종 DB에서 현재 상태, 관련 로어북, 그래프 연결을 검색하여 프롬프트에 주입
-2. **WRITE** (비동기): Sub-B가 LLM 응답의 State Block을 파싱하여 3종 DB를 갱신
+1. **READ** (동기): Sub-A가 2종 DB에서 현재 상태, 관련 로어북을 검색하여 프롬프트에 주입
+2. **WRITE** (비동기): Sub-B가 LLM 응답의 State Block을 파싱하여 2종 DB를 갱신
 
 이 순환이 매 턴 반복되므로, DB는 항상 최신 세계 상태를 반영하고, 다음 턴의 검색은 갱신된 상태를 기반으로 동작한다.
 
@@ -181,7 +180,7 @@ Swarm, Orchestrator, Skill 시스템 등 상위 아키텍처는 다양하지만,
 - YAML frontmatter로 **메타데이터 분리** (본문은 LLM이, 프론트매터는 코드가 읽음)
 - 텍스트 기반이라 **diff/캐싱 친화적** (git diff, Prompt Caching 모두 효율적)
 
-특히 Letta Code의 MemFS[[6]](#ref-6)는 주목할 만하다. Memory Block(단일 문자열)에서 진화하여, git 기반 마크다운 파일 시스템으로 에이전트 메모리를 관리한다 — SAGA의 .md 캐시(`state.md`, `relations.md`, `story.md`, `lore.md` + YAML frontmatter)와 매우 유사한 구조다. 차이는 **편집 주체**: MemFS는 에이전트가 LLM 호출로 편집하고, SAGA는 코드 로직(Sub-B)이 밀리초 단위로 편집한다.
+특히 Letta Code의 MemFS[[6]](#ref-6)는 주목할 만하다. Memory Block(단일 문자열)에서 진화하여, git 기반 마크다운 파일 시스템으로 에이전트 메모리를 관리한다 — SAGA의 .md 캐시(`stable_prefix.md`, `live_state.md` + YAML frontmatter)와 매우 유사한 구조다. 차이는 **편집 주체**: MemFS는 에이전트가 LLM 호출로 편집하고, SAGA는 코드 로직(Sub-B)이 밀리초 단위로 편집한다.
 
 SAGA의 .md 캐시는 임의적 선택이 아니라, **에이전트 생태계 전체가 수렴하고 있는 패턴의 RP 도메인 적용**이다.
 
@@ -212,27 +211,25 @@ SAGA의 .md 캐시는 임의적 선택이 아니라, **에이전트 생태계 �
 
 | | 일반 RAG | Stateful RAG (SAGA) |
 |---|---------|-------------------|
-| 검색 대상 | 정적 문서 | 매 턴 갱신되는 3종 DB |
+| 검색 대상 | 정적 문서 | 매 턴 갱신되는 2종 DB |
 | 쓰기 | 없음 (읽기 전용) | 매 턴 비동기 DB 갱신 |
-| 검색 방식 | 벡터 유사도 | 벡터 + 그래프 N-hop 확장 + 규칙 게이트 |
-| 상태 구조 | 비구조적 텍스트 | 그래프 노드/엣지 (Character, Location, Item, Event, Lore) |
-| 로어북 | 정적 | 동적 감쇠 + 레이어 우선순위 |
+| 검색 방식 | 벡터 유사도 | 벡터 유사도 + SQLite 상태 조회 |
+| 상태 구조 | 비구조적 텍스트 | SQLite 테이블 (characters, relationships, locations, events, lore) |
+| 로어북 | 정적 | 동적 감쇠 + 우선순위 필터링 |
 
-### Graph RAG: 벡터 검색의 한계 보완
+### 에피소드 검색: 3-stage ChromaDB + SQLite 로어 조회
 
-벡터 유사도 검색만으로는 "에르겐이 알고 있는 것" 같은 관계 기반 질의에 취약하다 [[3]](#ref-3). SAGA는 이 문제를 ChromaDB 벡터 검색 결과에서 Kuzu 노드를 찾아 N-hop 확장한 뒤 추가 검색을 수행하는 방식으로 해결한다.
+에피소드 기억은 ChromaDB 3-stage 검색으로 가져온다: Recent(최근 턴), Important(중요도 높은 에피소드), Similar(현재 맥락과 유사한 에피소드)를 각각 검색한 뒤 병합한다. 로어북은 SQLite lore 테이블 조회와 ChromaDB 벡터 검색을 함께 사용한다.
 
 ```
-ChromaDB 검색: "어둠의 숲" → [어둠의 숲, 고블린왕 크룩, ...]
-                                      │
-Kuzu N-hop 확장 (max_hop=2):          ▼
-    어둠의 숲 ──ADJACENT──▶ 마을 광장
-    어둠의 숲 ──HAS_LORE──▶ 대붕괴
-    크룩 ──RELATES_TO──▶ 아리아
-    크룩 ──LOCATED_AT──▶ 어둠의 숲
+ChromaDB 3-stage 에피소드 검색:
+    Stage 1 (Recent):    최근 N턴 에피소드
+    Stage 2 (Important): importance_score 상위 에피소드
+    Stage 3 (Similar):   현재 user_input과 유사도 높은 에피소드
                     │
-ChromaDB 재검색:    ▼
-    [대붕괴, 마을 광장, ...] → 병합 + 중복 제거
+로어 조회:          ▼
+    SQLite lore 테이블 (priority 기반 필터)
+    + ChromaDB 벡터 검색 → 병합 + 중복 제거
 ```
 
 ### Context Engineering: 토큰 예산 내 우선순위 패킹
@@ -241,9 +238,8 @@ ChromaDB 재검색:    ▼
 
 | 항목 | 기본 예산 | 설명 |
 |------|----------|------|
-| .md 캐시 | 600 tok | state/relations/story/lore 4파일 (프롬프트 캐싱 프리픽스) |
+| .md 캐시 | 600 tok | stable_prefix.md + live_state.md 2파일 (프롬프트 캐싱 프리픽스) |
 | 로어북 | 800 tok | 동적 필터링된 로어북 엔트리 |
-| 그래프 컨텍스트 | 300 tok | N-hop 확장 결과 |
 | 상태 브리핑 | 200 tok | 최신 상태 델타 (위치, HP, 인벤토리) |
 | State Block 지시 | 100 tok | LLM에게 상태 블록 출력을 요청하는 지시문 |
 
@@ -264,16 +260,15 @@ flowchart LR
     Flash["LLM API<br/>(Flash extraction)"]
     Curator["Curator<br/>(N턴마다 비동기)"]
 
-    SQLite["SQLite<br/>(상태 KV)"]
-    Kuzu["Kuzu<br/>(그래프)"]
+    SQLite["SQLite<br/>(상태+관계+이벤트+로어)"]
     Chroma["ChromaDB<br/>(벡터)"]
-    Cache[".md 캐시<br/>state / relations / story / lore"]
+    Cache[".md 캐시<br/>stable_prefix / live_state"]
 
     %% 요청 흐름
     Client -- "POST /v1/chat/completions" --> Proxy
     Proxy -- "1. 컨텍스트 조립" --> SubA
     SubA -. "읽기" .-> Cache
-    SubA -. "읽기" .-> Kuzu
+    SubA -. "읽기" .-> SQLite
     SubA -. "읽기" .-> Chroma
 
     Proxy -- "2. LLM 호출" --> LLM
@@ -286,7 +281,6 @@ flowchart LR
 
     SubB -- "파싱 실패 시" --> Flash
     SubB -- "쓰기" --> SQLite
-    SubB -- "쓰기" --> Kuzu
     SubB -- "쓰기" --> Chroma
     SubB -- "원자적 갱신" --> Cache
 ```
@@ -297,15 +291,15 @@ flowchart LR
 
 ```
 1. 세션 ID 추출 (시스템 메시지 MD5 해시 앞 8자)
-2. 세션 존재 확인 → 없으면 WorldLoader로 초기화 (Kuzu + ChromaDB + .md 캐시 부트스트랩)
+2. 세션 존재 확인 → 없으면 WorldLoader로 초기화 (SQLite + ChromaDB + .md 캐시 부트스트랩)
 3. [동기] Sub-A: Context Builder (~35ms)
-   → .md 캐시 읽기 → 병렬 Kuzu/ChromaDB 조회 → 하이브리드 리랭킹 → 로어북 필터 → 예산 내 조립
+   → .md 캐시 읽기 → ChromaDB 에피소드 검색 + SQLite 로어 조회 → 예산 내 조립
 4. 프롬프트 캐싱 적용 (Anthropic cache_control: ephemeral)
 5. LLM 1회 호출 (내레이션 모델)
 6. State Block 제거 후 클라이언트에 응답 반환
 7. 턴 카운터 증가
 8. [비동기] Sub-B: Post-Turn Extractor
-   → State Block 파싱 → Kuzu/SQLite/ChromaDB 갱신 → .md 캐시 원자적 교체
+   → State Block 파싱 → SQLite 갱신 + ChromaDB 에피소드 기록 → .md 캐시 원자적 교체
 9. [비동기, N턴마다] Curator
    → 모순 탐지 → 서사 압축 → 이벤트 스케줄링
 ```
@@ -323,22 +317,16 @@ Sub-A는 유저 요청이 올 때마다 실행되어 동적 컨텍스트를 조�
 **파이프라인:**
 
 ```
-Phase 0: .md 캐시 읽기 + 신선도 검사
-  │  (캐시 턴 vs 현재 턴, |diff| ≤ 1이면 fresh)
+1. stable_prefix.md 읽기 (캐시됨, 거의 안 변함)
   ▼
-Phase 1: 병렬 DB 조회
-  │  asyncio.gather(Kuzu 플레이어 컨텍스트, ChromaDB 벡터 검색)
+2. live_state.md 읽기 (매 턴 갱신)
   ▼
-Phase 2: Graph x Vector 하이브리드 리랭킹
-  │  ChromaDB 결과 → Kuzu 노드 매칭 → N-hop 확장 → 재검색 → 병합
+3. ChromaDB 3-stage 에피소드 검색 (Recent + Important + Similar)
   ▼
-Phase 3: 다이나믹 로어북 필터링
-  │  레이어 우선순위 + 위치/NPC 게이트 + 감쇠 + 예산 컷오프
+4. SQLite 로어 조회 + ChromaDB 벡터 검색
   ▼
-Phase 4: 토큰 예산 내 조립
-  │  상태 델타 + 그래프 연결 + 로어북 + 이벤트 + State Block 지시
-  ▼
-출력: { cached_prefix, dynamic_suffix }
+5. 토큰 예산 내 조립
+출력: { md_prefix (stable), dynamic_suffix (live + episodes + lore) }
 ```
 
 **출력 형식:**
@@ -347,15 +335,16 @@ Sub-A의 결과는 시스템 메시지에 주입된다:
 
 ```
 [--- SAGA Dynamic Context ---]
-{cached_prefix}       ← .md 캐시 4파일 (프롬프트 캐싱 대상)
+{md_prefix}       ← stable_prefix.md (프롬프트 캐싱 대상)
 
-[최신 변경]
+[현재 상태]         ← live_state.md
 위치: 어둠의 숲 | HP: 85/100 | 인벤토리: 불꽃 검, 치유 물약
 
-[관련 연결]
-어둠의 숲(location) → 고블린왕 크룩(character) → 고대 유적(location)
+[관련 에피소드]     ← ChromaDB 3-stage 검색 결과
+- Turn 3 | 어둠의 숲 진입, 고블린 족장과 조우
+- Turn 1 | 마을 광장에서 의뢰 수락
 
-[관련 로어북]
+[관련 로어북]       ← SQLite lore + ChromaDB 벡터 검색
 - 어둠의 숲: 에르시아 변방의 위험한 숲...
 - 대붕괴: 300년 전 마법 재앙...
 
@@ -379,22 +368,21 @@ Sub-A의 결과는 시스템 메시지에 주입된다:
    │  정규식: ```state ... ``` 블록 추출
    │  실패 시 → 경량 LLM (gemini-2.0-flash 등) 폴백 추출
    ▼
-2. Kuzu 그래프 갱신
+2. SQLite 상태 테이블 갱신
    │  위치 이동 → create_location() + update_character_location()
    │  NPC 등장 → create_character() + create_relationship()
    │  관계 변화 → update_relationship()
-   │  아이템 획득/소실/이전 → create_item() + add/remove/transfer_ownership()
-   │  HP 변화 → update_character_hp() (0~max_hp 클램핑)
+   │  HP 변화 → update_character_hp()
+   │  아이템 → world_state KV 갱신
    ▼
-3. SQLite 갱신
-   │  world_state KV 업서트 (player_location, player_mood)
+3. SQLite 턴 로그 기록
    │  turn_log 기록 (state_block, user_input, response, token_count)
    ▼
 4. ChromaDB 에피소드 기록
    │  "Turn 5 | 장소: 어둠의 숲 | 만남: 고블린 족장 | 획득: 불꽃 검"
    ▼
-5. .md 캐시 원자적 갱신
-   │  4파일 각각 .tmp 작성 → os.replace() 원자적 교체
+5. live_state.md 원자적 갱신
+   │  .tmp 작성 → os.replace() 원자적 교체
 ```
 
 **State Block 형식 (LLM 출력):**
@@ -441,47 +429,45 @@ Curator는 Letta의 자기편집 패턴을 **비동기 후처리에서만** 사�
 
 ## 7. 스토리지 설계
 
-### 4종 스토리지 역할
+### 3종 스토리지 역할
 
 | 스토리지 | 역할 | 특성 | 경로 |
 |---------|------|------|------|
-| **SQLite** | 세션 메타, 턴 로그, world_state KV, 이벤트 큐 | 트랜잭션, 빠른 KV 조회 | `db/state.db` |
-| **Kuzu** (그래프 DB) | 캐릭터/장소/아이템/이벤트/로어 노드 + 관계 엣지 | 관계 쿼리, N-hop 확장 | `db/graph.kuzu` |
+| **SQLite** | 세션 메타, 턴 로그, world_state KV, 이벤트 큐, **캐릭터, 관계, 장소, 이벤트, 로어** | 트랜잭션, 빠른 조회 | `db/state.db` |
 | **ChromaDB** (벡터 DB) | 로어북 시맨틱 검색, 에피소드 기억 | 벡터 유사도 검색 | `db/chroma/` |
-| **.md 캐시** | state/relations/story/lore 4파일 | 프롬프트 캐싱 프리픽스, 원자적 쓰기 | `cache/sessions/{session_id}/` |
+| **.md 캐시** | stable_prefix.md + live_state.md 2파일 | 프롬프트 캐싱 프리픽스, 원자적 쓰기 | `cache/sessions/{session_id}/` |
 
-### Kuzu 그래프 스키마
+### SQLite 테이블 스키마
 
-**5개의 노드** (예시입니다. 확장할 수 있습니다):
-
-| 노드 | 주요 속성 | 용도 |
-|------|----------|------|
-| **Character** | name, is_player, hp, max_hp, location, mood, status, traits | PC + NPC |
-| **Location** | name, loc_type, description, properties | 장소, 던전 |
-| **Item** | name, item_type, description, properties | 장비, 소비품 |
-| **Event** | name, event_type, description, turn | 세계 이벤트, 퀘스트 |
-| **Lore** | name, lore_type, layer (A1~A4) | 로어북 엔트리 |
-
-**8개의 엣지** (예시입니다. 확장할 수 있습니다):
-
-| 엣지 | From → To | 속성 | 의미 |
-|------|-----------|------|------|
-| RELATES_TO | Character → Character | rel_type, strength | NPC 관계 (met, knows, hostile...) |
-| LOCATED_AT | Character → Location | since_turn | 현재 위치 |
-| OWNS | Character → Item | quantity, equipped | 소유/장착 |
-| ADJACENT | Location → Location | direction, cost, conditions | 지도 연결 |
-| INVOLVED_IN | Character → Event | role | 이벤트 참여 |
-| CAUSED | Event → Event | description | 인과 관계 |
-| RELATED | Lore → Lore | relation | 로어 간 연결 |
-| HAS_LORE | Location → Lore | — | 장소별 로어 |
-
-**노드 ID 형식:** `{session_id}_{entity_name}` (예: `abc123de_아리아`)
+| 테이블 | 주요 컬럼 | 용도 |
+|--------|----------|------|
+| **characters** | name, is_player, hp, max_hp, location, mood, status, traits | PC + NPC 상태 |
+| **relationships** | from_char, to_char, rel_type, strength | NPC 관계 |
+| **locations** | name, loc_type, description, properties | 장소 |
+| **events** | name, event_type, description, turn | 세계 이벤트, 퀘스트 |
+| **lore** | name, lore_type, priority, tags, content | 로어북 엔트리 |
+| **sessions** | session_id, world_name, created_at, turn_count | 세션 메타 |
+| **turn_log** | session_id, turn, state_block, user_input, response, token_count | 턴 로그 |
 
 ### .md 캐시와 프롬프트 캐싱
 
-.md 캐시 4파일은 프롬프트의 불변 프리픽스로 사용된다. Anthropic의 `cache_control: ephemeral`과 결합하면, 시스템 메시지 중 .md 캐시 부분은 동일 세션에서 캐싱되어 재전송 비용을 줄인다.
+.md 캐시 2파일은 프롬프트의 프리픽스로 사용된다. `stable_prefix.md`는 거의 변하지 않는 세계관/캐릭터 설정을 담아 프롬프트 캐싱의 주요 대상이 되고, `live_state.md`는 매 턴 갱신되는 현재 상태를 담는다. Anthropic의 `cache_control: ephemeral`과 결합하면, `stable_prefix.md` 부분은 동일 세션에서 캐싱되어 재전송 비용을 줄인다.
 
-**YAML Frontmatter 구조:**
+**YAML Frontmatter 구조 (stable_prefix.md):**
+
+```yaml
+---
+version: 1
+session_id: abc123de
+world: my_world
+updated_at: "2026-02-22T10:30:45.123456"
+---
+
+## 세계관 설정
+...
+```
+
+**YAML Frontmatter 구조 (live_state.md):**
 
 ```yaml
 ---
@@ -503,21 +489,23 @@ changed: [location, hp, inventory, npcs, relationships]
 
 ## 8. 다이나믹 로어북
 
-### 레이어 시스템
+### 우선순위 시스템
 
-| 레이어 | 우선순위 | 감쇠 | 용도 | 예시 |
-|-------|---------|-----|------|------|
-| **A1** | 최고 (0) | 없음 | 핵심 세계관, 주요 장소, 역사 | 어둠의 숲, 고대 열쇠, 대붕괴 |
-| **A2** | 높음 (1) | 없음 | 주요 아이템, 활성 장소 | 마을 광장, 불꽃 검 |
-| **A3** | 보통 (3) | 7턴 | 세력, 배경 설정 | 은빛 성채, 숲의 결사, 치유 물약 |
-| **A4** | 낮음 (4) | 3턴 | 숨겨진 비밀, 스포일러 | 에르겐의 비밀, 고블린왕의 목적 |
+SQLite lore 테이블의 `priority` 컬럼으로 로어북 엔트리의 중요도를 관리한다.
 
-감쇠는 "마지막 언급 이후 경과 턴"으로 계산된다. A4 엔트리가 3턴 동안 언급되지 않으면 필터링에서 제외된다.
+| priority | 감쇠 | 용도 | 예시 |
+|---------|-----|------|------|
+| **0** (최고) | 없음 | 핵심 세계관, 주요 장소, 역사 | 어둠의 숲, 고대 열쇠, 대붕괴 |
+| **1** (높음) | 없음 | 주요 아이템, 활성 장소 | 마을 광장, 불꽃 검 |
+| **3** (보통) | 7턴 | 세력, 배경 설정 | 은빛 성채, 숲의 결사, 치유 물약 |
+| **4** (낮음) | 3턴 | 숨겨진 비밀, 스포일러 | 에르겐의 비밀, 고블린왕의 목적 |
+
+감쇠는 "마지막 언급 이후 경과 턴"으로 계산된다. priority 4 엔트리가 3턴 동안 언급되지 않으면 필터링에서 제외된다.
 
 ### 필터링 파이프라인
 
 ```
-ChromaDB 벡터 후보 (n_results=10)
+SQLite lore 조회 + ChromaDB 벡터 후보 (n_results=10)
         │
         ▼
   ┌─────────────────────┐
@@ -527,19 +515,19 @@ ChromaDB 벡터 후보 (n_results=10)
   └─────────┬───────────┘
             ▼
   ┌─────────────────────┐
-  │  4. 감쇠 검사        │  A4: skip if > 3턴, A3: skip if > 7턴
+  │  4. 감쇠 검사        │  priority 4: skip if > 3턴, priority 3: skip if > 7턴
   └─────────┬───────────┘
             ▼
   ┌─────────────────────┐
-  │  5. 레이어 부스트     │  (4 - priority) × 0.5
-  │     A1: +2.0         │  (A1이 가장 높은 부스트)
-  │     A2: +1.5         │
-  │     A3: +0.5         │
-  │     A4: +0.0         │
+  │  5. 우선순위 부스트   │  (4 - priority) × 0.5
+  │     priority 0: +2.0 │  (priority 0이 가장 높은 부스트)
+  │     priority 1: +1.5 │
+  │     priority 3: +0.5 │
+  │     priority 4: +0.0 │
   └─────────┬───────────┘
             ▼
   ┌─────────────────────┐
-  │  6. 중복 제거 + 정렬  │  score desc, then layer priority asc
+  │  6. 중복 제거 + 정렬  │  score desc, then priority asc
   └─────────┬───────────┘
             ▼
   ┌─────────────────────┐
@@ -547,11 +535,11 @@ ChromaDB 벡터 후보 (n_results=10)
   └─────────────────────┘
 ```
 
-**점수 계산 예시:** "어둠의 숲" 엔트리 (A1, 플레이어가 어둠의 숲에 위치)
+**점수 계산 예시:** "어둠의 숲" 엔트리 (priority 0, 플레이어가 어둠의 숲에 위치)
 - 기본 점수: 0.0
 - 위치 게이트: +3.0 (tags에 "숲" 포함)
-- 레이어 부스트: +2.0 (A1: `(4-0) × 0.5`)
-- 감쇠: 없음 (A1은 감쇠 없음)
+- 우선순위 부스트: +2.0 (priority 0: `(4-0) × 0.5`)
+- 감쇠: 없음 (priority 0은 감쇠 없음)
 - **최종 점수: 5.0**
 
 ---
@@ -715,18 +703,17 @@ token_budget:
   md_cache_max: 600             # .md 캐시 토큰
   lorebook_max: 800             # 로어북 토큰
   state_briefing_max: 200       # 상태 브리핑 토큰
-  graph_context_max: 300        # 그래프 컨텍스트 토큰
   state_block_instruction: 100  # State Block 지시 토큰
 
 md_cache:
   enabled: true
   cache_dir: "cache/sessions"
-  files: [state.md, relations.md, story.md, lore.md]
+  files: [stable_prefix.md, live_state.md]
   atomic_write: true
 
 prompt_caching:
   enabled: true
-  strategy: "md_prefix"         # .md 캐시를 프롬프트 프리픽스로
+  strategy: "md_prefix"         # stable_prefix.md를 프롬프트 프리픽스로
 
 curator:
   interval: 10                  # N턴마다 큐레이터 실행
@@ -738,15 +725,7 @@ curator:
   compress_story_after_turns: 50
 
 dynamic_lorebook:
-  character_layers: ["A1", "A2", "A3", "A4"]
   decay_threshold: 5
-  propagation_depth: 2          # 그래프 관계 전파 깊이
-
-graph:
-  db_path: "db/graph.kuzu"
-  mode: "on-disk"
-  max_hop: 3                    # N-hop 확장 최대 깊이
-  hybrid_rerank: true           # Graph x Vector 하이브리드 리랭킹
 
 session:
   auto_save: true
@@ -780,13 +759,12 @@ POST /v1/chat/completions
 | `/api/sessions` | GET | 세션 목록 |
 | `/api/sessions` | POST | 세션 생성 |
 | `/api/sessions/{id}/state` | GET | 세션 상태 + world_state KV |
-| `/api/sessions/{id}/graph` | GET | 그래프 요약 |
 | `/api/sessions/{id}/cache` | GET | .md 캐시 상태 |
-| `/api/sessions/{id}/cache/regen` | POST | .md 캐시 재생성 |
 | `/api/sessions/{id}/turns` | GET | 턴 로그 조회 (from_turn, to_turn 파라미터) |
 | `/api/sessions/{id}/reset` | POST | 세션 초기화 |
 | `/api/memory/search` | GET | 벡터 메모리 검색 (`q`, `session` 파라미터) |
-| `/api/graph/query` | GET | Kuzu Cypher 직접 쿼리 (`cypher` 파라미터) |
+| `/api/graph/query` | GET | 상태 데이터 조회 (캐릭터/관계/이벤트) |
+| `/api/reset-all` | POST | 전체 초기화 (SQLite + ChromaDB + 캐시) |
 
 ---
 
@@ -813,7 +791,7 @@ POST /v1/chat/completions
 ```markdown
 ## 엔트리명
 - 타입: location / item / character / faction / event
-- 레이어: A1 / A2 / A3 / A4
+- 우선순위: 0 (최고) / 1 (높음) / 3 (보통) / 4 (낮음)
 - 태그: 태그1, 태그2, 태그3
 
 엔트리 본문. 세계관 설정, 장소 묘사, 아이템 설명 등.
@@ -823,7 +801,7 @@ POST /v1/chat/completions
 
 세계관 전체 설명. 장르, 톤, 규칙, 세력, 화폐 등을 자유 형식으로 작성한다.
 
-세션 생성 시 WorldLoader가 이 파일들을 파싱하여 Kuzu + ChromaDB에 자동 로드한다.
+세션 생성 시 WorldLoader가 이 파일들을 파싱하여 SQLite + ChromaDB에 자동 로드한다.
 
 ---
 
@@ -843,17 +821,15 @@ saga/
     post_turn.py           # Sub-B: 비동기 상태 추출 + DB 갱신
     curator.py             # 큐레이터: N턴마다 서사 관리
   storage/
-    sqlite_db.py           # SQLite (세션, 턴 로그, 이벤트 큐)
-    graph_db.py            # Kuzu 그래프 DB (5개의 노드, 8개의 엣지)
+    sqlite_db.py           # SQLite (세션, 턴 로그, 캐릭터, 관계, 장소, 이벤트, 로어)
     vector_db.py           # ChromaDB (로어북, 에피소드)
-    md_cache.py            # .md 파일 캐시 (원자적 읽기/쓰기)
+    md_cache.py            # .md 파일 캐시 (stable_prefix + live_state)
   lorebook/
-    dynamic_filter.py      # 다이나믹 로어북 필터 (레이어 + 게이트 + 감쇠)
+    dynamic_filter.py      # 다이나믹 로어북 필터 (우선순위 + 게이트 + 감쇠)
   world/
     loader.py              # 월드 데이터 로더 (CHARACTERS/LOREBOOK/WORLD.md)
   adapters/
     curator_adapter.py     # 큐레이터 어댑터 (Letta Primary / Direct LLM Fallback)
-    graph_adapter.py       # 그래프 어댑터 (Kuzu / NetworkX)
   utils/
     parsers.py             # State Block 파서, .md 파서
     tokens.py              # tiktoken 기반 토큰 카운팅
@@ -868,7 +844,7 @@ tests/
 
 | Phase | 상태 | 내용 |
 |-------|------|------|
-| **Phase 1** | 완료 | 코어 프록시 + 3-Agent 파이프라인 + 3종 DB |
+| **Phase 1** | 완료 | 코어 프록시 + 3-Agent 파이프라인 + 2종 DB |
 | **Phase 2** | 완료 | 다이나믹 로어북 + .md 캐시 + 프롬프트 캐싱 |
 | **Phase 3** | 완료 | LLM-as-a-Judge 평가 + 크로스 프로바이더 저지 + 네거티브 캘리브레이션 |
 | **Phase 4** | 예정 | 모듈 시스템 (RPG 스탯, 맵 그래프) |
@@ -888,7 +864,7 @@ tests/
 **[2]** 코히바블랙. (2025). *Letta를 이용한 장기기억 향상 및 AI 채팅 경험 향상 연구 초록.* [arca.live AI 채팅 채널](https://arca.live/b/characterai/162255622). — Letta Step Loop를 RP 도메인에 적용한 실전 적용기. 에이전트가 다회 호출로 Memory Block을 자기편집하는 접근 방식의 효과와 한계를 실증. SAGA가 "프록시 기반 1회 호출" 아키텍처를 선택하게 된 직접적 벤치마크.
 
 <a id="ref-3"></a>
-**[3]** Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S., & Larson, J. (2024). *From Local to Global: A Graph RAG Approach to Query-Focused Summarization.* arXiv:2404.16130. — 벡터 검색에 그래프 커뮤니티 구조를 결합하여 글로벌 질의에 대한 RAG 품질을 향상. SAGA의 Kuzu N-hop 확장 + ChromaDB 하이브리드 리랭킹의 이론적 기반. https://arxiv.org/abs/2404.16130
+**[3]** Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S., & Larson, J. (2024). *From Local to Global: A Graph RAG Approach to Query-Focused Summarization.* arXiv:2404.16130. — 벡터 검색에 그래프 커뮤니티 구조를 결합하여 글로벌 질의에 대한 RAG 품질을 향상. SAGA의 SQLite + ChromaDB 조합 설계의 이론적 참고. https://arxiv.org/abs/2404.16130
 
 <a id="ref-4"></a>
 **[4]** Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V., Goyal, N., ... & Kiela, D. (2020). *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks.* NeurIPS 2020. arXiv:2005.11401. — 외부 지식을 검색하여 생성에 활용하는 RAG 패러다임의 원형. https://arxiv.org/abs/2005.11401
@@ -897,16 +873,16 @@ tests/
 **[5]** Zheng, L., Chiang, W. L., Sheng, Y., Zhuang, S., Wu, Z., Zhuang, Y., ... & Stoica, I. (2023). *Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena.* NeurIPS 2023. arXiv:2306.05685. — LLM을 평가자로 활용하는 방법론과 그 편향 분석. SAGA의 크로스 프로바이더 저지 설계에 참고. https://arxiv.org/abs/2306.05685
 
 <a id="ref-6"></a>
-**[6]** Letta. (2025). *MemFS: Memory as a File System.* Letta Documentation. — 에이전트 메모리를 git 기반 마크다운 파일 시스템으로 관리하는 접근. Memory Block에서 진화하여 YAML frontmatter + 마크다운 파일 구조를 채택. SAGA의 .md 캐시 4파일 설계의 직접적 참고점. https://docs.letta.com/letta-code/memory
+**[6]** Letta. (2025). *MemFS: Memory as a File System.* Letta Documentation. — 에이전트 메모리를 git 기반 마크다운 파일 시스템으로 관리하는 접근. Memory Block에서 진화하여 YAML frontmatter + 마크다운 파일 구조를 채택. SAGA의 .md 캐시 2파일 (stable_prefix + live_state) 설계의 직접적 참고점. https://docs.letta.com/letta-code/memory
 
 ### 사용 기술
 
 | 기술 | 용도 | 참고 |
 |------|------|------|
-| **Kuzu** | 임베디드 그래프 DB (Cypher 쿼리) | https://kuzudb.com |
 | **ChromaDB** | 임베디드 벡터 DB (시맨틱 검색) | https://www.trychroma.com |
+| **SQLite** | 임베디드 관계형 DB (상태, 로어, 이벤트) | https://www.sqlite.org |
 | **Letta** (구 MemGPT) | Curator Memory Block 어댑터 | https://www.letta.com |
-| **Anthropic Prompt Caching** | .md 캐시 프리픽스 캐싱 | https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching |
+| **Anthropic Prompt Caching** | stable_prefix.md 캐싱 | https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching |
 | **FastAPI** | 프록시 서버 프레임워크 | https://fastapi.tiangolo.com |
 | **tiktoken** | 토큰 카운팅 | https://github.com/openai/tiktoken |
 

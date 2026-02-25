@@ -2,7 +2,6 @@
 import uuid
 import logging
 from saga.storage.sqlite_db import SQLiteDB
-from saga.storage.graph_db import GraphDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.world.loader import WorldLoader
@@ -11,13 +10,12 @@ logger = logging.getLogger(__name__)
 
 
 class SessionManager:
-    def __init__(self, sqlite_db: SQLiteDB, graph_db: GraphDB, vector_db: VectorDB, md_cache: MdCache, config):
+    def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, config):
         self.sqlite_db = sqlite_db
-        self.graph_db = graph_db
         self.vector_db = vector_db
         self.md_cache = md_cache
         self.config = config
-        self.world_loader = WorldLoader(graph_db, vector_db, md_cache)
+        self.world_loader = WorldLoader(sqlite_db, vector_db, md_cache)
 
     async def get_or_create_session(self, session_id: str | None = None) -> dict:
         """Get existing session or create new one."""
@@ -48,7 +46,6 @@ class SessionManager:
     async def reset_session(self, session_id: str):
         """Reset session: clear DB data and .md cache."""
         await self.sqlite_db.reset_session(session_id)
-        self.graph_db.delete_session_data(session_id)
         self.vector_db.delete_session_data(session_id)
         # Re-bootstrap
         import os

@@ -1,6 +1,6 @@
 # 구조 제안 — RP 장기 세션의 상태 유실 문제를 프록시로 풀어보기
 
-**SAGA RP Agent Proxy v3.0 — Stateful Graph RAG 기반 Context Engineering**
+**SAGA RP Agent Proxy v3.0 — Stateful RAG 기반 Context Engineering**
 
 ---
 
@@ -122,7 +122,7 @@ SAGA도 같은 철학입니다. Letta(Stateful Agent), ChromaDB(벡터 검색), 
 | **OpenClaw** | Gateway/프록시 | `.md` 기반 컨텍스트 주입 |
 | **Codex** | CLI 에이전트 | `AGENTS.md`, 마크다운 기반 지시 |
 | **Letta Code** | 에이전트 프레임워크 | `memory/*.md` + YAML frontmatter (MemFS)[3] |
-| **SAGA** | Gateway/프록시 | `state.md`, `relations.md`, `story.md`, `lore.md` |
+| **SAGA** | Gateway/프록시 | `stable_prefix.md`, `live_state.md` |
 
 Swarm이든, Orchestrator든, Skill 시스템이든 — 상위 구조는 다 달라도 에이전트에게 컨텍스트를 전달하는 최종 형식은 마크다운으로 수렴하고 있습니다. 왜일까요?
 
@@ -131,7 +131,7 @@ Swarm이든, Orchestrator든, Skill 시스템이든 — 상위 구조는 다 달
 - **YAML frontmatter로 메타데이터 분리**: 본문은 LLM이 읽고, 프론트매터는 코드가 읽음
 - **diff/캐싱 친화적**: 텍스트 기반이라 git diff, Prompt Caching 모두 효율적
 
-SAGA의 .md 캐시 4파일은 이 흐름을 RP에 적용한 것이고, 그 중에서도 Letta Code의 MemFS가 가장 직접적인 참고점이었습니다.
+SAGA의 .md 캐시 2파일은 이 흐름을 RP에 적용한 것이고, 그 중에서도 Letta Code의 MemFS가 가장 직접적인 참고점이었습니다.
 
 ### 그래서 Letta는 Curator 전담으로
 
@@ -151,17 +151,17 @@ memory/
 
 각 파일에 YAML frontmatter가 붙고, 에이전트가 `create_file`, `modify_file` 같은 도구로 자기편집합니다. git이 버전 관리를 담당합니다.
 
-SAGA의 **.md 캐시 4파일** 설계는 이 구조에서 직접 영향을 받았습니다:
+SAGA의 **.md 캐시 2파일** 설계는 이 구조에서 직접 영향을 받았습니다:
 
 | | Letta MemFS | SAGA .md 캐시 |
 |---|---|---|
 | 형식 | 마크다운 + YAML frontmatter | 마크다운 + YAML frontmatter |
-| 파일 구조 | `memory/project_overview.md` 등 | `state.md`, `relations.md`, `story.md`, `lore.md` |
+| 파일 구조 | `memory/project_overview.md` 등 | `stable_prefix.md`, `live_state.md` |
 | 버전 관리 | git (커밋 기반) | YAML frontmatter의 `updated_at`, `turn` 필드 |
 | 편집 주체 | **에이전트** (`modify_file` 도구) | **코드** (정규식 파싱 → `os.replace()` 원자적 교체) |
 | 편집 비용 | LLM 호출 필요 | LLM 호출 불필요 |
 
-차이는 **"누가 편집하는가"** 입니다. Letta MemFS는 에이전트가 파일을 읽고 판단하고 편집합니다. SAGA는 같은 구조를 쓰되, **매 턴 편집은 코드 로직(Sub-B)에게 위임**합니다. 대신 **N턴마다 Letta Curator가 .md 캐시를 큐레이션**합니다 — story.md 압축, 모순 수정 등.
+차이는 **"누가 편집하는가"** 입니다. Letta MemFS는 에이전트가 파일을 읽고 판단하고 편집합니다. SAGA는 같은 구조를 쓰되, **매 턴 편집은 코드 로직(Sub-B)에게 위임**합니다. 대신 **N턴마다 Letta Curator가 .md 캐시를 큐레이션**합니다 — `live_state.md` 압축, 모순 수정 등.
 
 > 정리하면: Letta의 Memory Block은 Curator의 두뇌이고,
 > Letta의 MemFS 패턴은 .md 캐시의 설계 원형입니다.
@@ -201,9 +201,8 @@ SAGA는 **OpenAI-compatible 프록시**입니다. 클라이언트(RisuAI, SillyT
 
 ```
                     ┌──────────────────────────────┐
-                    │         3계층 DB 저장소          │
-                    │  Kuzu(그래프) + ChromaDB(벡터)  │
-                    │      + SQLite(상태 KV)         │
+                    │         2종 DB 저장소           │
+                    │  SQLite(상태) + ChromaDB(벡터)  │
                     └──────┬───────────────┬────────┘
                    READ    │               │  WRITE
                 (동기 ~35ms)│               │(비동기)
@@ -220,62 +219,61 @@ SAGA는 **OpenAI-compatible 프록시**입니다. 클라이언트(RisuAI, SillyT
                                     └──────────────┘
 ```
 
-1. **READ** (동기, ~35ms): Sub-A가 3계층 DB에서 현재 상태, 관련 로어북, 그래프 연결을 검색 → 프롬프트에 주입
+1. **READ** (동기, ~35ms): Sub-A가 2종 DB에서 현재 상태, 관련 로어북을 검색 → 프롬프트에 주입
 2. LLM 1회 호출 → 유저에게 응답 반환
-3. **WRITE** (비동기, 유저 대기 없음): Sub-B가 응답에서 상태 변화를 추출 → 3계층 DB 갱신
+3. **WRITE** (비동기, 유저 대기 없음): Sub-B가 응답에서 상태 변화를 추출 → 2종 DB 갱신
 
 이 순환이 매 턴 반복되므로, DB는 항상 최신 세계 상태를 반영합니다.
 
-### 왜 3계층 DB인가?
+### 왜 2종 DB인가?
 
-Letta는 에이전트의 메모리를 Core / Archival / Recall 3계층으로 나눕니다. SAGA는 이 구조를 에이전트 호출 없이 코드가 직접 접근하는 3계층 DB로 대체했습니다.
+Letta는 에이전트의 메모리를 Core / Archival / Recall 3계층으로 나눕니다. SAGA는 이 구조를 에이전트 호출 없이 코드가 직접 접근하는 2종 DB로 대체했습니다.
 
 | Letta 메모리 계층 | SAGA DB | 역할 | 예시 쿼리 |
 |---|---|---|---|
-| **Core Memory** (항상 로드) | **SQLite** (KV) | 현재 상태, 세션 메타 | "플레이어 위치는?" |
+| **Core Memory** (항상 로드) | **SQLite** | 현재 상태, 세션 메타, **캐릭터, 관계, 장소, 이벤트, 로어** | "플레이어 위치는?" "에르겐이 아는 사람은?" |
 | **Archival Memory** (임베딩 검색) | **ChromaDB** (벡터) | 로어북, 에피소드 기억 | "어둠의 숲과 비슷한 장소는?" |
-| **Recall Memory** (이력 검색) | **Kuzu** (그래프) | 관계, 연결 구조 | "에르겐이 아는 사람은?" |
 
-그리고 이 세 DB 위에 **.md 캐시 4파일**이 있습니다 — `state.md`, `relations.md`, `story.md`, `lore.md`. 이 파일들은 프롬프트의 캐싱 가능한 프리픽스로 사용되어, Anthropic의 Prompt Caching과 결합하면 비용을 크게 줄입니다.
+그리고 이 두 DB 위에 **.md 캐시 2파일**이 있습니다 — `stable_prefix.md`, `live_state.md`. 이 파일들은 프롬프트의 캐싱 가능한 프리픽스로 사용되어, Anthropic의 Prompt Caching과 결합하면 비용을 크게 줄입니다.
 
-### Kuzu 그래프
+### SQLite 관계 테이블
 
-SAGA는 Kuzu에 5개의 노드와 8개의 엣지를 정의합니다 (예시입니다. 확장할 수 있습니다):
+SAGA는 그래프 DB 대신 SQLite 테이블로 엔티티와 관계를 관리합니다 (예시입니다. 확장할 수 있습니다):
 
-```
-Character ──RELATES_TO──▶ Character     (관계: met, knows, hostile...)
-    │                        │
-    ├──LOCATED_AT──▶ Location ──ADJACENT──▶ Location
-    │                        │
-    ├──OWNS──▶ Item          ├──HAS_LORE──▶ Lore ──RELATED──▶ Lore
-    │                        │
-    └──INVOLVED_IN──▶ Event ──CAUSED──▶ Event
-```
+| 테이블 | 주요 컬럼 | 역할 |
+|---|---|---|
+| `characters` | name, location, hp, status | 캐릭터 현재 상태 |
+| `relationships` | from_char, to_char, rel_type, strength | 캐릭터 간 관계 |
+| `locations` | name, description, adjacent | 장소 및 인접 정보 |
+| `events` | turn, description, participants | 이벤트 이력 |
+| `lore` | keyword, content, category | 로어북 항목 |
 
-"아리아가 어둠의 숲에서 고블린왕 크룩을 만났다"는 것이 그래프에서는:
-- `아리아 ──LOCATED_AT──▶ 어둠의 숲`
-- `아리아 ──RELATES_TO(met)──▶ 크룩`
-- `크룩 ──LOCATED_AT──▶ 어둠의 숲`
+"아리아가 어둠의 숲에서 고블린왕 크룩을 만났다"는 것이 SQLite에서는:
+- `characters`: 아리아 → `location = 어둠의 숲`
+- `relationships`: (아리아, 크룩, met, -2)
+- `events`: Turn N | 아리아가 크룩과 조우
 
-으로 표현됩니다. 다음 턴에 "근처에 누가 있지?"라는 질문에 그래프 쿼리로 즉시 답할 수 있습니다.
+로 기록됩니다. "근처에 누가 있지?"는 `characters` 테이블 위치 필터 쿼리로 즉시 답할 수 있습니다.
 
-### Graph RAG: 벡터만으로는 부족하다
+### 에피소드 검색: 3-stage ChromaDB + SQLite
 
-ChromaDB 벡터 검색만으로는 "에르겐이 알고 있는 것" 같은 관계 기반 질의에 취약합니다[2]. 그래서 **하이브리드 리랭킹**을 씁니다:
+ChromaDB 벡터 검색과 SQLite 구조 쿼리를 조합하여 관련 컨텍스트를 수집합니다:
 
 ```
-ChromaDB 벡터 검색: "어둠의 숲" → [어둠의 숲, 고블린왕 크룩, ...]
-                                          │
-Kuzu N-hop 확장 (2단계):                   ▼
-    어둠의 숲 ──ADJACENT──▶ 마을 광장
-    어둠의 숲 ──HAS_LORE──▶ 대붕괴          ← 벡터만으로는 못 찾는 연결
-    크룩 ──RELATES_TO──▶ 아리아
-                    │
-ChromaDB 재검색:    ▼
-    [대붕괴, 마을 광장, ...] → 병합 + 중복 제거
+ChromaDB 3-stage 에피소드 검색:
+    ├─ Recent:    최근 N턴 에피소드 (시간 순서 보장)
+    ├─ Important: 중요도 점수 상위 에피소드
+    └─ Similar:   유저 입력 기반 벡터 유사도 검색
+
+SQLite 로어 조회:
+    ├─ characters: 현재 위치, HP, 상태
+    ├─ relationships: 관련 캐릭터 간 관계
+    └─ lore: 키워드 매칭 로어북 항목
+
+→ 병합 + 토큰 예산 내 우선순위 정렬
 ```
 
-벡터가 "비슷한 것"을 찾아주고, 그래프가 "연결된 것"을 확장해 줍니다.
+벡터가 "비슷한 에피소드"를 찾아주고, SQLite가 "현재 상태와 관계"를 구조적으로 제공합니다.
 
 ---
 
@@ -286,23 +284,18 @@ ChromaDB 재검색:    ▼
 유저 요청이 올 때마다 실행됩니다. **LLM을 호출하지 않으므로** 매우 빠릅니다.
 
 ```
-.md 캐시 읽기 (5ms) → 병렬 DB 조회 (30ms) → 로어북 필터 → 토큰 예산 내 조립
-                        │
-                        ├─ Kuzu: 플레이어 위치, HP, 인벤토리, 근처 NPC
-                        └─ ChromaDB: 유저 입력 기반 벡터 검색 → 그래프 확장 → 리랭킹
+stable_prefix.md 읽기 → live_state.md 읽기 → ChromaDB 3-stage 에피소드 검색
+→ SQLite 로어 조회 + ChromaDB 벡터 검색 → 토큰 예산 내 조립
 ```
 
 조립된 컨텍스트는 시스템 메시지에 주입됩니다:
 
 ```
 [--- SAGA Dynamic Context ---]
-(state.md + relations.md + story.md + lore.md)
+(stable_prefix.md)
 
 [최신 변경]
 위치: 어둠의 숲 | HP: 85/100 | 인벤토리: 불꽃 검, 치유 물약
-
-[관련 연결]
-어둠의 숲 → 고블린왕 크룩 → 고대 유적
 
 [관련 로어북]
 - 어둠의 숲: 에르시아 변방의 위험한 숲...
@@ -318,10 +311,10 @@ ChromaDB 재검색:    ▼
 응답이 유저에게 전달된 **뒤에** `asyncio.create_task`로 백그라운드 실행됩니다.
 
 1. LLM 응답에서 **State Block 파싱** (정규식 → 실패 시 경량 LLM으로 폴백 추출)
-2. Kuzu 그래프 갱신 (위치 이동, NPC 등장, 관계 변화, 아이템 획득/소실, HP 변화)
-3. SQLite 갱신 (world_state KV, turn_log)
+2. SQLite 상태 테이블 갱신 (characters, relationships, locations, events)
+3. SQLite 턴 로그 기록
 4. ChromaDB 에피소드 기록 ("Turn 5 | 어둠의 숲 | 만남: 고블린 족장")
-5. .md 캐시 원자적 갱신 (.tmp → `os.replace()` 원자적 교체)
+5. live_state.md 원자적 갱신 (.tmp → `os.replace()` 원자적 교체)
 
 **State Block**은 LLM에게 응답 끝에 출력하도록 요청하는 구조화된 블록입니다:
 
@@ -485,15 +478,15 @@ SAGA는 고비용 모델(Sonnet)은 내레이션에만, 경량 LLM은 추출에�
 
 1. **"어디에 에이전트를 두는가"가 아키텍처의 핵심**입니다. 전부 에이전트에게 맡기면 강력하지만 느리고, 전부 코드로 하면 빠르지만 경직됩니다. 에이전트의 판단력이 진짜 필요한 곳을 찾는 게 핵심이었습니다.
 
-2. **그래프 + 벡터 + KV, 셋 다 필요했습니다.** 관계는 그래프, 유사도는 벡터, 상태는 KV — 각각이 다른 질문에 답합니다.
+2. **SQLite + 벡터, 둘 다 필요했습니다.** 상태와 관계는 SQLite, 유사도 검색은 벡터 DB — 각각이 다른 질문에 답합니다. 그래프 DB(KuzuDB)는 초기에 사용했으나, 관계 데이터의 규모가 크지 않아 SQLite 테이블로 충분히 대체 가능했습니다.
 
 3. **State Block 의존은 양날의 검**입니다. 구조화된 추출이 가능하지만, LLM이 출력을 실수하면 모든 것이 무너집니다. 경량 LLM 폴백이 있지만, 근본적으로 "LLM의 출력 형식 준수"에 의존하는 건 불안 요소입니다.
 
 4. **비동기 처리가 핵심**이었습니다. 유저 대기 경로에서 무거운 작업을 빼는 것만으로 체감 성능이 달라집니다.
 
-5. **직접 만들지 말고 잘 엮어라.** Letta, ChromaDB, Kuzu — 각각 이미 잘 만들어진 도구입니다. SAGA의 가치는 새로운 DB나 메모리 시스템을 발명하는 게 아니라, 기존 도구들을 RP에 맞게 오케스트레이션하는 데 있습니다. Claude Code가 Bash와 grep을 조율하듯, SAGA는 그래프 DB와 벡터 DB와 Stateful Agent를 조율합니다.
+5. **직접 만들지 말고 잘 엮어라.** Letta, ChromaDB, SQLite — 각각 이미 잘 만들어진 도구입니다. SAGA의 가치는 새로운 DB나 메모리 시스템을 발명하는 게 아니라, 기존 도구들을 RP에 맞게 오케스트레이션하는 데 있습니다. Claude Code가 Bash와 grep을 조율하듯, SAGA는 SQLite와 벡터 DB와 Stateful Agent를 조율합니다.
 
-약 2주 후에 프로토타입을 공개할 예정입니다. 의견이나 제안이 있으시면 댓글로 남겨주세요. 같이 개발해 보고 싶으신 분도 편하게 연락 부탁드립니다.
+의견이나 제안이 있으시면 댓글로 남겨주세요. 같이 개발해 보고 싶으신 분도 편하게 연락 부탁드립니다.
 
 ---
 
