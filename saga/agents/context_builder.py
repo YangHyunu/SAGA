@@ -103,9 +103,19 @@ class ContextBuilder:
         merged = []
 
         for source, label in [(recent, "recent"), (important, "important"), (similar, "similar")]:
-            ids = source.get("ids", []) if isinstance(source.get("ids"), list) and not isinstance(source.get("ids", [[]])[0], list) else source.get("ids", [[]])[0]
-            docs = source.get("documents", []) if isinstance(source.get("documents"), list) and not isinstance(source.get("documents", [[]])[0], list) else source.get("documents", [[]])[0]
-            metas = source.get("metadatas", []) if isinstance(source.get("metadatas"), list) and not isinstance(source.get("metadatas", [[]])[0], list) else source.get("metadatas", [[]])[0]
+            if not source:
+                continue
+            # Handle both nested [[...]] and flat [...] formats from ChromaDB
+            raw_ids = source.get("ids", [])
+            raw_docs = source.get("documents", [])
+            raw_metas = source.get("metadatas", [])
+
+            ids = raw_ids[0] if raw_ids and isinstance(raw_ids[0], list) else raw_ids
+            docs = raw_docs[0] if raw_docs and isinstance(raw_docs[0], list) else raw_docs
+            metas = raw_metas[0] if raw_metas and isinstance(raw_metas[0], list) else raw_metas
+
+            if not ids:
+                continue
 
             for i, ep_id in enumerate(ids):
                 if ep_id in seen_ids:

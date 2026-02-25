@@ -54,7 +54,7 @@ class PostTurnExtractor:
                 await self.sqlite_db.insert_turn_log(session_id, turn_number, None, user_input=user_input, assistant_output=response_text)
                 return
 
-            # 2. Update Kuzu graph
+            # 2. Update Kuzu graph (sync — KuzuDB Connection is not thread-safe)
             await self._update_graph(session_id, state_block, turn_number)
 
             # 3. Record important events to graph
@@ -68,10 +68,10 @@ class PostTurnExtractor:
             # 5. Record episode to ChromaDB
             self._record_episode(session_id, turn_number, user_input, response_text, state_block)
 
-            # 5. Atomic .md cache update
+            # 6. Atomic .md cache update
             await self._update_md_cache(session_id, turn_number, state_block)
 
-            logger.info(f"[Sub-B] Turn {turn_number} post-processing complete")
+            logger.info(f"[Sub-B] Turn {turn_number} post-processing complete (importance={importance})")
 
         except Exception as e:
             logger.error(f"[Sub-B] Error processing turn {turn_number}: {e}", exc_info=True)
@@ -113,20 +113,22 @@ class PostTurnExtractor:
             return None
 
     async def _update_graph(self, session_id: str, state_block: dict, turn_number: int):
-        """Update Kuzu graph from state block."""
-        loop = asyncio.get_event_loop()
+        """Update Kuzu graph from state block.
 
+        All graph ops run synchronously in the event loop thread to avoid
+        KuzuDB connection thread-safety issues.
+        """
         # Location move
         if state_block.get("location_moved"):
             new_location = state_block.get("location", "")
             if new_location:
-                await loop.run_in_executor(None, self.graph_db.create_location, session_id, new_location)
-                await loop.run_in_executor(None, self.graph_db.update_character_location, session_id, "", new_location, turn_number)
+                self.graph_db.create_location(session_id, new_location)
+                self.graph_db.update_character_location(session_id, "", new_location, turn_number)
 
         # New NPCs met
         for npc_name in state_block.get("npc_met", []):
-            await loop.run_in_executor(None, self.graph_db.create_character, session_id, npc_name, False)
-            await loop.run_in_executor(None, self.graph_db.create_relationship, session_id, "", npc_name, "met", 30)
+            self.graph_db.create_character(session_id, npc_name, False)
+            self.graph_db.create_relationship(session_id, "", npc_name, "met", 30)
 
         # NPC separated
         for npc_name in state_block.get("npc_separated", []):
@@ -134,36 +136,37 @@ class PostTurnExtractor:
 
         # Relationship changes
         for change in state_block.get("relationship_changes", []):
-            await loop.run_in_executor(
-                None, self.graph_db.update_relationship,
-                session_id, change.get("from", ""), change.get("to", ""),
-                change.get("type", ""), change.get("delta", 0)
-            )
+            try:
+                self.graph_db.update_relationship(
+                    session_id, change.get("from", ""), change.get("to", ""),
+                    change.get("type", ""), change.get("delta", 0)
+                )
+            except Exception as e:
+                logger.warning(f"[Sub-B] update_relationship failed: {e}")
 
         # Items gained
         for item_name in state_block.get("items_gained", []):
-            await loop.run_in_executor(None, self.graph_db.create_item, session_id, item_name)
-            await loop.run_in_executor(None, self.graph_db.add_ownership, session_id, "", item_name)
+            self.graph_db.create_item(session_id, item_name)
+            self.graph_db.add_ownership(session_id, "", item_name)
 
         # Items lost
         for item_name in state_block.get("items_lost", []):
-            await loop.run_in_executor(None, self.graph_db.remove_ownership, session_id, "", item_name)
+            self.graph_db.remove_ownership(session_id, "", item_name)
 
         # Items transferred
         for transfer in state_block.get("items_transferred", []):
-            await loop.run_in_executor(
-                None, self.graph_db.transfer_item,
+            self.graph_db.transfer_item(
                 session_id, transfer.get("item", ""), "", transfer.get("to", "")
             )
 
         # HP change
         hp_delta = state_block.get("hp_change", 0)
         if hp_delta != 0:
-            await loop.run_in_executor(None, self.graph_db.update_character_hp, session_id, hp_delta)
+            self.graph_db.update_character_hp(session_id, hp_delta)
 
         # Mood
         if state_block.get("mood"):
-            await loop.run_in_executor(None, self.graph_db.update_character_mood, session_id, state_block["mood"])
+            self.graph_db.update_character_mood(session_id, state_block["mood"])
 
     async def _update_sqlite(self, session_id, state_block, turn_number, user_input, response_text):
         """Update SQLite tables."""
@@ -280,31 +283,23 @@ class PostTurnExtractor:
 
     async def _record_graph_event(self, session_id: str, state_block: dict, turn_number: int, importance: int):
         """Record high-importance episodes as Event nodes in the graph."""
-        loop = asyncio.get_event_loop()
         event_type = self._classify_episode(state_block)
         event_name = f"turn_{turn_number}_{event_type}"
         description = state_block.get("notes", "") or f"{event_type} at turn {turn_number}"
         entities = self._extract_entities(state_block)
 
-        await loop.run_in_executor(
-            None, self.graph_db.create_event,
+        self.graph_db.create_event(
             session_id, event_name, event_type, description, turn_number, importance, entities
         )
 
         # Link involved NPCs to the event
         for npc in state_block.get("npc_met", []):
-            await loop.run_in_executor(
-                None, self.graph_db.link_event_to_character,
-                session_id, event_name, npc, "met"
-            )
+            self.graph_db.link_event_to_character(session_id, event_name, npc, "met")
         for change in state_block.get("relationship_changes", []):
             for key in ("from", "to"):
                 name = change.get(key, "")
                 if name:
-                    await loop.run_in_executor(
-                        None, self.graph_db.link_event_to_character,
-                        session_id, event_name, name, "involved"
-                    )
+                    self.graph_db.link_event_to_character(session_id, event_name, name, "involved")
 
     async def _update_md_cache(self, session_id, turn_number, state_block):
         """Build fresh .md from DB and write atomically."""

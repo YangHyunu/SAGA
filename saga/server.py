@@ -248,54 +248,61 @@ def _extract_session_id(request: ChatCompletionRequest) -> str | None:
 def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix):
     """Build messages with 3-breakpoint prompt caching structure.
 
-    BP1: original system message (cache_control on the message itself)
-    BP2: .md cache block inserted as second system message
-    BP3: last assistant message in conversation history
-    Dynamic: prepended to last user message, outside cache
+    BP1: system prompt (절대 안 변함)
+    BP2: 대화 히스토리 중간 지점 (이전 턴 내용은 안 변함)
+    BP3: 대화 히스토리 마지막 assistant (직전 턴까지 안 변함)
+    Dynamic: md_prefix + dynamic_suffix → 캐시 안 함 (매턴 변하니까)
     """
     messages = list(original_messages)
-
-    # Find system message
     system_idx = next((i for i, m in enumerate(messages) if m["role"] == "system"), None)
-
     is_claude = "claude" in config.models.narration.lower()
 
     if system_idx is not None and is_claude and config.prompt_caching.enabled:
-        # === 3-BP Anthropic caching ===
 
-        # BP1: original system message (session-invariant)
+        # BP1: system prompt (세션 내내 동일)
         messages[system_idx] = dict(messages[system_idx])
         messages[system_idx]["cache_control"] = {"type": "ephemeral"}
 
-        # BP2: .md cache block (~1-turn refresh cycle)
+        # md_prefix + dynamic_suffix → 캐시 안 건다 (매턴 바뀌니까)
+        context_block = ""
         if md_prefix:
-            md_msg = {
-                "role": "system",
-                "content": f"[--- SAGA Context Cache ---]\n{md_prefix}",
-                "cache_control": {"type": "ephemeral"},
-            }
-            messages.insert(system_idx + 1, md_msg)
-
-        # BP3: last assistant message in conversation history
-        last_assistant_idx = None
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "assistant":
-                last_assistant_idx = i
-                break
-
-        if last_assistant_idx is not None:
-            messages[last_assistant_idx] = dict(messages[last_assistant_idx])
-            messages[last_assistant_idx]["cache_control"] = {"type": "ephemeral"}
-
-        # Dynamic context: prepend to last user message (outside cache)
+            context_block += f"[--- SAGA Context Cache ---]\n{md_prefix}\n\n"
         if dynamic_suffix:
-            for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get("role") == "user":
-                    messages[i] = dict(messages[i])
-                    messages[i]["content"] = f"[--- SAGA Dynamic ---]\n{dynamic_suffix}\n\n{messages[i]['content']}"
-                    break
+            context_block += f"[--- SAGA Dynamic ---]\n{dynamic_suffix}"
+
+        if context_block:
+            messages.insert(system_idx + 1, {
+                "role": "system",
+                "content": context_block,
+                # cache_control 없음!
+            })
+
+        # 대화 히스토리에서 assistant 메시지 위치 찾기
+        assistant_indices = [
+            i for i, m in enumerate(messages) if m.get("role") == "assistant"
+        ]
+
+        if len(assistant_indices) >= 2:
+            # BP2: 중간 지점 assistant (긴 대화에서 앞부분 캐시)
+            mid_idx = assistant_indices[len(assistant_indices) // 2]
+            messages[mid_idx] = dict(messages[mid_idx])
+            messages[mid_idx]["cache_control"] = {"type": "ephemeral"}
+
+            # BP3: 마지막 assistant (직전 턴까지 캐시)
+            last_idx = assistant_indices[-1]
+            messages[last_idx] = dict(messages[last_idx])
+            messages[last_idx]["cache_control"] = {"type": "ephemeral"}
+
+        elif len(assistant_indices) == 1:
+            # 대화가 짧으면 BP2만
+            last_idx = assistant_indices[0]
+            messages[last_idx] = dict(messages[last_idx])
+            messages[last_idx]["cache_control"] = {"type": "ephemeral"}
+
+        # 마지막 user 메시지는 캐시 밖 (현재 입력) — 건드리지 않음
+
     else:
-        # Non-Claude or caching disabled: legacy single-block approach
+        # Non-Claude or caching disabled
         if system_idx is not None:
             messages[system_idx] = dict(messages[system_idx])
             content = messages[system_idx]["content"]
@@ -366,12 +373,13 @@ async def reset_session(session_id: str):
     return {"status": "reset", "session_id": session_id}
 
 @app.get("/api/memory/search")
-async def search_memory(q: str, session: str = ""):
-    if session:
-        results = vector_db.search_lorebook(session, q, n_results=10)
+async def search_memory(q: str, session: str = "", collection: str = "episodes"):
+    if not session:
+        return {"documents": [], "metadatas": []}
+    if collection == "lorebook":
+        return vector_db.search_lorebook(session, q, n_results=10)
     else:
-        results = {"documents": [], "metadatas": []}
-    return results
+        return vector_db.search_episodes(session, q, n_results=10)
 
 @app.get("/api/graph/query")
 async def graph_query(cypher: str, session: str = ""):
