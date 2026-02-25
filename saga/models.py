@@ -148,6 +148,16 @@ class ItemTransfer(BaseModel):
     to: str
 
 
+class CuratorResult(BaseModel):
+    """Result produced by the Curator after each curation run."""
+
+    contradictions: List[dict] = Field(default_factory=list)
+    events: List[dict] = Field(default_factory=list)
+    compress_story: bool = False
+    compressed_summary: str = ""
+    narrative_notes: str = ""
+
+
 class StateBlockData(BaseModel):
     """Structured state block produced by the extraction agent after each turn.
 

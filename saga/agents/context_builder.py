@@ -1,7 +1,7 @@
 """Sub-A: Context Builder — 매 턴 동기 실행, LLM 호출 없음, ~35ms 목표.
 
 2-tier 조회: .md 캐시(~5ms) → DB 동적 보충(~30ms) → 조립
-반환: {"cached_prefix": str, "dynamic_suffix": str}
+반환: {"md_prefix": str, "dynamic_suffix": str}
 """
 import asyncio
 import logging
@@ -42,7 +42,7 @@ class ContextBuilder:
         self.config = config
 
     async def build_context(self, session_id: str, messages: list[dict], token_budget: int) -> dict:
-        """Main entry point. Returns {"cached_prefix": str, "dynamic_suffix": str}"""
+        """Main entry point. Returns {"md_prefix": str, "dynamic_suffix": str}"""
         last_user_msg = self._get_last_user_message(messages)
 
         # Phase 0: .md cache read + freshness check
@@ -54,7 +54,7 @@ class ContextBuilder:
         if not cache_is_fresh:
             md_cache_data = await self._build_md_from_db(session_id)
 
-        cached_prefix = self.md_cache.format_as_prefix(md_cache_data, self.config.token_budget.md_cache_max)
+        md_prefix = self.md_cache.format_as_prefix(md_cache_data, self.config.token_budget.md_cache_max)
 
         # Phase 1: Dynamic DB queries (parallel)
         # Run Kuzu graph query and ChromaDB vector search concurrently
@@ -67,9 +67,9 @@ class ContextBuilder:
         active_lorebook = self._filter_lorebook(lorebook_results, player_ctx, token_budget)
 
         # Phase 4: Assemble dynamic suffix
-        dynamic_suffix = await self._assemble_suffix(session_id, md_cache_data, player_ctx, lorebook_results, active_lorebook, cached_prefix, token_budget)
+        dynamic_suffix = await self._assemble_suffix(session_id, md_cache_data, player_ctx, lorebook_results, active_lorebook, md_prefix, token_budget)
 
-        return {"cached_prefix": cached_prefix, "dynamic_suffix": dynamic_suffix}
+        return {"md_prefix": md_prefix, "dynamic_suffix": dynamic_suffix}
 
     def _get_last_user_message(self, messages: list[dict]) -> str:
         for msg in reversed(messages):
@@ -78,13 +78,54 @@ class ContextBuilder:
         return ""
 
     async def _parallel_db_queries(self, session_id, last_user_msg):
-        """Run Kuzu and ChromaDB queries in parallel."""
-        # Use asyncio to run sync Kuzu in executor and async ChromaDB
+        """Run Kuzu and ChromaDB queries in parallel, including 3-stage episode retrieval."""
         loop = asyncio.get_event_loop()
         kuzu_future = loop.run_in_executor(None, self.graph_db.query_player_context, session_id)
-        chroma_future = loop.run_in_executor(None, self.vector_db.search_lorebook, session_id, last_user_msg, 10)
-        player_ctx, lorebook_results = await asyncio.gather(kuzu_future, chroma_future)
+        lorebook_future = loop.run_in_executor(None, self.vector_db.search_lorebook, session_id, last_user_msg, 10)
+        # 3-stage episode retrieval: Recent + Important + Similar (all parallel)
+        recent_future = loop.run_in_executor(None, self.vector_db.get_recent_episodes, session_id, 5)
+        important_future = loop.run_in_executor(None, self.vector_db.search_important_episodes, session_id, 40, 5)
+        similar_future = loop.run_in_executor(None, self.vector_db.search_episodes, session_id, last_user_msg, 5)
+
+        player_ctx, lorebook_results, recent_eps, important_eps, similar_eps = await asyncio.gather(
+            kuzu_future, lorebook_future, recent_future, important_future, similar_future
+        )
+
+        # Merge episodes: Recent → Important → Similar (deduplicated)
+        merged_episodes = self._merge_episodes(recent_eps, important_eps, similar_eps)
+        player_ctx["episodes"] = merged_episodes
+
         return player_ctx, lorebook_results
+
+    def _merge_episodes(self, recent, important, similar) -> list[dict]:
+        """Merge 3-stage episode results, deduplicating by ID. Priority: Recent > Important > Similar."""
+        seen_ids = set()
+        merged = []
+
+        for source, label in [(recent, "recent"), (important, "important"), (similar, "similar")]:
+            ids = source.get("ids", []) if isinstance(source.get("ids"), list) and not isinstance(source.get("ids", [[]])[0], list) else source.get("ids", [[]])[0]
+            docs = source.get("documents", []) if isinstance(source.get("documents"), list) and not isinstance(source.get("documents", [[]])[0], list) else source.get("documents", [[]])[0]
+            metas = source.get("metadatas", []) if isinstance(source.get("metadatas"), list) and not isinstance(source.get("metadatas", [[]])[0], list) else source.get("metadatas", [[]])[0]
+
+            for i, ep_id in enumerate(ids):
+                if ep_id in seen_ids:
+                    continue
+                seen_ids.add(ep_id)
+                meta = metas[i] if i < len(metas) else {}
+                merged.append({
+                    "id": ep_id,
+                    "text": docs[i] if i < len(docs) else "",
+                    "turn": meta.get("turn", 0),
+                    "importance": meta.get("importance", 10),
+                    "source": label,
+                    "episode_type": meta.get("episode_type", "episode"),
+                    "location": meta.get("location", ""),
+                    "npcs": meta.get("npcs", ""),
+                })
+
+        # Sort: important first, then by turn descending
+        merged.sort(key=lambda x: (-x["importance"], -x["turn"]))
+        return merged
 
     def _hybrid_rerank(self, session_id, lorebook_results):
         """Graph × Vector hybrid: expand Kuzu nodes found in lorebook results."""
@@ -130,16 +171,70 @@ class ContextBuilder:
         return merged
 
     def _filter_lorebook(self, lorebook_results, player_ctx, token_budget):
-        """Delegate to dynamic lorebook filter. Simple passthrough for now."""
-        # Will be enhanced by lorebook/dynamic_filter.py
-        if not lorebook_results or not lorebook_results.get("documents"):
-            return []
-        return lorebook_results.get("documents", [[]])[0]
+        """Graph-enhanced lorebook filtering: entity mentions → graph KNOWS → lore retrieval."""
+        entries = []
 
-    async def _assemble_suffix(self, session_id, md_cache_data, player_ctx, lorebook_results, active_lorebook, cached_prefix, token_budget):
+        # 1. Graph-based lore: find entities in player context → query linked Lore nodes
+        graph_lore = self._get_graph_lore(player_ctx)
+        for lore in graph_lore:
+            content = lore.get("content", "")
+            if content:
+                entries.append(content)
+
+        # 2. Vector-based lore (existing ChromaDB results)
+        if lorebook_results and lorebook_results.get("documents"):
+            docs = lorebook_results.get("documents", [[]])[0]
+            for doc in docs:
+                if doc and doc not in entries:  # dedupe
+                    entries.append(doc)
+
+        return entries
+
+    def _get_graph_lore(self, player_ctx) -> list[dict]:
+        """Retrieve lore entries linked to entities in the current context via graph edges."""
+        if not player_ctx:
+            return []
+
+        lore_entries = []
+        seen_names = set()
+
+        # Lore for nearby NPCs
+        for npc in player_ctx.get("nearby_npcs", []):
+            name = npc.get("name", "")
+            if name and name not in seen_names:
+                seen_names.add(name)
+                lore = self.graph_db.query_lore_for_entity(
+                    player_ctx.get("session_id", ""), name
+                )
+                lore_entries.extend(lore)
+
+        # Lore for current location
+        location = player_ctx.get("location", "")
+        if location and location not in seen_names:
+            seen_names.add(location)
+            lore = self.graph_db.query_lore_for_entity(
+                player_ctx.get("session_id", ""), location
+            )
+            lore_entries.extend(lore)
+
+        # Lore for items
+        for item in player_ctx.get("items", []):
+            name = item.get("name", "") if isinstance(item, dict) else str(item)
+            if name and name not in seen_names:
+                seen_names.add(name)
+                lore = self.graph_db.query_lore_for_entity(
+                    player_ctx.get("session_id", ""), name
+                )
+                lore_entries.extend(lore)
+
+        # Sort by priority descending
+        lore_entries.sort(key=lambda x: x.get("priority", 0), reverse=True)
+        return lore_entries
+
+    async def _assemble_suffix(self, session_id, md_cache_data, player_ctx, lorebook_results, active_lorebook, md_prefix, token_budget):
         """Assemble dynamic suffix from all sources."""
         dynamic_parts = []
-        remaining = token_budget - count_tokens(cached_prefix)
+        remaining = token_budget - count_tokens(md_prefix)
 
         # State delta (differences between .md and current DB)
         delta = self._format_state_delta(md_cache_data, player_ctx)
@@ -148,6 +243,24 @@ class ContextBuilder:
             if delta_tokens <= remaining:
                 dynamic_parts.append(f"[최신 변경]\n{delta}")
                 remaining -= delta_tokens
+
+        # Episode memory (3-stage: recent + important + similar)
+        episodes = player_ctx.get("episodes", [])
+        if episodes:
+            ep_lines = []
+            for ep in episodes:
+                marker = ""
+                if ep["source"] == "important":
+                    marker = "[!] "
+                elif ep["source"] == "recent":
+                    marker = "[R] "
+                ep_lines.append(f"- {marker}Turn {ep['turn']}: {ep['text'][:200]}")
+            ep_text = "\n".join(ep_lines[:10])
+            ep_tokens = count_tokens(ep_text)
+            ep_budget = min(remaining * 0.35, 2000)
+            if ep_tokens <= ep_budget:
+                dynamic_parts.append(f"[에피소드 기억]\n{ep_text}")
+                remaining -= ep_tokens
 
         # Graph structural associations
         if lorebook_results and lorebook_results.get("metadatas"):

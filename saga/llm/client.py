@@ -11,6 +11,13 @@ class LLMClient:
     def __init__(self, config):
         self.config = config
         self._http = httpx.AsyncClient(timeout=60.0)
+        # Sanitize API keys (strip whitespace/tabs that may leak from env vars or YAML)
+        if config.api_keys.anthropic:
+            config.api_keys.anthropic = config.api_keys.anthropic.strip()
+        if config.api_keys.openai:
+            config.api_keys.openai = config.api_keys.openai.strip()
+        if config.api_keys.google:
+            config.api_keys.google = config.api_keys.google.strip()
 
     async def close(self):
         await self._http.aclose()
@@ -48,16 +55,29 @@ class LLMClient:
             return "openai"
 
     async def _call_anthropic(self, model, messages, temperature, max_tokens, **kwargs):
-        """Call Anthropic Messages API."""
+        """Call Anthropic Messages API with 3-BP prompt caching support."""
         api_key = self.config.api_keys.anthropic
-        # Separate system message
-        system_content = ""
+        system_parts = []
         non_system = []
+
         for msg in messages:
             if msg["role"] == "system":
-                system_content += msg.get("content", "") + "\n"
+                part = {"type": "text", "text": msg["content"]}
+                if msg.get("cache_control"):
+                    part["cache_control"] = msg["cache_control"]
+                system_parts.append(part)
             else:
-                non_system.append({"role": msg["role"], "content": msg["content"]})
+                if msg.get("cache_control"):
+                    # Anthropic requires content as array when applying cache_control
+                    entry = {
+                        "role": msg["role"],
+                        "content": [
+                            {"type": "text", "text": msg["content"], "cache_control": msg["cache_control"]}
+                        ],
+                    }
+                else:
+                    entry = {"role": msg["role"], "content": msg["content"]}
+                non_system.append(entry)
 
         body = {
             "model": model,
@@ -65,15 +85,7 @@ class LLMClient:
             "temperature": temperature,
             "messages": non_system,
         }
-        if system_content.strip():
-            # Support cache_control for prompt caching
-            system_parts = []
-            for msg in messages:
-                if msg["role"] == "system":
-                    part = {"type": "text", "text": msg["content"]}
-                    if msg.get("cache_control"):
-                        part["cache_control"] = msg["cache_control"]
-                    system_parts.append(part)
+        if system_parts:
             body["system"] = system_parts
 
         resp = await self._http.post(
@@ -81,12 +93,27 @@ class LLMClient:
             headers={
                 "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
+                "anthropic-beta": "prompt-caching-2024-07-31",
                 "content-type": "application/json",
             },
             json=body,
         )
+        if resp.status_code == 401:
+            raise RuntimeError(f"Anthropic API 인증 실패 (401). API 키 확인: config.yaml api_keys.anthropic 또는 $ANTHROPIC_API_KEY")
         resp.raise_for_status()
         data = resp.json()
+
+        # Log prompt caching stats
+        usage = data.get("usage", {})
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        cache_create = usage.get("cache_creation_input_tokens", 0)
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        if cache_read or cache_create:
+            logger.info(
+                f"[Cache] input={input_tokens} cache_read={cache_read} cache_create={cache_create} output={output_tokens}"
+            )
+
         return "".join(block.get("text", "") for block in data.get("content", []))
 
     async def _call_google(self, model, messages, temperature, max_tokens, **kwargs):
@@ -164,23 +191,50 @@ class LLMClient:
         return choices[0]["message"]["content"] if choices else ""
 
     async def _stream_anthropic(self, model, messages, temperature, max_tokens, **kwargs):
-        """Stream from Anthropic."""
+        """Stream from Anthropic with 3-BP prompt caching support."""
         api_key = self.config.api_keys.anthropic
-        system_content = ""
+        system_parts = []
         non_system = []
+
         for msg in messages:
             if msg["role"] == "system":
-                system_content += msg.get("content", "") + "\n"
+                part = {"type": "text", "text": msg["content"]}
+                if msg.get("cache_control"):
+                    part["cache_control"] = msg["cache_control"]
+                system_parts.append(part)
             else:
-                non_system.append({"role": msg["role"], "content": msg["content"]})
+                if msg.get("cache_control"):
+                    entry = {
+                        "role": msg["role"],
+                        "content": [
+                            {"type": "text", "text": msg["content"], "cache_control": msg["cache_control"]}
+                        ],
+                    }
+                else:
+                    entry = {"role": msg["role"], "content": msg["content"]}
+                non_system.append(entry)
 
-        body = {"model": model, "max_tokens": max_tokens, "temperature": temperature, "messages": non_system, "stream": True}
-        if system_content.strip():
-            body["system"] = system_content.strip()
+        body = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": non_system,
+            "stream": True,
+        }
+        if system_parts:
+            body["system"] = system_parts
 
-        async with self._http.stream("POST", "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json=body) as resp:
+        async with self._http.stream(
+            "POST",
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "anthropic-beta": "prompt-caching-2024-07-31",
+                "content-type": "application/json",
+            },
+            json=body,
+        ) as resp:
             async for line in resp.aiter_lines():
                 if line.startswith("data: "):
                     data = json.loads(line[6:])

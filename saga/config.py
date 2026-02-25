@@ -68,6 +68,9 @@ class CuratorConfig(BaseModel):
         default_factory=lambda: ["narrative_summary", "curation_decisions", "contradiction_log"]
     )
     compress_story_after_turns: int = 50
+    letta_base_url: str = "http://localhost:8283"
+    letta_model: str = "anthropic/claude-sonnet-4-5-20250929"
+    letta_embedding: str = "openai/text-embedding-3-small"
 
 
 class DynamicLorebookConfig(BaseModel):

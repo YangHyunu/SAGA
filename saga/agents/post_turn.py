@@ -57,10 +57,15 @@ class PostTurnExtractor:
             # 2. Update Kuzu graph
             await self._update_graph(session_id, state_block, turn_number)
 
-            # 3. Update SQLite
+            # 3. Record important events to graph
+            importance = self._calculate_importance(state_block)
+            if importance >= 40:
+                await self._record_graph_event(session_id, state_block, turn_number, importance)
+
+            # 4. Update SQLite
             await self._update_sqlite(session_id, state_block, turn_number, user_input, response_text)
 
-            # 4. Record episode to ChromaDB
+            # 5. Record episode to ChromaDB
             self._record_episode(session_id, turn_number, user_input, response_text, state_block)
 
             # 5. Atomic .md cache update
@@ -76,11 +81,13 @@ class PostTurnExtractor:
     async def _extract_with_flash(self, response_text: str) -> dict | None:
         """Use Flash-tier LLM to extract state from unstructured response."""
         try:
+            # Sanitize non-printable characters that can break HTTP requests
+            clean_text = ''.join(c if c.isprintable() or c in '\n\r' else ' ' for c in response_text)
             result = await self.llm_client.call_llm(
                 model=self.config.models.extraction,
                 messages=[
                     {"role": "system", "content": "Extract game state changes from the RP response. Return ONLY valid JSON (no markdown, no explanation) with keys: location, location_moved, hp_change, items_gained, items_lost, items_transferred, npc_met, npc_separated, relationship_changes, mood, event_trigger, notes. Use defaults (false, 0, [], null) for missing values."},
-                    {"role": "user", "content": response_text}
+                    {"role": "user", "content": clean_text}
                 ],
                 temperature=0.1,
                 max_tokens=1024
@@ -173,10 +180,131 @@ class PostTurnExtractor:
         )
 
     def _record_episode(self, session_id, turn_number, user_input, response_text, state_block):
-        """Record episode summary to ChromaDB."""
+        """Record episode summary to ChromaDB with importance scoring and entity tagging."""
         summary = format_turn_narrative(turn_number, user_input, response_text, state_block)
         location = state_block.get("location", "unknown")
-        self.vector_db.add_episode(session_id, turn_number, summary, location)
+        importance = self._calculate_importance(state_block)
+        entities = self._extract_entities(state_block)
+        npcs = list(state_block.get("npc_met", [])) + list(state_block.get("npc_separated", []))
+        # Add relationship targets as NPCs too
+        for change in state_block.get("relationship_changes", []):
+            for key in ("from", "to"):
+                name = change.get(key, "")
+                if name and name not in npcs:
+                    npcs.append(name)
+
+        episode_type = self._classify_episode(state_block)
+        self.vector_db.add_episode(
+            session_id, turn_number, summary, location,
+            episode_type=episode_type,
+            importance=importance,
+            entities=entities,
+            npcs=npcs,
+        )
+        if importance >= 50:
+            logger.info(f"[Sub-B] High-importance episode (turn {turn_number}, score={importance}, type={episode_type})")
+
+    @staticmethod
+    def _calculate_importance(state_block: dict) -> int:
+        """Calculate episode importance score (0-100) from state changes."""
+        score = 10  # base score for any turn
+
+        hp_change = abs(state_block.get("hp_change", 0))
+        if hp_change > 0:
+            score += min(30, hp_change * 3)  # up to 30 for combat/damage
+
+        if state_block.get("relationship_changes"):
+            score += 10 * min(3, len(state_block["relationship_changes"]))  # up to 30
+
+        if state_block.get("event_trigger"):
+            score += 35  # major story events
+
+        if state_block.get("npc_met"):
+            score += 10 * min(2, len(state_block["npc_met"]))  # up to 20
+
+        if state_block.get("npc_separated"):
+            score += 15
+
+        if state_block.get("items_gained") or state_block.get("items_lost"):
+            score += 15
+
+        if state_block.get("items_transferred"):
+            score += 20  # inter-character interaction
+
+        if state_block.get("location_moved"):
+            score += 10
+
+        return min(score, 100)
+
+    @staticmethod
+    def _extract_entities(state_block: dict) -> list[str]:
+        """Extract all named entities from state block for tagging."""
+        entities = []
+        if state_block.get("location"):
+            entities.append(state_block["location"])
+        for name in state_block.get("npc_met", []):
+            entities.append(name)
+        for name in state_block.get("npc_separated", []):
+            entities.append(name)
+        for item in state_block.get("items_gained", []):
+            entities.append(item)
+        for item in state_block.get("items_lost", []):
+            entities.append(item)
+        for transfer in state_block.get("items_transferred", []):
+            if transfer.get("item"):
+                entities.append(transfer["item"])
+            if transfer.get("to"):
+                entities.append(transfer["to"])
+        for change in state_block.get("relationship_changes", []):
+            for key in ("from", "to"):
+                if change.get(key):
+                    entities.append(change[key])
+        return list(dict.fromkeys(entities))  # dedupe preserving order
+
+    @staticmethod
+    def _classify_episode(state_block: dict) -> str:
+        """Classify episode type for filtering."""
+        if abs(state_block.get("hp_change", 0)) > 0:
+            return "combat"
+        if state_block.get("event_trigger"):
+            return "event"
+        if state_block.get("relationship_changes"):
+            return "relationship"
+        if state_block.get("npc_met"):
+            return "encounter"
+        if state_block.get("items_gained") or state_block.get("items_lost") or state_block.get("items_transferred"):
+            return "item"
+        if state_block.get("location_moved"):
+            return "exploration"
+        return "dialogue"
+
+    async def _record_graph_event(self, session_id: str, state_block: dict, turn_number: int, importance: int):
+        """Record high-importance episodes as Event nodes in the graph."""
+        loop = asyncio.get_event_loop()
+        event_type = self._classify_episode(state_block)
+        event_name = f"turn_{turn_number}_{event_type}"
+        description = state_block.get("notes", "") or f"{event_type} at turn {turn_number}"
+        entities = self._extract_entities(state_block)
+
+        await loop.run_in_executor(
+            None, self.graph_db.create_event,
+            session_id, event_name, event_type, description, turn_number, importance, entities
+        )
+
+        # Link involved NPCs to the event
+        for npc in state_block.get("npc_met", []):
+            await loop.run_in_executor(
+                None, self.graph_db.link_event_to_character,
+                session_id, event_name, npc, "met"
+            )
+        for change in state_block.get("relationship_changes", []):
+            for key in ("from", "to"):
+                name = change.get(key, "")
+                if name:
+                    await loop.run_in_executor(
+                        None, self.graph_db.link_event_to_character,
+                        session_id, event_name, name, "involved"
+                    )
 
     async def _update_md_cache(self, session_id, turn_number, state_block):
         """Build fresh .md from DB and write atomically."""

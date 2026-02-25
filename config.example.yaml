@@ -53,6 +53,9 @@ curator:
     - curation_decisions
     - contradiction_log
   compress_story_after_turns: 50
+  letta_base_url: "http://localhost:8283"
+  letta_model: "anthropic/claude-sonnet-4-5-20250929"
+  letta_embedding: "openai/text-embedding-3-small"
 
 # === 다이나믹 로어북 ===
 dynamic_lorebook:

@@ -66,6 +66,9 @@ class VectorDB:
         summary: str,
         location: str = "unknown",
         episode_type: str = "episode",
+        importance: int = 10,
+        entities: list[str] = None,
+        npcs: list[str] = None,
     ):
         """Add a turn episode summary to the episodes collection."""
         episode_id = f"{session_id}_turn_{turn}"
@@ -74,6 +77,9 @@ class VectorDB:
             "turn": turn,
             "location": location,
             "episode_type": episode_type,
+            "importance": importance,
+            "entities": ",".join(entities) if entities else "",
+            "npcs": ",".join(npcs) if npcs else "",
             "created_at": datetime.utcnow().isoformat(),
         }
         self.episodes.upsert(
@@ -89,6 +95,39 @@ class VectorDB:
         try:
             result = self.episodes.query(
                 query_texts=[query],
+                n_results=n_results,
+                where={"session_id": session_id},
+            )
+        except Exception:
+            result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        return result
+
+    def search_important_episodes(
+        self, session_id: str, min_importance: int = 40, n_results: int = 10
+    ) -> dict:
+        """Retrieve high-importance episodes (combat, relationship changes, events)."""
+        try:
+            result = self.episodes.query(
+                query_texts=["중요한 사건"],
+                n_results=n_results,
+                where={
+                    "$and": [
+                        {"session_id": session_id},
+                        {"importance": {"$gte": min_importance}},
+                    ]
+                },
+            )
+        except Exception:
+            result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        return result
+
+    def search_episodes_by_entity(
+        self, session_id: str, entity_name: str, n_results: int = 10
+    ) -> dict:
+        """Search episodes mentioning a specific entity (NPC, location, item)."""
+        try:
+            result = self.episodes.query(
+                query_texts=[entity_name],
                 n_results=n_results,
                 where={"session_id": session_id},
             )

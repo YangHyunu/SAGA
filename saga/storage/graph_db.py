@@ -62,6 +62,8 @@ class GraphDB:
                 event_type STRING,
                 description STRING,
                 turn INT64,
+                importance INT64,
+                entities STRING,
                 created_at STRING,
                 PRIMARY KEY (id)
             )""",
@@ -71,7 +73,15 @@ class GraphDB:
                 name STRING,
                 lore_type STRING,
                 layer STRING,
+                keywords STRING,
+                content STRING,
+                priority INT64,
+                conditions STRING,
+                properties STRING,
+                auto_generated BOOLEAN,
+                source_turns STRING,
                 created_at STRING,
+                updated_at STRING,
                 PRIMARY KEY (id)
             )""",
         ]
@@ -514,7 +524,14 @@ class GraphDB:
         session_id: str,
         name: str,
         lore_type: str = "",
-        layer: str = "A1",
+        layer: str = "core",
+        keywords: str = "",
+        content: str = "",
+        priority: int = 50,
+        conditions: str = "{}",
+        properties: str = "{}",
+        auto_generated: bool = False,
+        source_turns: str = "[]",
     ):
         node_id = self._node_id(session_id, name)
         now = datetime.utcnow().isoformat()
@@ -522,23 +539,122 @@ class GraphDB:
             "MATCH (l:Lore {id: $id}) RETURN l.id", {"id": node_id}
         )
         if result.has_next():
+            # Update existing lore
+            self.conn.execute(
+                """
+                MATCH (l:Lore {id: $id})
+                SET l.content = $content, l.keywords = $keywords,
+                    l.priority = $priority, l.properties = $properties,
+                    l.source_turns = $source_turns, l.updated_at = $now
+                """,
+                {"id": node_id, "content": content, "keywords": keywords,
+                 "priority": priority, "properties": properties,
+                 "source_turns": source_turns, "now": now},
+            )
             return
         self.conn.execute(
             """
             CREATE (l:Lore {
                 id: $id, session_id: $session_id, name: $name,
-                lore_type: $lore_type, layer: $layer, created_at: $now
+                lore_type: $lore_type, layer: $layer,
+                keywords: $keywords, content: $content,
+                priority: $priority, conditions: $conditions,
+                properties: $properties, auto_generated: $auto_generated,
+                source_turns: $source_turns,
+                created_at: $now, updated_at: $now
             })
             """,
             {
-                "id": node_id,
-                "session_id": session_id,
-                "name": name,
-                "lore_type": lore_type,
-                "layer": layer,
+                "id": node_id, "session_id": session_id, "name": name,
+                "lore_type": lore_type, "layer": layer,
+                "keywords": keywords, "content": content,
+                "priority": priority, "conditions": conditions,
+                "properties": properties, "auto_generated": auto_generated,
+                "source_turns": source_turns,
                 "now": now,
             },
         )
+
+    def get_entities_without_lore(self, session_id: str) -> list[dict]:
+        """Find Characters, Locations, Items that have no KNOWS/HAS_LORE/ITEM_LORE edges."""
+        entities = []
+        # Characters without KNOWS edges
+        try:
+            result = self.conn.execute(
+                """
+                MATCH (c:Character {session_id: $sid})
+                WHERE NOT EXISTS { MATCH (c)-[:KNOWS]->(:Lore) }
+                AND c.is_player = false
+                RETURN c.name AS name, 'character' AS entity_type,
+                       c.location AS location, c.mood AS mood
+                """,
+                {"sid": session_id},
+            )
+            entities.extend(self._result_to_list(result))
+        except RuntimeError:
+            pass
+        # Locations without HAS_LORE edges
+        try:
+            result = self.conn.execute(
+                """
+                MATCH (l:Location {session_id: $sid})
+                WHERE NOT EXISTS { MATCH (l)-[:HAS_LORE]->(:Lore) }
+                RETURN l.name AS name, 'location' AS entity_type,
+                       l.description AS description
+                """,
+                {"sid": session_id},
+            )
+            entities.extend(self._result_to_list(result))
+        except RuntimeError:
+            pass
+        # Items without ITEM_LORE edges
+        try:
+            result = self.conn.execute(
+                """
+                MATCH (i:Item {session_id: $sid})
+                WHERE NOT EXISTS { MATCH (i)-[:ITEM_LORE]->(:Lore) }
+                RETURN i.name AS name, 'item' AS entity_type,
+                       i.description AS description
+                """,
+                {"sid": session_id},
+            )
+            entities.extend(self._result_to_list(result))
+        except RuntimeError:
+            pass
+        return entities
+
+    def query_lore_for_entity(self, session_id: str, entity_name: str) -> list[dict]:
+        """Get all Lore nodes connected to a named entity via KNOWS/HAS_LORE/ITEM_LORE."""
+        node_id = self._node_id(session_id, entity_name)
+        lore_entries = []
+        for query in [
+            "MATCH (:Character {id: $nid})-[:KNOWS]->(l:Lore) RETURN l.name AS name, l.content AS content, l.lore_type AS lore_type, l.priority AS priority, l.keywords AS keywords",
+            "MATCH (:Location {id: $nid})-[:HAS_LORE]->(l:Lore) RETURN l.name AS name, l.content AS content, l.lore_type AS lore_type, l.priority AS priority, l.keywords AS keywords",
+            "MATCH (:Item {id: $nid})-[:ITEM_LORE]->(l:Lore) RETURN l.name AS name, l.content AS content, l.lore_type AS lore_type, l.priority AS priority, l.keywords AS keywords",
+        ]:
+            try:
+                result = self.conn.execute(query, {"nid": node_id})
+                lore_entries.extend(self._result_to_list(result))
+            except RuntimeError:
+                pass
+        return lore_entries
+
+    def get_all_lore(self, session_id: str) -> list[dict]:
+        """Get all Lore entries for a session."""
+        try:
+            result = self.conn.execute(
+                """
+                MATCH (l:Lore {session_id: $sid})
+                RETURN l.name AS name, l.content AS content, l.lore_type AS lore_type,
+                       l.priority AS priority, l.keywords AS keywords,
+                       l.auto_generated AS auto_generated, l.source_turns AS source_turns
+                ORDER BY l.priority DESC
+                """,
+                {"sid": session_id},
+            )
+            return self._result_to_list(result)
+        except RuntimeError:
+            return []
 
     def link_lore(
         self, session_id: str, entity_type: str, entity_name: str, lore_name: str
@@ -561,6 +677,81 @@ class GraphDB:
             self.conn.execute(
                 f"{match_clause} CREATE (e)-[:{rel_table}]->(l)",
                 {"eid": entity_id, "lid": lore_id},
+            )
+        except RuntimeError:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # Event operations
+    # ------------------------------------------------------------------ #
+
+    def create_event(
+        self,
+        session_id: str,
+        name: str,
+        event_type: str = "",
+        description: str = "",
+        turn: int = 0,
+        importance: int = 10,
+        entities: list = None,
+    ):
+        node_id = self._node_id(session_id, name)
+        now = datetime.utcnow().isoformat()
+        entities_json = json.dumps(entities or [], ensure_ascii=False)
+        result = self.conn.execute(
+            "MATCH (e:Event {id: $id}) RETURN e.id", {"id": node_id}
+        )
+        if result.has_next():
+            self.conn.execute(
+                """
+                MATCH (e:Event {id: $id})
+                SET e.description = $desc, e.importance = $imp, e.entities = $ents
+                """,
+                {"id": node_id, "desc": description, "imp": importance, "ents": entities_json},
+            )
+        else:
+            self.conn.execute(
+                """
+                CREATE (e:Event {
+                    id: $id, session_id: $session_id, name: $name,
+                    event_type: $event_type, description: $description,
+                    turn: $turn, importance: $importance, entities: $entities,
+                    created_at: $now
+                })
+                """,
+                {
+                    "id": node_id, "session_id": session_id, "name": name,
+                    "event_type": event_type, "description": description,
+                    "turn": turn, "importance": importance, "entities": entities_json,
+                    "now": now,
+                },
+            )
+
+    def get_important_events(self, session_id: str, min_importance: int = 40) -> list[dict]:
+        """Get high-importance events for a session."""
+        result = self.conn.execute(
+            """
+            MATCH (e:Event {session_id: $sid})
+            WHERE e.importance >= $min_imp
+            RETURN e.name AS name, e.event_type AS event_type,
+                   e.description AS description, e.turn AS turn,
+                   e.importance AS importance
+            ORDER BY e.importance DESC, e.turn DESC
+            """,
+            {"sid": session_id, "min_imp": min_importance},
+        )
+        return self._result_to_list(result)
+
+    def link_event_to_character(self, session_id: str, event_name: str, char_name: str, role: str = "participant"):
+        event_id = self._node_id(session_id, event_name)
+        char_id = self._node_id(session_id, char_name)
+        try:
+            self.conn.execute(
+                """
+                MATCH (c:Character {id: $cid}), (e:Event {id: $eid})
+                CREATE (c)-[:INVOLVED_IN {role: $role}]->(e)
+                """,
+                {"cid": char_id, "eid": event_id, "role": role},
             )
         except RuntimeError:
             pass
@@ -603,6 +794,7 @@ class GraphDB:
         adjacent = self.get_adjacent_locations(session_id, location)
 
         return {
+            "session_id": session_id,
             "player": player,
             "location": location,
             "items": items,

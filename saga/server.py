@@ -6,6 +6,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from saga.config import load_config, SagaConfig
 from saga.models import (
@@ -93,6 +94,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SAGA RP Agent Proxy", version="3.0.0", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # ============================================================
 # Main Proxy Endpoint (OpenAI Compatible)
@@ -130,7 +139,7 @@ async def _handle_chat(request: ChatCompletionRequest):
     # Build cacheable messages
     augmented_messages = _build_cacheable_messages(
         messages_dicts,
-        context_result["cached_prefix"],
+        context_result["md_prefix"],
         context_result["dynamic_suffix"]
     )
 
@@ -236,35 +245,66 @@ def _extract_session_id(request: ChatCompletionRequest) -> str | None:
     return None
 
 
-def _build_cacheable_messages(original_messages, cached_prefix, dynamic_suffix):
-    """Build messages with prompt caching structure."""
+def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix):
+    """Build messages with 3-breakpoint prompt caching structure.
+
+    BP1: original system message (cache_control on the message itself)
+    BP2: .md cache block inserted as second system message
+    BP3: last assistant message in conversation history
+    Dynamic: prepended to last user message, outside cache
+    """
     messages = list(original_messages)
 
     # Find system message
     system_idx = next((i for i, m in enumerate(messages) if m["role"] == "system"), None)
 
-    if system_idx is not None:
-        if config.prompt_caching.enabled and cached_prefix:
-            # Add cached prefix to system message with cache_control
-            messages[system_idx] = dict(messages[system_idx])
-            messages[system_idx]["content"] += f"\n\n[--- SAGA Dynamic Context ---]\n{cached_prefix}"
+    is_claude = "claude" in config.models.narration.lower()
 
-            if "claude" in config.models.narration.lower():
-                messages[system_idx]["cache_control"] = {"type": "ephemeral"}
+    if system_idx is not None and is_claude and config.prompt_caching.enabled:
+        # === 3-BP Anthropic caching ===
 
-            # Add dynamic suffix as separate system message
-            if dynamic_suffix:
-                messages.insert(system_idx + 1, {"role": "system", "content": dynamic_suffix})
-        else:
+        # BP1: original system message (session-invariant)
+        messages[system_idx] = dict(messages[system_idx])
+        messages[system_idx]["cache_control"] = {"type": "ephemeral"}
+
+        # BP2: .md cache block (~1-turn refresh cycle)
+        if md_prefix:
+            md_msg = {
+                "role": "system",
+                "content": f"[--- SAGA Context Cache ---]\n{md_prefix}",
+                "cache_control": {"type": "ephemeral"},
+            }
+            messages.insert(system_idx + 1, md_msg)
+
+        # BP3: last assistant message in conversation history
+        last_assistant_idx = None
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "assistant":
+                last_assistant_idx = i
+                break
+
+        if last_assistant_idx is not None:
+            messages[last_assistant_idx] = dict(messages[last_assistant_idx])
+            messages[last_assistant_idx]["cache_control"] = {"type": "ephemeral"}
+
+        # Dynamic context: prepend to last user message (outside cache)
+        if dynamic_suffix:
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "user":
+                    messages[i] = dict(messages[i])
+                    messages[i]["content"] = f"[--- SAGA Dynamic ---]\n{dynamic_suffix}\n\n{messages[i]['content']}"
+                    break
+    else:
+        # Non-Claude or caching disabled: legacy single-block approach
+        if system_idx is not None:
             messages[system_idx] = dict(messages[system_idx])
             content = messages[system_idx]["content"]
-            if cached_prefix or dynamic_suffix:
-                content += f"\n\n[--- SAGA Dynamic Context ---]\n{cached_prefix}\n\n{dynamic_suffix}"
+            if md_prefix or dynamic_suffix:
+                content += f"\n\n[--- SAGA Dynamic Context ---]\n{md_prefix}\n\n{dynamic_suffix}"
             messages[system_idx]["content"] = content
-    else:
-        # No system message — create one
-        sys_content = f"[--- SAGA Dynamic Context ---]\n{cached_prefix}\n\n{dynamic_suffix}"
-        messages.insert(0, {"role": "system", "content": sys_content})
+        else:
+            sys_content = f"[--- SAGA Dynamic Context ---]\n{md_prefix}\n\n{dynamic_suffix}"
+            messages.insert(0, {"role": "system", "content": sys_content})
 
     return messages
 
