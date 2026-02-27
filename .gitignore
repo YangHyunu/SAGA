@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Runtime data (recreated on server start)
+db/
+cache/
+logs/turns/
+
+# Environment & Secrets
+.env
+*.env
+config.yaml
+
+# IDE
+.vscode/
+.idea/
+
+# OMC state
+.omc/
+
+# OS
+.DS_Store

@@ -1,0 +1,24 @@
+services:
+  letta-db:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_USER: letta
+      POSTGRES_PASSWORD: letta
+      POSTGRES_DB: letta
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U letta"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  letta-server:
+    image: letta/letta:latest
+    depends_on:
+      letta-db:
+        condition: service_healthy
+    environment:
+      LETTA_PG_URI: postgresql://letta:letta@letta-db:5432/letta
+    ports:
+      - "8283:8283"

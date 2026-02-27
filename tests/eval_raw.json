@@ -1,0 +1,174 @@
+[
+  {
+    "scenario_id": "S1",
+    "scenario_name": "첫 만남 — 마을 광장",
+    "category": "introduction",
+    "latency_ms": 4483.803749084473,
+    "input_tokens": 212,
+    "output_tokens": 358,
+    "response_text": "에르시아 변방의 마을 광장은 아침 햇살에 따스하게 빛나고, 돌포장길 위로는 소박한 상점들이 줄지어 있다. 대장장이 대문 앞에서는 근육질의 남자가 묵직한 망치를 내리치며 쇠를 두드리고, 옆 잡화점 앞에는 온갖 생활용품이 진열되어 있어 소녀가 손님을 맞이한다. 광장 중앙의 게시판에는 여러 의뢰가 빼곡히 붙어있고, 주점 입구에서는 푸근한 중년 여인이 손님을 부르고 있다.\n\n근처에서 한 노인이 느릿느릿 걷다가 당신을 힐끗 쳐다보며 “이 마을에 낯선 이가 오다니, 무슨 일로 왔소?”라고 묻는다. 마을 사람들은 최근 숲에서 들려오는 이상한 소리에 불안해하며 경계하는 눈치다. 당신의 다음 행동은 무엇인가요?",
+    "multi_turn_responses": [],
+    "judge_scores": {
+      "narrative_quality": 4,
+      "character_consistency": 5,
+      "world_coherence": 5,
+      "user_agency": 5,
+      "response_relevance": 5,
+      "player_sovereignty": 5
+    },
+    "judge_comment": "생생한 묘사와 NPC 대사, 유저 입력 반영이 모두 우수하나, 묘사에서 약간 더 깊이가 있으면 만점에 가까울 것.",
+    "is_negative": false,
+    "error": null
+  },
+  {
+    "scenario_id": "S2",
+    "scenario_name": "전투 시작 — 고블린 습격",
+    "category": "combat",
+    "latency_ms": 2900.9690284729004,
+    "input_tokens": 216,
+    "output_tokens": 315,
+    "response_text": "당신이 검을 단단히 쥐고, 가장 가까이 있는 고블린을 향해 돌진합니다. 고블린은 경계심을 늦춘 틈을 타 당신의 검날이 번쩍이며 그를 겨냥합니다!\n\n검이 고블린의 옆구리를 깊게 베어내며, 고블린은 큰 고통을 호소합니다. 당신의 공격은 23의 피해를 입혀, 고블린은 심각한 출혈 상태에 빠집니다. 고블린은 피를 흘리며 비틀거리지만, 아직 완전히 쓰러지지는 않았습니다.\n\n곧이어, 고블린 무리가 당신을 둘러싸며 날카로운 비명을 지르며 반격을 준비합니다!\n\n현재 고블린 1마리 출혈 상태, 23 피해 누적\n\n다음 행동을 선택하세요.",
+    "multi_turn_responses": [],
+    "judge_scores": {
+      "narrative_quality": 4,
+      "character_consistency": 5,
+      "world_coherence": 5,
+      "user_agency": 5,
+      "response_relevance": 5,
+      "player_sovereignty": 5
+    },
+    "judge_comment": "긴박한 전투 묘사와 구체적 결과, 유저 입력의 충실한 반영이 돋보이나 묘사에 약간 더 깊이가 있으면 더욱 좋음.",
+    "is_negative": false,
+    "error": null
+  },
+  {
+    "scenario_id": "S3",
+    "scenario_name": "감정적 대화 — NPC 신뢰 얻기",
+    "category": "dialogue",
+    "latency_ms": 5682.080984115601,
+    "input_tokens": 158,
+    "output_tokens": 575,
+    "response_text": "미렐라의 눈이 잠시 빛난다. 그녀는 당신을 뚫어지게 바라보다가, 이내 조심스레 입을 연다.\n\n\"음, 숲에서 약초를 캐겠다니... 쉽지 않은 일이라네. 이 숲엔, 겉보기와 달리 위험이 많아서 말이야. 특히 요즘은 더 조심해야 해. 붉은꽃이라든가, 그 귀한 약초 말이야. 잘못하면 다치기 쉽지.\"\n\n그녀가 고개를 살짝 숙이며 덧붙인다.\n\n\"하지만 네 진심이 느껴지네. 만약 정말로 약초를 구해오고 싶다면, 내게 물어보게. 어떤 약초가 필요한지, 어떻게 조심해야 하는지 알려주지. 아무렇게나 굴러다니는 게 아니니까.\"\n\n미렐라의 목소리에는 경계심이 서서히 녹아내리고, 어딘가 모르게 따뜻함이 스며든다.\n\n\"자, 네가 정말 마을에 도움이 되고 싶다면, 붉은꽃부터 조심스럽게 찾아보게. 그 꽃은 독성이 강하지만, 제대로 다루면 귀한 약이 된다네.\"\n\n그녀는 천천히 작은 나무 상자를 열어, 안에 가지런히 정리된 약초들을 보여준다.\n\n\"이런 것들 말일세. 네가 안전하게 다룰 수 있도록, 내가 도울 테니 걱정 말게나.\"\n\n미렐라가 조용히 미소를 지으며 당신을 바라본다. 그녀의 마음이 조금씩 열리는 듯하다.",
+    "multi_turn_responses": [],
+    "judge_scores": {
+      "narrative_quality": 4,
+      "character_consistency": 5,
+      "world_coherence": 5,
+      "user_agency": 5,
+      "response_relevance": 5,
+      "player_sovereignty": 5
+    },
+    "judge_comment": "세밀한 감정 묘사와 캐릭터 일관성이 뛰어나며, 유저 입력에 충실히 반응한 우수한 RP 응답입니다.",
+    "is_negative": false,
+    "error": null
+  },
+  {
+    "scenario_id": "S4",
+    "scenario_name": "탐색 — 던전 입구 발견",
+    "category": "exploration",
+    "latency_ms": 4428.037881851196,
+    "input_tokens": 169,
+    "output_tokens": 515,
+    "response_text": "당신이 오래된 숲 속 깊은 곳에서 마주한 이끼 낀 돌문은 세월의 무게를 고스란히 담고 있습니다. 문 표면에는 마치 살아있는 듯한 덩굴 문양이 섬세하게 새겨져 있어, 고대 문명이 자연과 하나였음을 암시합니다. 빛바랜 문양 속에는 알 수 없는 룬 문자들이 어렴풋이 보이고, 그 주위로는 흙과 이끼가 뒤엉켜 신비로운 분위기를 자아냅니다.\n\n주변은 고요하지만, 바람에 나뭇잎이 스치는 소리와 함께 어딘가 멀리서 낮고 으르렁거리는 듯한 소리가 희미하게 들려옵니다. 위험이 도사리고 있을 것만 같은 불길한 기운이 감돌며, 당신의 심장은 빠르게 뛰기 시작합니다.\n\n문 옆에는 오래된 금속으로 만들어진 작은 고리 하나가 달려 있는데, 이곳을 열기 위한 열쇠가 필요할지도 모릅니다.\n\n어떤 행동을 취하시겠습니까?\n\n1. 문에 새겨진 룬 문자를 더 자세히 조사한다.\n2. 주변을 더 살피며 위험 요소가 있는지 탐색한다.\n3. 근처에서 사용할 수 있는 도구나 열쇠가 있는지 찾아본다.\n4. 문을 직접 밀거나 당겨 열어보려 시도한다.\n\n당신의 선택은?",
+    "multi_turn_responses": [],
+    "judge_scores": {
+      "narrative_quality": 4,
+      "character_consistency": 5,
+      "world_coherence": 5,
+      "user_agency": 5,
+      "response_relevance": 5,
+      "player_sovereignty": 5
+    },
+    "judge_comment": "신비로운 분위기와 위험 요소를 잘 묘사했고, 유저 입력에 충실히 반응하며 선택지도 자연스럽게 제시되었습니다.",
+    "is_negative": false,
+    "error": null
+  },
+  {
+    "scenario_id": "S5",
+    "scenario_name": "멀티턴 연속성 — 실제 세션 기반",
+    "category": "continuity",
+    "latency_ms": 12847.639083862305,
+    "input_tokens": 1228,
+    "output_tokens": 895,
+    "response_text": "당신은 마을 광장을 떠나며 대장장이가 했던 말을 되새겨 봅니다. 그는 검의 재료와 마법 부여에 대해 구체적으로 묻고, 자신이 알아서 준비하겠다고 했었죠. 아직 완성된 달빛검을 손에 넣은 것은 아니지만, 그의 말투와 태도에서 곧 훌륭한 무기가 될 것이라는 믿음이 생깁니다.\n\n마을 밖으로 나오니 신선한 공기가 코를 스치고, 주변에는 울창한 숲이 펼쳐져 있습니다. 어둠이 깔리기 전, 당신은 잠시 주변을 살펴보며 앞으로의 여정을 준비합니다. 달빛검이 완성되기 전이라도, 이 무기를 손에 쥐게 될 날이 머지않았음을 느낍니다.\n\n당신은 어디로 향하시겠습니까? 숲으로 들어가 유적을 탐색할지, 아니면 마을로 돌아가 대장장이의 작업을 기다릴지 선택할 수 있습니다.",
+    "multi_turn_responses": [
+      "마을 광장의 대장장이 가게 문을 두드리자, 무거운 대장장이 망치를 내려놓은 중년의 사내가 모습을 드러냅니다. 그는 당신의 말을 듣고는 잠시 눈썹을 찌푸렸지만, 곧 고개를 끄덕이며 말합니다.\n\n\"검이라... 어떤 용도의 검을 원하시오? 결투용인지, 아니면 사냥이나 방어용인지 말해주게. 재료나 마법 부여에 대해서도 구체적으로 말해주면 좋겠소.\"\n\n주변에는 불꽃이 타오르는 모루와 다양한 무기 부품들이 놓여 있습니다. 대장장이가 기다리는 눈빛으로 당신의 대답을 기다립니다.",
+      "당신이 '달빛검'이라는 이름을 정하자 대장장이가 미소를 짓습니다.\n\n\"멋진 이름이오. 달빛처럼 은은하게 빛나는 검이라니, 만드는 내내 기대가 되겠군. 재료와 마법 부여에 대해서는 내가 알아서 준비하겠소. 완성까지 시간이 좀 걸리겠지만, 반드시 훌륭한 검을 만들어 주겠소.\"\n\n그는 이미 작업에 들어갈 듯 모루 옆으로 다가가 도구를 챙기기 시작합니다. 당신은 감사 인사를 전하고 대장장이가 작업에 몰두하는 모습을 지켜봅니다.\n\n밤이 되면 이 '달빛검'이 어떤 힘을 발휘할지, 기대감이 더욱 커집니다.",
+      "당신은 마을 광장을 떠나며 대장장이가 했던 말을 되새겨 봅니다. 그는 검의 재료와 마법 부여에 대해 구체적으로 묻고, 자신이 알아서 준비하겠다고 했었죠. 아직 완성된 달빛검을 손에 넣은 것은 아니지만, 그의 말투와 태도에서 곧 훌륭한 무기가 될 것이라는 믿음이 생깁니다.\n\n마을 밖으로 나오니 신선한 공기가 코를 스치고, 주변에는 울창한 숲이 펼쳐져 있습니다. 어둠이 깔리기 전, 당신은 잠시 주변을 살펴보며 앞으로의 여정을 준비합니다. 달빛검이 완성되기 전이라도, 이 무기를 손에 쥐게 될 날이 머지않았음을 느낍니다.\n\n당신은 어디로 향하시겠습니까? 숲으로 들어가 유적을 탐색할지, 아니면 마을로 돌아가 대장장이의 작업을 기다릴지 선택할 수 있습니다."
+    ],
+    "judge_scores": {
+      "narrative_quality": 4,
+      "character_consistency": 4,
+      "world_coherence": 5,
+      "user_agency": 4,
+      "response_relevance": 4,
+      "player_sovereignty": 5
+    },
+    "judge_comment": "서사와 세계관 정합성은 우수하나, 대장장이의 말과 달빛검의 상태(완성 여부)에서 약간의 혼동이 있어 일부 점수가 감점됨.",
+    "is_negative": false,
+    "error": null
+  },
+  {
+    "scenario_id": "S6",
+    "scenario_name": "State Block 출력 검증",
+    "category": "state_block",
+    "latency_ms": 4942.408084869385,
+    "input_tokens": 164,
+    "output_tokens": 276,
+    "response_text": "어둠의 숲 입구에 다다르자, 짙은 안개와 함께 나무 사이로 희미한 빛줄기가 내려앉습니다. 그 곳에서 수상한 상인이 나타납니다. 그는 낡은 망토를 걸치고, 허름한 가방에서 여러 가지 물건들을 꺼내 보입니다.\n\n\"여기서 필요한 게 있나? 이 회복 물약은 전설 속 약초로 만들어서, 상처를 빠르게 치유해주지,\" 상인은 낮고 조용한 목소리로 말합니다.\n\n당신이 회복 물약을 구입하자, 상인은 고개를 끄덕이며 조용히 자취를 감춥니다. 이제 회복 물약을 손에 넣었으니, 어둠의 숲 속으로 한 발 더 깊이 들어갈 수 있습니다.",
+    "multi_turn_responses": [],
+    "judge_scores": {
+      "narrative_quality": 4,
+      "character_consistency": 4,
+      "world_coherence": 5,
+      "user_agency": 4,
+      "response_relevance": 5,
+      "player_sovereignty": 5
+    },
+    "judge_comment": "묘사와 세계관 정합성이 우수하며, 유저 입력을 잘 반영하였으나 상인의 개성이나 대화가 좀 더 뚜렷하면 더 좋을 듯합니다.",
+    "is_negative": false,
+    "error": null
+  },
+  {
+    "scenario_id": "S7",
+    "scenario_name": "적대적 입력 — 세계관 위반 시도",
+    "category": "adversarial",
+    "latency_ms": 2660.84885597229,
+    "input_tokens": 155,
+    "output_tokens": 243,
+    "response_text": "아리아는 중세 판타지 세계에 살고 있습니다. 이 세계에는 스마트폰이나 인터넷, 총과 같은 현대 기술은 존재하지 않습니다. 대신, 정보를 얻으려면 마을의 도서관이나 현지 주민, 혹은 방랑자 길드 게시판의 의뢰 내용을 살펴봐야 합니다.\n\n현재 마을 광장에 있으니, 방랑자 길드 게시판을 찾아가 어떤 의뢰가 있는지 확인해보는 것이 좋겠습니다. 또한, 마을 사람들과 대화를 나누어 주변 상황에 대한 정보를 얻을 수도 있겠지요.\n\n어떤 행동을 하시겠습니까?",
+    "multi_turn_responses": [],
+    "judge_scores": {
+      "narrative_quality": 3,
+      "character_consistency": 4,
+      "world_coherence": 5,
+      "user_agency": 4,
+      "response_relevance": 4,
+      "player_sovereignty": 3
+    },
+    "judge_comment": "세계관 정합성은 훌륭하나, 유저 캐릭터 이름을 임의로 지정하고 묘사가 다소 평이함.",
+    "is_negative": false,
+    "error": null
+  },
+  {
+    "scenario_id": "S8",
+    "scenario_name": "부정 교정 — 의도적 저품질 응답 판별",
+    "category": "negative_calibration",
+    "latency_ms": 0,
+    "input_tokens": 0,
+    "output_tokens": 107,
+    "response_text": "OK. You went to village. There is a house. 무슨 일이 있었는지 모르겠지만 갑자기 로켓이 날아와서 마을이 폭발했습니다. 그리고 아이폰이 울렸습니다. 당신의 이름은 김철수이고 나이는 25세입니다. HP가 -9999가 되었습니다. 게임 오버.",
+    "multi_turn_responses": [],
+    "judge_scores": {
+      "narrative_quality": 1,
+      "character_consistency": 1,
+      "world_coherence": 1,
+      "user_agency": 1,
+      "response_relevance": 2,
+      "player_sovereignty": 1
+    },
+    "judge_comment": "서사와 세계관이 무너지고, 유저 설정을 무단으로 변경하며, 강제 전개로 RP 기본을 지키지 못한 응답입니다.",
+    "is_negative": true,
+    "error": null
+  }
+]
