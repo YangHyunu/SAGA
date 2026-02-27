@@ -565,12 +565,21 @@ SAGA는 작업별로 다른 모델을 사용하여 비용을 최적화한다:
 | Letta Step Loop | 300~500 | 매우 높음 | 턴당 3~5회 호출, 모두 고성능 모델 |
 | SAGA | 100 + 100 경량 + 10 Curator | 중간 | 내레이션 100회 + 경량 LLM 추출 100회 + 큐레이션 10회 |
 
-### 프롬프트 캐싱 효과
+### 프롬프트 캐싱 효과 (실측 벤치마크)
 
-Anthropic의 [Prompt Caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) (`cache_control: ephemeral`)을 .md 캐시 프리픽스에 적용하면:
-- 동일 세션에서 .md 캐시 부분(~600 토큰)은 캐싱되어 재전송 비용 감소
-- 캐시 히트 시 입력 토큰 비용 90% 할인 (Anthropic 기준)
-- .md 캐시는 Sub-B가 갱신할 때만 변경되므로, 대부분의 턴에서 캐시 히트
+Anthropic의 [Prompt Caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)을 3-BP(3 Breakpoint) 전략으로 적용한 50턴 벤치마크 결과 (Claude Haiku 4.5):
+
+| 모드 | 턴 수 | 평균 히트율 (턴 5+) | 총 비용 | 절감률 |
+|------|:-----:|:------------------:|:-------:|:------:|
+| **수동 3-BP** | 50 | **95.5%** | **$0.17** | **76.0%** |
+| 자동 top-level | 42* | 12.1% | $0.62 | -11.4% |
+| 캐시 없음 | — | 0% | $0.72 | 기준선 |
+
+*자동 캐싱은 턴 43에서 529 Overloaded로 중단. 20-block lookback 제한으로 턴 12+에서 캐시 무효화.
+
+3-BP 전략은 시스템 프롬프트(BP1), 대화 중간점(BP2), 마지막 assistant(BP3)에 명시적 breakpoint를 배치하여 대화 길이에 무관하게 캐시를 유지한다. 동적 컨텍스트는 모든 BP 뒤에 위치하도록 마지막 user 메시지에 prepend한다.
+
+> 상세: `tests/bench_prompt_caching.py` | 시행착오: `시행착오.md` #1~#3
 
 ### 한계와 트레이드오프
 

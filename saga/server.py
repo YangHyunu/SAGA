@@ -124,6 +124,19 @@ async def _handle_chat(request: ChatCompletionRequest):
     remaining_budget = config.token_budget.total_context_max - messages_tokens
     dynamic_budget = min(int(remaining_budget * 0.15), config.token_budget.dynamic_context_max)
 
+    # Cache diagnostic: log conversation prefix hash to detect truncation
+    import hashlib
+    non_system = [m for m in request.messages if m.role != "system"]
+    msg_count = len(non_system)
+    first_msg_hash = hashlib.md5(non_system[0].content[:100].encode()).hexdigest()[:6] if non_system else "none"
+    last_asst_idx = -1
+    for i, m in enumerate(non_system):
+        if m.role == "assistant":
+            last_asst_idx = i
+    prefix_content = "".join(m.content[:50] for m in non_system[:3])
+    prefix_hash = hashlib.md5(prefix_content.encode()).hexdigest()[:8]
+    logger.info(f"[CacheDiag] msgs={msg_count} first_hash={first_msg_hash} prefix_hash={prefix_hash} assistants={sum(1 for m in non_system if m.role == 'assistant')}")
+
     t_ctx_start = time.time()
     # Sub-A: Context Builder
     messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]

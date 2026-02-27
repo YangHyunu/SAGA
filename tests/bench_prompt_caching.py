@@ -413,7 +413,8 @@ def build_anthropic_body(messages: list[dict], model: str, max_tokens: int = 512
     return body
 
 
-async def run_benchmark(turns: int, no_cache: bool, model: str, auto_cache: bool = False):
+async def run_benchmark(turns: int, no_cache: bool, model: str, auto_cache: bool = False,
+                        trace: bool = False):
     """Run the prompt caching benchmark."""
     # Load config
     config_path = os.environ.get("SAGA_CONFIG", "config.yaml")
@@ -450,6 +451,7 @@ async def run_benchmark(turns: int, no_cache: bool, model: str, auto_cache: bool
     # Conversation state
     conversation: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     results = []
+    traces = []  # Per-turn trace data (if --trace enabled)
 
     async with httpx.AsyncClient(timeout=120.0) as http:
         for turn in range(1, turns + 1):
@@ -543,6 +545,49 @@ async def run_benchmark(turns: int, no_cache: bool, model: str, auto_cache: bool
             )
             conversation.append({"role": "assistant", "content": assistant_text})
 
+            # Trace: record full turn I/O
+            if trace:
+                # Summarize request messages (truncate content for readability)
+                req_summary = []
+                for msg in (body.get("system", []) if isinstance(body.get("system"), list) else []):
+                    req_summary.append({
+                        "type": "system",
+                        "text_len": len(msg.get("text", "")),
+                        "text_preview": msg.get("text", "")[:200] + "...",
+                        "cache_control": msg.get("cache_control"),
+                    })
+                for msg in body.get("messages", []):
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        text = content[0].get("text", "") if content else ""
+                        cc = content[0].get("cache_control") if content else None
+                    else:
+                        text = content
+                        cc = None
+                    req_summary.append({
+                        "role": msg["role"],
+                        "text_len": len(text),
+                        "text_preview": text[:200] + ("..." if len(text) > 200 else ""),
+                        "cache_control": cc,
+                    })
+                traces.append({
+                    "turn": turn,
+                    "user_input": user_input,
+                    "dynamic_context": {
+                        "md_prefix_len": len(md_prefix),
+                        "dynamic_suffix_len": len(dynamic_suffix),
+                    },
+                    "request_messages": req_summary,
+                    "top_level_cache_control": body.get("cache_control"),
+                    "response": {
+                        "assistant_text": assistant_text,
+                        "usage": usage,
+                        "model": data.get("model", ""),
+                        "stop_reason": data.get("stop_reason", ""),
+                    },
+                    "metrics": result,
+                })
+
             # Small delay to avoid rate limiting
             if turn < turns:
                 await asyncio.sleep(0.5)
@@ -561,6 +606,13 @@ async def run_benchmark(turns: int, no_cache: bool, model: str, auto_cache: bool
     report_path = Path(__file__).parent / f"bench_report_{suffix}.txt"
     save_report(results, model, cache_label, report_path)
     print(f"\nReport saved to: {report_path}")
+
+    # Save trace if enabled
+    if trace and traces:
+        trace_path = Path(__file__).parent / f"bench_trace_{suffix}.json"
+        with open(trace_path, "w", encoding="utf-8") as f:
+            json.dump(traces, f, indent=2, ensure_ascii=False)
+        print(f"Trace saved to: {trace_path}")
 
 
 def print_summary(results: list[dict], model: str, cache_label: str):
@@ -664,10 +716,11 @@ def main():
     parser.add_argument("--turns", type=int, default=50, help="Number of turns (default: 50)")
     parser.add_argument("--no-cache", action="store_true", help="Disable caching for baseline comparison")
     parser.add_argument("--auto-cache", action="store_true", help="Use top-level automatic caching instead of 3-BP")
+    parser.add_argument("--trace", action="store_true", help="Save full I/O trace per turn (bench_trace_*.json)")
     parser.add_argument("--model", default="claude-haiku-4-5-20251001", help="Anthropic model to use")
     args = parser.parse_args()
 
-    asyncio.run(run_benchmark(args.turns, args.no_cache, args.model, args.auto_cache))
+    asyncio.run(run_benchmark(args.turns, args.no_cache, args.model, args.auto_cache, args.trace))
 
 
 if __name__ == "__main__":
