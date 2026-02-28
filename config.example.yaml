@@ -44,6 +44,8 @@ md_cache:
 prompt_caching:
   enabled: true
   strategy: "md_prefix"
+  stabilize_system: true              # System message 안정화 (Lorebook 동적삽입 대응)
+  canonical_similarity_threshold: 0.30 # Jaccard < 이 값이면 새 캐릭터로 판단 → canonical 교체
 
 # === 큐레이터 설정 (Letta) ===
 curator:

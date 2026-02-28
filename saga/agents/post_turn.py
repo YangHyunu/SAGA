@@ -124,7 +124,7 @@ class PostTurnExtractor:
             await self.sqlite_db.create_relationship(session_id, "", npc_name, "met", 30)
 
         # Relationship changes
-        for change in state_block.get("relationship_changes", []):
+        for change in (state_block.get("relationship_changes") or []):
             if not isinstance(change, dict):
                 logger.debug(f"[Sub-B] Skipping non-dict relationship_change: {change!r}")
                 continue

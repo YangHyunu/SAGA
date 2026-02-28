@@ -26,6 +26,7 @@ from saga.agents.curator import CuratorRunner
 from saga.session import SessionManager
 from saga.utils.tokens import count_tokens, count_messages_tokens
 from saga.utils.parsers import strip_state_block
+from saga.system_stabilizer import SystemStabilizer
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +40,14 @@ context_builder: ContextBuilder = None
 post_turn: PostTurnExtractor = None
 curator: CuratorRunner = None
 session_mgr: SessionManager = None
+system_stabilizer: SystemStabilizer = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize all components on startup, cleanup on shutdown."""
     global config, sqlite_db, vector_db, md_cache, llm_client
-    global context_builder, post_turn, curator, session_mgr
+    global context_builder, post_turn, curator, session_mgr, system_stabilizer
 
     # Load config
     config_path = os.environ.get("SAGA_CONFIG", "config.yaml")
@@ -78,6 +80,9 @@ async def lifespan(app: FastAPI):
 
     # Initialize session manager
     session_mgr = SessionManager(sqlite_db, vector_db, md_cache, config)
+
+    # Initialize system stabilizer
+    system_stabilizer = SystemStabilizer(sqlite_db, config)
 
     logger.info(f"[SAGA] Server initialized. Listening on {config.server.host}:{config.server.port}")
 
@@ -177,6 +182,13 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     t_ctx_start = time.time()
     # Sub-A: Context Builder
     messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
+
+    # System Stabilizer: extract lorebook delta before context building
+    stabilized_messages, lorebook_delta = await system_stabilizer.stabilize(
+        session_id, messages_dicts
+    )
+    messages_dicts = stabilized_messages
+
     context_result = await context_builder.build_context(session_id, messages_dicts, dynamic_budget)
     t_ctx_end = time.time()
 
@@ -194,7 +206,8 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     augmented_messages = _build_cacheable_messages(
         messages_dicts,
         context_result["md_prefix"],
-        context_result["dynamic_suffix"]
+        context_result["dynamic_suffix"],
+        lorebook_delta,
     )
     bp_count = sum(1 for m in augmented_messages if isinstance(m, dict) and m.get("cache_control"))
     logger.info(f"[Trace] Cacheable messages: {len(augmented_messages)} msgs, {bp_count} breakpoints")
@@ -400,10 +413,13 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
         return request.user.strip()
 
     # Priority 3: System message hash (legacy fallback)
+    # Use first paragraph only — Lorebook entries appended later would cause
+    # different hashes each turn, breaking session continuity.
     import hashlib
     for msg in request.messages:
         if msg.role == "system":
-            return hashlib.md5(msg.content[:200].encode()).hexdigest()[:8]
+            first_para = msg.content.split('\n\n')[0][:300]
+            return hashlib.md5(first_para.encode()).hexdigest()[:8]
     return None
 
 
@@ -421,13 +437,13 @@ def _extract_gen_params(request: ChatCompletionRequest) -> dict:
     return params
 
 
-def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix):
+def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lorebook_delta=""):
     """Build messages with 3-breakpoint prompt caching structure.
 
-    BP1: system prompt (절대 안 변함)
+    BP1: system prompt (절대 안 변함 — SystemStabilizer가 보장)
     BP2: 대화 히스토리 중간 지점 assistant (이전 턴 내용은 안 변함)
     BP3: 대화 히스토리 마지막 assistant (직전 턴까지 안 변함)
-    Dynamic: md_prefix + dynamic_suffix → 마지막 user 메시지 직전에 삽입 (캐시 밖)
+    Dynamic: md_prefix + lorebook_delta + dynamic_suffix → 마지막 user 메시지 직전에 삽입 (캐시 밖)
 
     핵심: 동적 컨텍스트를 BP 뒤에 배치해야 BP2/BP3 캐시가 유효함.
     [시스템+BP1] → [대화...BP2...BP3] → [동적 컨텍스트] → [유저 입력]
@@ -471,6 +487,8 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix):
         context_block = ""
         if md_prefix:
             context_block += f"[--- SAGA Context Cache ---]\n{md_prefix}\n\n"
+        if lorebook_delta:
+            context_block += f"[--- Active Lorebook ---]\n{lorebook_delta}\n\n"
         if dynamic_suffix:
             context_block += f"[--- SAGA Dynamic ---]\n{dynamic_suffix}"
 
@@ -569,12 +587,13 @@ async def reset_all():
     try:
         vector_db.delete_all_data()
     except Exception:
-        # Fallback: wipe directory
-        chroma_path = "db/chroma"
-        if os.path.exists(chroma_path):
-            shutil.rmtree(chroma_path)
-            os.makedirs(chroma_path)
-        vector_db.initialize()
+        pass
+    # Always re-initialize to avoid readonly state after deletion
+    chroma_path = "db/chroma"
+    if os.path.exists(chroma_path):
+        shutil.rmtree(chroma_path)
+    os.makedirs(chroma_path, exist_ok=True)
+    vector_db.initialize()
 
     # 3. MdCache: clear all session dirs
     cache_dir = md_cache.cache_dir

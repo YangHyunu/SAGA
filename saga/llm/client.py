@@ -253,6 +253,8 @@ class LLMClient:
             stop = kwargs["stop"]
             body["stop_sequences"] = [stop] if isinstance(stop, str) else stop
 
+        cache_stats = {}
+
         async with self._http.stream(
             "POST",
             "https://api.anthropic.com/v1/messages",
@@ -267,10 +269,28 @@ class LLMClient:
             async for line in resp.aiter_lines():
                 if line.startswith("data: "):
                     data = json.loads(line[6:])
-                    if data.get("type") == "content_block_delta":
+                    event_type = data.get("type", "")
+
+                    if event_type == "message_start":
+                        usage = data.get("message", {}).get("usage", {})
+                        cache_stats["input"] = usage.get("input_tokens", 0)
+                        cache_stats["cache_read"] = usage.get("cache_read_input_tokens", 0)
+                        cache_stats["cache_create"] = usage.get("cache_creation_input_tokens", 0)
+                    elif event_type == "message_delta":
+                        cache_stats["output"] = data.get("usage", {}).get("output_tokens", 0)
+                    elif event_type == "content_block_delta":
                         text = data.get("delta", {}).get("text", "")
                         if text:
                             yield text
+
+        # Log cache stats after stream completes
+        if cache_stats.get("cache_read") or cache_stats.get("cache_create"):
+            logger.info(
+                f"[Cache] input={cache_stats.get('input', 0)} "
+                f"cache_read={cache_stats.get('cache_read', 0)} "
+                f"cache_create={cache_stats.get('cache_create', 0)} "
+                f"output={cache_stats.get('output', 0)}"
+            )
 
     async def _stream_openai(self, model, messages, temperature, max_tokens, **kwargs):
         """Stream from OpenAI."""

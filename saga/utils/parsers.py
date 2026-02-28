@@ -65,11 +65,17 @@ def parse_state_block(response_text: str) -> dict | None:
 
 
 def _parse_list(value: str) -> list[str]:
-    """Parse [item1, item2] or item1, item2 format."""
+    """Parse [item1, item2] or item1, item2 format.
+
+    Handles parenthesized/bracketed commas correctly:
+    e.g. "Yui (유이, 18), Mina" -> ["Yui (유이, 18)", "Mina"]
+    """
     value = value.strip('[]')
     if not value or value.lower() in ('없음', 'none', '[]'):
         return []
-    return [item.strip().strip('"').strip("'") for item in value.split(',') if item.strip()]
+    # Split on commas NOT inside parentheses or brackets
+    items = re.split(r',\s*(?![^()\[\]]*[)\]])', value)
+    return [item.strip().strip('"').strip("'") for item in items if item.strip()]
 
 
 def _parse_transfer_list(value: str) -> list[dict]:
