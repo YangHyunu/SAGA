@@ -4,6 +4,7 @@
 server:
   host: "0.0.0.0"
   port: 8000
+  api_key: ""  # Bearer 토큰 인증. 빈 문자열 = 인증 비활성화
 
 # === 모델 설정 ===
 models:

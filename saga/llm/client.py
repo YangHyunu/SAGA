@@ -68,7 +68,6 @@ class LLMClient:
                 system_parts.append(part)
             else:
                 if msg.get("cache_control"):
-                    # Anthropic requires content as array when applying cache_control
                     entry = {
                         "role": msg["role"],
                         "content": [
@@ -87,6 +86,12 @@ class LLMClient:
         }
         if system_parts:
             body["system"] = system_parts
+        # Anthropic supports top_p and stop_sequences
+        if kwargs.get("top_p") is not None:
+            body["top_p"] = kwargs["top_p"]
+        if kwargs.get("stop") is not None:
+            stop = kwargs["stop"]
+            body["stop_sequences"] = [stop] if isinstance(stop, str) else stop
 
         resp = await self._http.post(
             "https://api.anthropic.com/v1/messages",
@@ -130,12 +135,23 @@ class LLMClient:
                 contents.append({"role": role, "parts": [{"text": msg["content"]}]})
         system_instruction = "\n\n".join(system_parts) if system_parts else None
 
+        gen_config = {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        }
+        if kwargs.get("top_p") is not None:
+            gen_config["topP"] = kwargs["top_p"]
+        if kwargs.get("frequency_penalty") is not None:
+            gen_config["frequencyPenalty"] = kwargs["frequency_penalty"]
+        if kwargs.get("presence_penalty") is not None:
+            gen_config["presencePenalty"] = kwargs["presence_penalty"]
+        if kwargs.get("stop") is not None:
+            stop = kwargs["stop"]
+            gen_config["stopSequences"] = [stop] if isinstance(stop, str) else stop
+
         body = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            }
+            "generationConfig": gen_config,
         }
         if system_instruction:
             body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
@@ -178,6 +194,14 @@ class LLMClient:
             "temperature": temperature,
             "max_completion_tokens": max_tokens,
         }
+        if kwargs.get("top_p") is not None:
+            body["top_p"] = kwargs["top_p"]
+        if kwargs.get("frequency_penalty") is not None:
+            body["frequency_penalty"] = kwargs["frequency_penalty"]
+        if kwargs.get("presence_penalty") is not None:
+            body["presence_penalty"] = kwargs["presence_penalty"]
+        if kwargs.get("stop") is not None:
+            body["stop"] = kwargs["stop"]
         resp = await self._http.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -223,6 +247,11 @@ class LLMClient:
         }
         if system_parts:
             body["system"] = system_parts
+        if kwargs.get("top_p") is not None:
+            body["top_p"] = kwargs["top_p"]
+        if kwargs.get("stop") is not None:
+            stop = kwargs["stop"]
+            body["stop_sequences"] = [stop] if isinstance(stop, str) else stop
 
         async with self._http.stream(
             "POST",
@@ -249,8 +278,16 @@ class LLMClient:
         body = {
             "model": model,
             "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-            "temperature": temperature, "max_tokens": max_tokens, "stream": True
+            "temperature": temperature, "max_tokens": max_tokens, "stream": True,
         }
+        if kwargs.get("top_p") is not None:
+            body["top_p"] = kwargs["top_p"]
+        if kwargs.get("frequency_penalty") is not None:
+            body["frequency_penalty"] = kwargs["frequency_penalty"]
+        if kwargs.get("presence_penalty") is not None:
+            body["presence_penalty"] = kwargs["presence_penalty"]
+        if kwargs.get("stop") is not None:
+            body["stop"] = kwargs["stop"]
         async with self._http.stream("POST", "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=body) as resp:
