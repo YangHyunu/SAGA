@@ -434,12 +434,13 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
 
     # Cache warming: record last request for this session (Anthropic only)
     if _is_anthropic_model(request.model):
-        _warming_data[session_id] = {
-            "timestamp": time.time(),
-            "messages": augmented_messages,
-            "model": config.models.narration,
-            "count": 0,
-        }
+        async with _warming_lock:
+            _warming_data[session_id] = {
+                "timestamp": time.time(),
+                "messages": augmented_messages,
+                "model": config.models.narration,
+                "count": 0,
+            }
 
     # Build response
     resp = ChatCompletionResponse(
@@ -580,12 +581,13 @@ async def _stream_response(session_id, session, augmented_messages, request, las
 
     # Cache warming: record last request for this session (Anthropic only)
     if _is_anthropic_model(request.model):
-        _warming_data[session_id] = {
-            "timestamp": time.time(),
-            "messages": augmented_messages,
-            "model": config.models.narration,
-            "count": 0,
-        }
+        async with _warming_lock:
+            _warming_data[session_id] = {
+                "timestamp": time.time(),
+                "messages": augmented_messages,
+                "model": config.models.narration,
+                "count": 0,
+            }
 
 
 def _make_sse_chunk(session_id: str, model: str | None, content: str) -> str:

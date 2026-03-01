@@ -66,13 +66,6 @@ dynamic_lorebook:
   decay_threshold: 5
   propagation_depth: 2
 
-# === 그래프 설정 ===
-graph:
-  db_path: "db/graph.kuzu"
-  mode: "on-disk"
-  max_hop: 3
-  hybrid_rerank: true
-
 # === 세션 ===
 session:
   auto_save: true

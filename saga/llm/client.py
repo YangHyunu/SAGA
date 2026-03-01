@@ -270,6 +270,9 @@ class LLMClient:
             },
             json=body,
         ) as resp:
+            if resp.status_code != 200:
+                body = await resp.aread()
+                raise RuntimeError(f"Anthropic API error {resp.status_code}: {body.decode(errors='replace')[:500]}")
             async for line in resp.aiter_lines():
                 if line.startswith("data: "):
                     data = json.loads(line[6:])
