@@ -101,6 +101,10 @@ class CacheWarmingConfig(BaseModel):
     max_warmings: int = 4  # per session before giving up
 
 
+class StateInstructionConfig(BaseModel):
+    enabled: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
@@ -118,6 +122,7 @@ class SagaConfig(BaseModel):
     session: SessionConfig = Field(default_factory=SessionConfig)
     modules: ModulesConfig = Field(default_factory=ModulesConfig)
     cache_warming: CacheWarmingConfig = Field(default_factory=CacheWarmingConfig)
+    state_instruction: StateInstructionConfig = Field(default_factory=StateInstructionConfig)
 
 
 # ---------------------------------------------------------------------------

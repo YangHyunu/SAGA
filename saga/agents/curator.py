@@ -97,6 +97,9 @@ class CuratorRunner:
 
         if result.get("events"):
             for event in result["events"]:
+                if not isinstance(event, dict):
+                    logger.debug(f"[Curator] Skipping non-dict event: {event!r}")
+                    continue
                 await self.sqlite_db.queue_event(session_id, event)
 
         if result.get("compress_story") and result.get("compressed_summary"):

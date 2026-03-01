@@ -375,6 +375,15 @@ class SQLiteDB:
     def _char_id(self, session_id: str, name: str) -> str:
         return hashlib.md5(f"{session_id}:{name}".encode()).hexdigest()[:12]
 
+    async def ensure_player(self, session_id: str, name: str = ""):
+        """Create player character if not exists. Safe to call every turn."""
+        char_id = self._char_id(session_id, name)
+        async with self._db.execute(
+            "SELECT id FROM characters WHERE id = ?", (char_id,)
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                await self.create_character(session_id, name, is_player=True)
+
     async def create_character(
         self,
         session_id: str,
@@ -716,6 +725,7 @@ class SQLiteDB:
                 "max_hp": 100,
                 "mood": "neutral",
                 "nearby_npcs": [],
+                "recent_events": [],
                 "relationships": [],
                 "session_id": session_id,
             }
@@ -737,12 +747,30 @@ class SQLiteDB:
         # Relationships involving the player
         relationships = await self.get_relationships(session_id, player.get("name"))
 
+        # Enrich nearby_npcs with relationship data
+        nearby_enriched = []
+        for npc_name in nearby_npcs:
+            npc_info = {"name": npc_name}
+            for rel in relationships:
+                if rel.get("to_name") == npc_name or rel.get("from_name") == npc_name:
+                    npc_info["rel_type"] = rel.get("rel_type", "unknown")
+                    npc_info["strength"] = rel.get("strength", 0)
+                    break
+            nearby_enriched.append(npc_info)
+
+        # Recent events
+        recent_events = await self.get_recent_events(session_id, limit=5)
+
         return {
             "location": location,
             "hp": player.get("hp", 100),
             "max_hp": player.get("max_hp", 100),
             "mood": player.get("mood", "neutral"),
-            "nearby_npcs": nearby_npcs,
+            "nearby_npcs": nearby_enriched,
+            "recent_events": [
+                {"turn": e["turn"], "description": e["description"]}
+                for e in recent_events
+            ],
             "relationships": relationships,
             "session_id": session_id,
         }

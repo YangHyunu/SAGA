@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
+from starlette.background import BackgroundTask
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from saga.config import load_config, SagaConfig
 from saga.models import (
@@ -111,6 +112,10 @@ post_turn: PostTurnExtractor = None
 curator: CuratorRunner = None
 session_mgr: SessionManager = None
 system_stabilizer: SystemStabilizer = None
+
+# Keep strong references to fire-and-forget tasks so GC doesn't collect them
+# (asyncio event loop only holds weak references to tasks)
+_background_tasks: set = set()
 
 # Cache warming: track last request per session (bounded)
 # session_id -> {timestamp, messages, model, count}
@@ -358,9 +363,67 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
             break
 
     if request.stream:
+        # Mutable container: generator stores full_response here for BackgroundTask
+        stream_ctx = {"full_response": ""}
+
+        async def _post_stream_task():
+            """Runs AFTER response is fully sent, outside Starlette's cancel scope."""
+            try:
+                full_response = stream_ctx["full_response"]
+                if not full_response:
+                    logger.warning("[Trace] Post-stream: empty full_response (client disconnect?), skipping Sub-B")
+                    return
+
+                # autoContinue: accumulate partial responses; defer turn+Sub-B
+                if is_continuation:
+                    prev = _pending_responses.get(session_id, {}).get("response", "")
+                    combined = prev + full_response
+                    _pending_responses[session_id] = {"response": combined, "timestamp": time.time()}
+                    logger.info(
+                        f"[Trace] autoContinue (stream): buffered partial response "
+                        f"(cumulative={len(combined)}ch) — skipping turn increment"
+                    )
+                    return
+
+                # Final (non-continuation) response: combine with any pending partial
+                pending_entry = _pending_responses.pop(session_id, None)
+                if pending_entry:
+                    full_response = pending_entry["response"] + full_response
+                    logger.info(
+                        f"[Trace] autoContinue (stream): final response — combining "
+                        f"pending({len(pending_entry['response'])}ch) + current({len(stream_ctx['full_response'])}ch)"
+                    )
+
+                turn_number = await sqlite_db.increment_turn(session_id)
+                logger.info(f"[Trace] ━━━ DONE turn={turn_number} (stream) ━━━")
+
+                task_b = asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input))
+                _background_tasks.add(task_b)
+                task_b.add_done_callback(_background_tasks.discard)
+                task_b.add_done_callback(_log_task_exception)
+
+                if config.curator.enabled and turn_number % config.curator.interval == 0:
+                    task_c = asyncio.create_task(curator.run(session_id, turn_number))
+                    _background_tasks.add(task_c)
+                    task_c.add_done_callback(_background_tasks.discard)
+                    task_c.add_done_callback(_log_task_exception)
+
+                # Cache warming: record last request for this session (Anthropic only)
+                if _is_anthropic_model(request.model):
+                    async with _warming_lock:
+                        _warming_data[session_id] = {
+                            "timestamp": time.time(),
+                            "messages": augmented_messages,
+                            "model": config.models.narration,
+                            "count": 0,
+                        }
+            except Exception as e:
+                logger.error(f"[Trace] Post-stream task failed: {e}", exc_info=True)
+
         return StreamingResponse(
-            _stream_response(session_id, session, augmented_messages, request, last_user_input, is_continuation),
-            media_type="text/event-stream"
+            _stream_response(session_id, session, augmented_messages, request, stream_ctx),
+            media_type="text/event-stream",
+            background=BackgroundTask(_post_stream_task),
         )
 
     # Non-streaming
@@ -425,11 +488,15 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
 
     # Sub-B: async post-turn processing
     task_b = asyncio.create_task(post_turn.extract_and_update(session_id, llm_response, turn_number, last_user_input))
+    _background_tasks.add(task_b)
+    task_b.add_done_callback(_background_tasks.discard)
     task_b.add_done_callback(_log_task_exception)
 
     # Curator check
     if config.curator.enabled and turn_number % config.curator.interval == 0:
         task_c = asyncio.create_task(curator.run(session_id, turn_number))
+        _background_tasks.add(task_c)
+        task_c.add_done_callback(_background_tasks.discard)
         task_c.add_done_callback(_log_task_exception)
 
     # Cache warming: record last request for this session (Anthropic only)
@@ -462,13 +529,12 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     return resp
 
 
-async def _stream_response(session_id, session, augmented_messages, request, last_user_input, is_continuation=False):
-    """SSE streaming response generator with state block filtering.
+async def _stream_response(session_id, session, augmented_messages, request, stream_ctx):
+    """SSE streaming generator — ONLY yields chunks, no post-processing.
 
     State blocks (```state ... ```) are stripped from the stream sent to the
     client but preserved in full_response for Sub-B post-turn processing.
-    Uses a simple state machine: NORMAL → IN_BLOCK on opening marker,
-    IN_BLOCK → NORMAL on closing marker.
+    Post-stream work (increment_turn, Sub-B, Curator) runs in BackgroundTask.
     """
     full_response = ""      # Unfiltered — for Sub-B
     buffer = ""             # Accumulates text to detect state block markers
@@ -487,6 +553,7 @@ async def _stream_response(session_id, session, augmented_messages, request, las
         **gen_params,
     ):
         full_response += chunk
+        stream_ctx["full_response"] = full_response  # incremental update for BackgroundTask
         buffer += chunk
 
         # Process buffer for state block markers
@@ -544,50 +611,12 @@ async def _stream_response(session_id, session, augmented_messages, request, las
     yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
     yield "data: [DONE]\n\n"
 
-    # Post-stream processing (full_response includes state block for Sub-B)
+    # Store full_response for BackgroundTask (post-stream processing runs there)
     logger.info(
         f"[Trace] Stream done: {(time.time() - t_stream_start)*1000:.0f}ms | "
         f"response={len(full_response)}ch state_filtered={state_block_filtered}"
     )
-
-    # autoContinue: accumulate partial responses; defer turn+Sub-B until final response
-    if is_continuation:
-        prev = _pending_responses.get(session_id, {}).get("response", "")
-        combined = prev + full_response
-        _pending_responses[session_id] = {"response": combined, "timestamp": time.time()}
-        logger.info(
-            f"[Trace] autoContinue (stream): buffered partial response "
-            f"(cumulative={len(combined)}ch) — skipping turn increment"
-        )
-        return
-
-    # Final (non-continuation) response: combine with any pending partial
-    pending_entry = _pending_responses.pop(session_id, None)
-    if pending_entry:
-        combined_response = pending_entry["response"] + full_response
-        logger.info(
-            f"[Trace] autoContinue (stream): final response — combining "
-            f"pending({len(pending_entry['response'])}ch) + current({len(full_response)}ch)"
-        )
-        full_response = combined_response
-
-    turn_number = await sqlite_db.increment_turn(session_id)
-    logger.info(f"[Trace] ━━━ DONE turn={turn_number} (stream) ━━━")
-    task_b = asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input))
-    task_b.add_done_callback(_log_task_exception)
-    if config.curator.enabled and turn_number % config.curator.interval == 0:
-        task_c = asyncio.create_task(curator.run(session_id, turn_number))
-        task_c.add_done_callback(_log_task_exception)
-
-    # Cache warming: record last request for this session (Anthropic only)
-    if _is_anthropic_model(request.model):
-        async with _warming_lock:
-            _warming_data[session_id] = {
-                "timestamp": time.time(),
-                "messages": augmented_messages,
-                "model": config.models.narration,
-                "count": 0,
-            }
+    stream_ctx["full_response"] = full_response
 
 
 def _make_sse_chunk(session_id: str, model: str | None, content: str) -> str:
@@ -846,7 +875,31 @@ async def reset_all():
         shutil.rmtree(cache_dir)
         os.makedirs(cache_dir)
 
-    return {"status": "reset_all", "sessions_cleared": len(sessions)}
+    # 4. Letta: delete all saga_curator_* agents
+    letta_deleted = 0
+    if curator and hasattr(curator, 'letta_adapter') and curator.letta_adapter._initialized:
+        try:
+            existing = list(curator.letta_adapter.client.agents.list())
+            for agent in existing:
+                name = getattr(agent, "name", "")
+                if name.startswith("saga_curator_"):
+                    try:
+                        curator.letta_adapter.client.agents.delete(agent.id)
+                        letta_deleted += 1
+                    except Exception:
+                        pass
+            curator.letta_adapter._agents.clear()
+            logger.info(f"[Reset] Letta: deleted {letta_deleted} curator agents")
+        except Exception as e:
+            logger.warning(f"[Reset] Letta cleanup failed: {e}")
+
+    # 5. ab_metrics: clear metrics logs
+    ab_metrics_dir = "logs/ab_metrics"
+    if os.path.exists(ab_metrics_dir):
+        shutil.rmtree(ab_metrics_dir)
+        logger.info("[Reset] Cleared logs/ab_metrics/")
+
+    return {"status": "reset_all", "sessions_cleared": len(sessions), "letta_agents_deleted": letta_deleted}
 
 @app.get("/api/memory/search", dependencies=[Depends(_verify_bearer)])
 async def search_memory(q: str, session: str = "", collection: str = "episodes"):

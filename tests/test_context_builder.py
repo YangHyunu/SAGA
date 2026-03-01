@@ -254,9 +254,15 @@ class TestAssembleDynamic:
     def setup_method(self):
         self.builder = _make_builder()
 
-    def test_always_includes_state_block_instruction(self):
+    def test_includes_state_block_instruction_when_enabled(self):
+        self.builder.config.state_instruction.enabled = True
         result = self._assemble()
         assert STATE_BLOCK_INSTRUCTION in result
+
+    def test_excludes_state_block_instruction_when_disabled(self):
+        self.builder.config.state_instruction.enabled = False
+        result = self._assemble()
+        assert STATE_BLOCK_INSTRUCTION not in result
 
     def test_live_state_included_when_fits_budget(self):
         result = self._assemble(live_state="Current state: forest", budget=5000)

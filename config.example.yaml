@@ -73,6 +73,10 @@ cache_warming:
   interval: 270      # 초 (4.5분 — 5분 TTL 만료 직전 갱신)
   max_warmings: 4    # 세션당 최대 워밍 횟수
 
+# === 상태 추적 인스트럭션 ===
+state_instruction:
+  enabled: true              # false로 설정 시 LLM에 state block 생성 지시 안 함 (Flash 추출로 대체)
+
 # === 모듈 통합 (Phase 4) ===
 modules:
   rpg:

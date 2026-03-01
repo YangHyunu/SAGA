@@ -238,7 +238,8 @@ class ContextBuilder:
                 parts.append(lore_text)
                 remaining -= lore_tokens
 
-        # State tracking instruction (always added)
-        parts.append(STATE_BLOCK_INSTRUCTION)
+        # State tracking instruction (toggle via config)
+        if self.config.state_instruction.enabled:
+            parts.append(STATE_BLOCK_INSTRUCTION)
 
         return "\n\n".join(parts)

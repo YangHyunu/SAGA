@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: letta
     ports:
       - "5432:5432"
+    volumes:
+      - ./init-pgvector.sql:/docker-entrypoint-initdb.d/01-pgvector.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U letta"]
       interval: 5s
@@ -20,5 +22,7 @@ services:
         condition: service_healthy
     environment:
       LETTA_PG_URI: postgresql://letta:letta@letta-db:5432/letta
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY : ${OPENAI_API_KEY}
     ports:
       - "8283:8283"

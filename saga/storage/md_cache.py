@@ -86,14 +86,22 @@ class MdCache:
 
         lines = [f"---\nturn: {turn}\n---\n"]
 
-        lines.append("## 현재 상태")
-        lines.append(f"- 위치: {location}")
-        lines.append(f"- HP: {hp}/{max_hp}")
-        lines.append(f"- 기분: {mood}")
-        lines.append("")
+        # Only render sections with meaningful (non-default) data
+        status_lines = []
+        if location not in ("알 수 없음", "unknown", ""):
+            status_lines.append(f"- 위치: {location}")
+        if hp != max_hp or (hp != 100 and hp != "?"):
+            status_lines.append(f"- HP: {hp}/{max_hp}")
+        if mood not in ("보통", "neutral", ""):
+            status_lines.append(f"- 기분: {mood}")
 
-        lines.append("## 주변 인물")
+        if status_lines:
+            lines.append("## 현재 상태")
+            lines.extend(status_lines)
+            lines.append("")
+
         if nearby_npcs:
+            lines.append("## 주변 인물")
             for npc in nearby_npcs:
                 if isinstance(npc, dict):
                     name = npc.get("name", "이름 없음")
@@ -102,12 +110,10 @@ class MdCache:
                     lines.append(f"- {name} (관계: {rel_type}, 친밀도: {strength})")
                 else:
                     lines.append(f"- {npc}")
-        else:
-            lines.append("- 없음")
-        lines.append("")
+            lines.append("")
 
-        lines.append("## 최근 이벤트")
         if recent_events:
+            lines.append("## 최근 이벤트")
             for event in recent_events:
                 if isinstance(event, dict):
                     t = event.get("turn", "?")
@@ -115,9 +121,7 @@ class MdCache:
                     lines.append(f"- Turn {t}: {desc}")
                 else:
                     lines.append(f"- {event}")
-        else:
-            lines.append("- 없음")
-        lines.append("")
+            lines.append("")
 
         full_content = "\n".join(lines)
         filepath = os.path.join(self.get_session_dir(session_id), LIVE_FILE)
