@@ -7,8 +7,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Regex for state block extraction (lenient: handles spaces, varied backticks)
+# Matches both closed (```state...```) and unclosed (```state... EOF) blocks
 STATE_BLOCK_PATTERN = re.compile(
-    r'`{2,3}\s*state\s*\n(.*?)`{2,3}',
+    r'`{2,3}\s*state\s*\n(.*?)(?:`{2,3}|$)',
     re.DOTALL
 )
 
