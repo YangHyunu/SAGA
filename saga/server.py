@@ -5,6 +5,11 @@ import re
 import time
 import logging
 import os
+
+# Ensure all saga loggers output at INFO level
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+for _name in ("saga", "saga.llm.client", "saga.system_stabilizer"):
+    logging.getLogger(_name).setLevel(logging.INFO)
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -166,7 +171,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     logger.info(f"[Trace] Session: {session_id} (via {session_src})")
 
     # Token counting
-    messages_tokens = count_messages_tokens([{"role": m.role, "content": m.content} for m in request.messages])
+    messages_tokens = count_messages_tokens([{"role": m.role, "content": m.get_text_content()} for m in request.messages])
     remaining_budget = config.token_budget.total_context_max - messages_tokens
     dynamic_budget = min(int(remaining_budget * 0.15), config.token_budget.dynamic_context_max)
     logger.info(f"[Trace] Tokens: input={messages_tokens} budget_remain={remaining_budget} dynamic_budget={dynamic_budget}")
@@ -174,14 +179,14 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     # Cache diagnostic
     non_system = [m for m in request.messages if m.role != "system"]
     msg_count = len(non_system)
-    first_msg_hash = hashlib.md5(non_system[0].content[:100].encode()).hexdigest()[:6] if non_system else "none"
-    prefix_content = "".join(m.content[:50] for m in non_system[:3])
+    first_msg_hash = hashlib.md5(non_system[0].get_text_content()[:100].encode()).hexdigest()[:6] if non_system else "none"
+    prefix_content = "".join(m.get_text_content()[:50] for m in non_system[:3])
     prefix_hash = hashlib.md5(prefix_content.encode()).hexdigest()[:8]
     logger.debug(f"[CacheDiag] msgs={msg_count} first_hash={first_msg_hash} prefix_hash={prefix_hash}")
 
     t_ctx_start = time.time()
     # Sub-A: Context Builder
-    messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
+    messages_dicts = [{"role": m.role, "content": m.get_text_content()} for m in request.messages]
 
     # System Stabilizer: extract lorebook delta before context building
     stabilized_messages, lorebook_delta = await system_stabilizer.stabilize(
@@ -216,7 +221,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     last_user_input = ""
     for msg in reversed(request.messages):
         if msg.role == "user":
-            last_user_input = msg.content
+            last_user_input = msg.get_text_content()
             break
 
     if request.stream:
@@ -418,7 +423,7 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
     import hashlib
     for msg in request.messages:
         if msg.role == "system":
-            first_para = msg.content.split('\n\n')[0][:300]
+            first_para = msg.get_text_content().split('\n\n')[0][:300]
             return hashlib.md5(first_para.encode()).hexdigest()[:8]
     return None
 
@@ -583,17 +588,28 @@ async def reset_all():
         await sqlite_db._db.execute("DELETE FROM sessions WHERE id = ?", (s["id"],))
     await sqlite_db._db.commit()
 
-    # 2. ChromaDB: delete and recreate collections
+    # 2. ChromaDB: delete collections via API (avoids readonly after dir wipe)
     try:
-        vector_db.delete_all_data()
-    except Exception:
-        pass
-    # Always re-initialize to avoid readonly state after deletion
-    chroma_path = "db/chroma"
-    if os.path.exists(chroma_path):
-        shutil.rmtree(chroma_path)
-    os.makedirs(chroma_path, exist_ok=True)
-    vector_db.initialize()
+        if vector_db.client:
+            for col_name in ("lorebook", "episodes"):
+                try:
+                    vector_db.client.delete_collection(col_name)
+                except Exception:
+                    pass
+            # Recreate collections
+            vector_db.lorebook = vector_db.client.get_or_create_collection(
+                name="lorebook", metadata={"hnsw:space": "cosine"}
+            )
+            vector_db.episodes = vector_db.client.get_or_create_collection(
+                name="episodes", metadata={"hnsw:space": "cosine"}
+            )
+    except Exception as e:
+        logger.warning(f"[Reset] ChromaDB reset fallback: {e}")
+        chroma_path = "db/chroma"
+        if os.path.exists(chroma_path):
+            shutil.rmtree(chroma_path)
+        os.makedirs(chroma_path, exist_ok=True)
+        vector_db.initialize()
 
     # 3. MdCache: clear all session dirs
     cache_dir = md_cache.cache_dir

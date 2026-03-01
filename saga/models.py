@@ -26,9 +26,17 @@ class ChatMessage(BaseModel):
     """A single message in a conversation turn."""
 
     role: str
-    content: str
+    content: Union[str, List[Dict[str, Any]]]
     name: Optional[str] = None
     cache_control: Optional[Dict[str, Any]] = None
+
+    def get_text_content(self) -> str:
+        """Extract plain text from content (handles multimodal arrays)."""
+        if isinstance(self.content, str):
+            return self.content
+        return "\n".join(
+            c.get("text", "") for c in self.content if c.get("type") == "text"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +46,8 @@ class ChatMessage(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
+
+    model_config = {"extra": "ignore"}
 
     model: str
     messages: List[ChatMessage]
