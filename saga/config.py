@@ -82,13 +82,6 @@ class DynamicLorebookConfig(BaseModel):
     propagation_depth: int = 2
 
 
-class GraphConfig(BaseModel):
-    db_path: str = "db/graph.kuzu"
-    mode: str = "on-disk"
-    max_hop: int = 3
-    hybrid_rerank: bool = True
-
-
 class SessionConfig(BaseModel):
     auto_save: bool = True
     auto_save_interval: int = 5
@@ -127,7 +120,6 @@ class SagaConfig(BaseModel):
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
     curator: CuratorConfig = Field(default_factory=CuratorConfig)
     dynamic_lorebook: DynamicLorebookConfig = Field(default_factory=DynamicLorebookConfig)
-    graph: GraphConfig = Field(default_factory=GraphConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     modules: ModulesConfig = Field(default_factory=ModulesConfig)
     cache_warming: CacheWarmingConfig = Field(default_factory=CacheWarmingConfig)

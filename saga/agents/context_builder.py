@@ -65,13 +65,6 @@ class ContextBuilder:
                 return msg.get("content", "")
         return ""
 
-    async def _get_relevant_episodes(self, session_id: str, query: str) -> list[dict]:
-        """3-stage episode retrieval from ChromaDB: Recent + Important + Similar."""
-        recent = self.vector_db.search_episodes(session_id, query, n_results=5)
-        important = self.vector_db.search_important_episodes(session_id, n_results=5, min_importance=50)
-        similar = self.vector_db.search_episodes(session_id, query, n_results=10)
-        return self._merge_episodes(recent, important, similar)
-
     def _normalize_chroma_result(self, result: dict) -> list[dict]:
         """Flatten a ChromaDB query/get result into a list of episode dicts."""
         if not result:
@@ -101,7 +94,7 @@ class ContextBuilder:
             })
         return episodes
 
-    async def _get_relevant_episodes_rrf(self, session_id: str, query: str) -> list[dict]:
+    async def _get_relevant_episodes_rrf(self, session_id: str, query: str, top_n: int = 10) -> list[dict]:
         """Select episodes using Reciprocal Rank Fusion across 3 sources.
 
         Sources:
@@ -133,13 +126,14 @@ class ContextBuilder:
                 if eid not in episode_cache:
                     episode_cache[eid] = {**ep, "source": source_name}
 
-        ranked_ids = sorted(scores, key=lambda x: scores[x], reverse=True)
+        ranked_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:top_n]
         selected = [episode_cache[eid] for eid in ranked_ids]
 
         logger.debug(
-            "RRF episode selection: %d candidates → %d selected (session=%s)",
+            "RRF episode selection: %d candidates → %d ranked (top_n=%d, session=%s)",
             len(scores),
             len(selected),
+            top_n,
             session_id,
         )
         return selected

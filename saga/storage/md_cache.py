@@ -14,7 +14,11 @@ class MdCache:
     # ------------------------------------------------------------------ #
 
     def get_session_dir(self, session_id: str) -> str:
-        return os.path.join(self.cache_dir, session_id)
+        base = os.path.realpath(self.cache_dir)
+        candidate = os.path.realpath(os.path.join(base, session_id))
+        if not candidate.startswith(base + os.sep) and candidate != base:
+            raise ValueError(f"Invalid session_id: path traversal detected")
+        return candidate
 
     # ------------------------------------------------------------------ #
     # Read

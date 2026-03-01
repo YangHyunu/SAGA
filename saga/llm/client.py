@@ -156,10 +156,14 @@ class LLMClient:
         if system_instruction:
             body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         import asyncio as _aio
         for attempt in range(4):
-            resp = await self._http.post(url, json=body)
+            resp = await self._http.post(
+                url,
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                json=body,
+            )
             if resp.status_code == 429:
                 wait = 2 ** attempt
                 logger.warning(f"[Google] 429 rate limit, retrying in {wait}s (attempt {attempt+1}/4)")

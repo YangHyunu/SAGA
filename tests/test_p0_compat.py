@@ -115,7 +115,7 @@ class TestSessionIdExtraction:
         raw = self._make_raw_request({})
         result = _extract_session_id(req, raw)
         assert result is not None
-        assert len(result) == 8  # MD5 hex[:8]
+        assert len(result) == 16  # SHA256 hex[:16]
 
     def test_no_system_returns_none(self):
         from saga.server import _extract_session_id

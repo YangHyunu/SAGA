@@ -14,6 +14,7 @@ This module:
 import hashlib
 import logging
 import re
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 
@@ -120,13 +121,13 @@ class SystemStabilizer:
         canonical_paras = self._split_paragraphs(canonical)
         current_paras = self._split_paragraphs(current)
 
-        canonical_set = set(canonical_paras)
-        current_set = set(current_paras)
+        canonical_counts = Counter(canonical_paras)
+        current_counts = Counter(current_paras)
 
-        # Paragraphs added in current (not in canonical)
-        added = current_set - canonical_set
-        # Paragraphs removed from current (in canonical but not current)
-        removed = canonical_set - current_set
+        # Paragraphs with more occurrences in current than canonical
+        added = set(p for p in current_paras if current_counts[p] > canonical_counts[p])
+        # Paragraphs with more occurrences in canonical than current
+        removed = set(p for p in canonical_paras if canonical_counts[p] > current_counts[p])
 
         if not added:
             return canonical, ""

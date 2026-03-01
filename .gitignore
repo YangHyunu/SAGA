@@ -22,5 +22,10 @@ config.yaml
 # OMC state
 .omc/
 
+# Benchmark results
+tests/bench_*_results.json
+tests/bench_report.json
+tests/bench_report.txt
+
 # OS
 .DS_Store

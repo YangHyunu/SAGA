@@ -1,10 +1,13 @@
 """SAGA Proxy Server — FastAPI OpenAI-compatible endpoint."""
 import asyncio
+import hashlib
+import hmac
 import json
 import re
 import time
 import logging
 import os
+from collections import OrderedDict
 
 # Ensure all saga loggers output at INFO level
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -36,14 +39,37 @@ from saga.system_stabilizer import SystemStabilizer
 logger = logging.getLogger(__name__)
 
 # ============================================================
+# Bounded dict for DoS protection (max sessions in memory)
+# ============================================================
+
+_MAX_TRACKED_SESSIONS = 500
+
+
+class _BoundedDict(OrderedDict):
+    """LRU dict with a hard size cap to prevent memory exhaustion."""
+
+    def __init__(self, maxsize: int):
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        while len(self) > self._maxsize:
+            oldest = next(iter(self))
+            del self[oldest]
+
+
+# ============================================================
 # autoContinue detection & pending response buffer
 # ============================================================
 
 _CONTINUE_PATTERN = re.compile(r"Continue the last response", re.IGNORECASE)
 
-# Buffer for autoContinue partial responses
+# Buffer for autoContinue partial responses (bounded)
 # key: session_id -> {"response": str, "timestamp": float}
-_pending_responses: dict[str, dict] = {}
+_pending_responses: _BoundedDict = _BoundedDict(_MAX_TRACKED_SESSIONS)
 
 _PENDING_TTL_SECONDS = 60
 
@@ -86,9 +112,10 @@ curator: CuratorRunner = None
 session_mgr: SessionManager = None
 system_stabilizer: SystemStabilizer = None
 
-# Cache warming: track last request per session
+# Cache warming: track last request per session (bounded)
 # session_id -> {timestamp, messages, model, count}
-_warming_data: dict = {}
+_warming_data: _BoundedDict = _BoundedDict(_MAX_TRACKED_SESSIONS)
+_warming_lock = asyncio.Lock()
 
 
 async def _cache_warming_loop():
@@ -96,8 +123,8 @@ async def _cache_warming_loop():
 
     Runs every 30 seconds, fires a max_tokens=1 ping for any Anthropic session
     that has been idle longer than cache_warming.interval seconds and has not
-    yet exhausted its max_warmings quota.  Sessions idle for 10+ minutes are
-    evicted from tracking.
+    yet exhausted its max_warmings quota.  Sessions idle for 10+ minutes or
+    at max_warmings are evicted from tracking.
     """
     while True:
         await asyncio.sleep(30)
@@ -105,26 +132,27 @@ async def _cache_warming_loop():
             continue
         now = time.time()
         expired = []
-        for sid, data in list(_warming_data.items()):
-            elapsed = now - data["timestamp"]
-            if elapsed > config.cache_warming.interval and data["count"] < config.cache_warming.max_warmings:
-                try:
-                    await llm_client.call_llm(
-                        model=data["model"],
-                        messages=data["messages"],
-                        max_tokens=1,
-                        temperature=0,
-                    )
-                    data["timestamp"] = now
-                    data["count"] += 1
-                    logger.info(f"[CacheWarming] session={sid} warming #{data['count']}")
-                except Exception as e:
-                    logger.warning(f"[CacheWarming] Failed for {sid}: {e}")
-            elif elapsed > 600:  # 10 min idle -> cleanup
-                expired.append(sid)
-        for sid in expired:
-            del _warming_data[sid]
-            logger.debug(f"[CacheWarming] Cleaned up session {sid}")
+        async with _warming_lock:
+            for sid, data in list(_warming_data.items()):
+                elapsed = now - data["timestamp"]
+                if elapsed > 600 or data["count"] >= config.cache_warming.max_warmings:
+                    expired.append(sid)
+                elif elapsed > config.cache_warming.interval:
+                    try:
+                        await llm_client.call_llm(
+                            model=data["model"],
+                            messages=data["messages"],
+                            max_tokens=1,
+                            temperature=0,
+                        )
+                        data["timestamp"] = now
+                        data["count"] += 1
+                        logger.info(f"[CacheWarming] session={sid} warming #{data['count']}")
+                    except Exception as e:
+                        logger.warning(f"[CacheWarming] Failed for {sid}: {e}")
+            for sid in expired:
+                del _warming_data[sid]
+                logger.debug(f"[CacheWarming] Cleaned up session {sid}")
 
 
 @asynccontextmanager
@@ -182,14 +210,29 @@ async def lifespan(app: FastAPI):
     logger.info("[SAGA] Server shutdown complete")
 
 
+def _log_task_exception(task: asyncio.Task) -> None:
+    """Callback for fire-and-forget tasks to log unhandled exceptions."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error(f"[SAGA] Background task failed: {exc}", exc_info=exc)
+
+
 app = FastAPI(title="SAGA RP Agent Proxy", version="3.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "app://.",  # Electron (RisuAI desktop)
+    ],
+    allow_credentials=False,  # SAGA uses Bearer tokens, not cookies
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "x-saga-session-id"],
 )
 
 
@@ -207,7 +250,9 @@ async def _verify_bearer(
     api_key = config.server.api_key if config else ""
     if not api_key:
         return  # Auth disabled
-    if credentials is None or credentials.credentials != api_key:
+    if credentials is None or not hmac.compare_digest(
+        credentials.credentials.encode("utf-8"), api_key.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
@@ -226,11 +271,10 @@ async def chat_completions(
         return await _handle_chat(request, raw_request)
     except Exception as e:
         logger.error(f"[SAGA] Chat error: {e}", exc_info=True)
-        return JSONResponse(status_code=502, content={"error": str(e)})
+        return JSONResponse(status_code=502, content={"error": "upstream_error", "message": "LLM backend request failed"})
 
 async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     t_start = time.time()
-    import hashlib
 
     # ── Trace: Request ──
     mode = "stream" if request.stream else "sync"
@@ -271,17 +315,17 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     # Sub-A: Context Builder
     messages_dicts = [{"role": m.role, "content": m.get_text_content()} for m in request.messages]
 
+    # autoContinue detection BEFORE stabilize (stabilize replaces system content with canonical)
+    _prune_pending_responses()
+    is_continuation = _is_continuation(messages_dicts)
+    if is_continuation:
+        logger.info(f"[Trace] autoContinue detected — deferring turn increment & Sub-B")
+
     # System Stabilizer: extract lorebook delta before context building
     stabilized_messages, lorebook_delta = await system_stabilizer.stabilize(
         session_id, messages_dicts
     )
     messages_dicts = stabilized_messages
-
-    # autoContinue detection (uses pre-stabilization dicts — pattern is in system msgs)
-    _prune_pending_responses()
-    is_continuation = _is_continuation(messages_dicts)
-    if is_continuation:
-        logger.info(f"[Trace] autoContinue detected — deferring turn increment & Sub-B")
 
     context_result = await context_builder.build_context(session_id, messages_dicts, dynamic_budget)
     t_ctx_end = time.time()
@@ -380,14 +424,16 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     logger.info(f"[Trace] ━━━ DONE turn={turn_number} total={( time.time() - t_start)*1000:.0f}ms ━━━")
 
     # Sub-B: async post-turn processing
-    asyncio.create_task(post_turn.extract_and_update(session_id, llm_response, turn_number, last_user_input))
+    task_b = asyncio.create_task(post_turn.extract_and_update(session_id, llm_response, turn_number, last_user_input))
+    task_b.add_done_callback(_log_task_exception)
 
     # Curator check
     if config.curator.enabled and turn_number % config.curator.interval == 0:
-        asyncio.create_task(curator.run(session_id, turn_number))
+        task_c = asyncio.create_task(curator.run(session_id, turn_number))
+        task_c.add_done_callback(_log_task_exception)
 
     # Cache warming: record last request for this session (Anthropic only)
-    if "claude" in (request.model or "").lower() or "claude" in config.models.narration.lower():
+    if _is_anthropic_model(request.model):
         _warming_data[session_id] = {
             "timestamp": time.time(),
             "messages": augmented_messages,
@@ -526,12 +572,14 @@ async def _stream_response(session_id, session, augmented_messages, request, las
 
     turn_number = await sqlite_db.increment_turn(session_id)
     logger.info(f"[Trace] ━━━ DONE turn={turn_number} (stream) ━━━")
-    asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input))
+    task_b = asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input))
+    task_b.add_done_callback(_log_task_exception)
     if config.curator.enabled and turn_number % config.curator.interval == 0:
-        asyncio.create_task(curator.run(session_id, turn_number))
+        task_c = asyncio.create_task(curator.run(session_id, turn_number))
+        task_c.add_done_callback(_log_task_exception)
 
     # Cache warming: record last request for this session (Anthropic only)
-    if "claude" in (request.model or "").lower() or "claude" in config.models.narration.lower():
+    if _is_anthropic_model(request.model):
         _warming_data[session_id] = {
             "timestamp": time.time(),
             "messages": augmented_messages,
@@ -568,6 +616,14 @@ def _partial_state_marker(text: str) -> int:
     return 0
 
 
+_SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+
+
+def _is_anthropic_model(model: str | None) -> bool:
+    """Check if the model (or config narration model) is Anthropic/Claude."""
+    return "claude" in (model or "").lower() or "claude" in config.models.narration.lower()
+
+
 def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) -> str | None:
     """Extract session ID with priority: header > user field > system hash.
 
@@ -576,22 +632,26 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
     3. System message hash fallback (legacy, backward-compatible)
     """
     # Priority 1: Custom header
-    header_id = raw_request.headers.get("x-saga-session-id")
+    header_id = raw_request.headers.get("x-saga-session-id", "").strip()
     if header_id:
-        return header_id.strip()
+        if not _SESSION_ID_RE.match(header_id):
+            raise HTTPException(400, "Invalid session ID format")
+        return header_id
 
     # Priority 2: user field
     if request.user:
-        return request.user.strip()
+        user = request.user.strip()
+        if not _SESSION_ID_RE.match(user):
+            raise HTTPException(400, "Invalid user/session ID format")
+        return user
 
     # Priority 3: System message hash (legacy fallback)
     # Use first paragraph only — Lorebook entries appended later would cause
     # different hashes each turn, breaking session continuity.
-    import hashlib
     for msg in request.messages:
         if msg.role == "system":
             first_para = msg.get_text_content().split('\n\n')[0][:300]
-            return hashlib.md5(first_para.encode()).hexdigest()[:8]
+            return hashlib.sha256(first_para.encode()).hexdigest()[:16]
     return None
 
 
@@ -699,23 +759,23 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
 # Admin API
 # ============================================================
 
-@app.get("/api/status")
+@app.get("/api/status", dependencies=[Depends(_verify_bearer)])
 async def get_status():
     sessions = await sqlite_db.list_sessions()
     return StatusResponse(status="running", active_sessions=len(sessions), version="3.0.0")
 
-@app.get("/api/sessions")
+@app.get("/api/sessions", dependencies=[Depends(_verify_bearer)])
 async def list_sessions():
     sessions = await sqlite_db.list_sessions()
     return sessions
 
-@app.post("/api/sessions")
+@app.post("/api/sessions", dependencies=[Depends(_verify_bearer)])
 async def create_session(name: str = "", world: str = ""):
     world_name = world or config.session.default_world
     session = await session_mgr.get_or_create_session()
     return session
 
-@app.get("/api/sessions/{session_id}/state")
+@app.get("/api/sessions/{session_id}/state", dependencies=[Depends(_verify_bearer)])
 async def get_session_state(session_id: str):
     session = await sqlite_db.get_session(session_id)
     if not session:
@@ -723,28 +783,28 @@ async def get_session_state(session_id: str):
     state = await sqlite_db.get_world_state(session_id)
     return {"session": session, "world_state": state}
 
-@app.get("/api/sessions/{session_id}/graph")
+@app.get("/api/sessions/{session_id}/graph", dependencies=[Depends(_verify_bearer)])
 async def get_session_graph(session_id: str):
     summary = await sqlite_db.get_state_summary(session_id)
     return {"session_id": session_id, "graph_summary": summary}
 
-@app.get("/api/sessions/{session_id}/cache")
+@app.get("/api/sessions/{session_id}/cache", dependencies=[Depends(_verify_bearer)])
 async def get_session_cache(session_id: str):
     stable = await md_cache.read_stable(session_id)
     live = await md_cache.read_live(session_id)
     return {"session_id": session_id, "stable_prefix": bool(stable), "live_state": bool(live)}
 
-@app.get("/api/sessions/{session_id}/turns")
+@app.get("/api/sessions/{session_id}/turns", dependencies=[Depends(_verify_bearer)])
 async def get_turn_logs(session_id: str, from_turn: int = 0, to_turn: int | None = None):
     logs = await sqlite_db.get_turn_logs(session_id, from_turn, to_turn)
     return logs
 
-@app.post("/api/sessions/{session_id}/reset")
+@app.post("/api/sessions/{session_id}/reset", dependencies=[Depends(_verify_bearer)])
 async def reset_session(session_id: str):
     await session_mgr.reset_session(session_id)
     return {"status": "reset", "session_id": session_id}
 
-@app.post("/api/reset-all")
+@app.post("/api/reset-all", dependencies=[Depends(_verify_bearer)])
 async def reset_all():
     """Full factory reset: SQLite + ChromaDB + MdCache all cleared."""
     import shutil, os
@@ -786,7 +846,7 @@ async def reset_all():
 
     return {"status": "reset_all", "sessions_cleared": len(sessions)}
 
-@app.get("/api/memory/search")
+@app.get("/api/memory/search", dependencies=[Depends(_verify_bearer)])
 async def search_memory(q: str, session: str = "", collection: str = "episodes"):
     if not session:
         return {"documents": [], "metadatas": []}
@@ -795,7 +855,7 @@ async def search_memory(q: str, session: str = "", collection: str = "episodes")
     else:
         return vector_db.search_episodes(session, q, n_results=10)
 
-@app.get("/api/graph/query")
+@app.get("/api/graph/query", dependencies=[Depends(_verify_bearer)])
 async def graph_query(q: str = "", session: str = ""):
     """Query state data (replaced Cypher graph queries)."""
     if not session:
