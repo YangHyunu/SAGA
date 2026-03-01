@@ -41,13 +41,8 @@ class ApiKeysConfig(BaseModel):
 
 
 class TokenBudgetConfig(BaseModel):
-    total_context_max: int = 128000
-    dynamic_context_max: int = 1500
-    md_cache_max: int = 600
-    lorebook_max: int = 800
-    state_briefing_max: int = 200
-    graph_context_max: int = 300
-    state_block_instruction: int = 100
+    total_context_max: int = 180000   # Anthropic 200K 기준 안전 마진 (~90%)
+    dynamic_context_max: int = 2000   # 동적 컨텍스트 (state + episodes + lore + instruction)
 
 
 class MdCacheConfig(BaseModel):

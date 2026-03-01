@@ -21,13 +21,8 @@ api_keys:
 
 # === 토큰 예산 ===
 token_budget:
-  total_context_max: 128000
-  dynamic_context_max: 1500
-  md_cache_max: 600
-  lorebook_max: 800
-  state_briefing_max: 200
-  graph_context_max: 300
-  state_block_instruction: 100
+  total_context_max: 180000     # Anthropic 200K 기준 안전 마진 (~90%)
+  dynamic_context_max: 2000     # SAGA 동적 컨텍스트 (state + episodes + lore + instruction)
 
 # === .md 캐시 설정 ===
 md_cache:

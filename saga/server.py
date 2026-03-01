@@ -300,7 +300,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     # Token counting
     messages_tokens = count_messages_tokens([{"role": m.role, "content": m.get_text_content()} for m in request.messages])
     remaining_budget = config.token_budget.total_context_max - messages_tokens
-    dynamic_budget = min(int(remaining_budget * 0.15), config.token_budget.dynamic_context_max)
+    dynamic_budget = min(remaining_budget, config.token_budget.dynamic_context_max)
     logger.info(f"[Trace] Tokens: input={messages_tokens} budget_remain={remaining_budget} dynamic_budget={dynamic_budget}")
 
     # Cache diagnostic
