@@ -48,8 +48,8 @@ class ContextBuilder:
         # Read live state (dynamic, every turn)
         live_state = await self.md_cache.read_live(session_id)
 
-        # Query ChromaDB for relevant episodes
-        episodes = await self._get_relevant_episodes(session_id, last_user_msg)
+        # Query ChromaDB for relevant episodes (RRF-ranked)
+        episodes = await self._get_relevant_episodes_rrf(session_id, last_user_msg)
 
         # Query lore (SQLite-based now)
         active_lore = await self._get_active_lore(session_id, last_user_msg)
@@ -71,6 +71,78 @@ class ContextBuilder:
         important = self.vector_db.search_important_episodes(session_id, n_results=5, min_importance=50)
         similar = self.vector_db.search_episodes(session_id, query, n_results=10)
         return self._merge_episodes(recent, important, similar)
+
+    def _normalize_chroma_result(self, result: dict) -> list[dict]:
+        """Flatten a ChromaDB query/get result into a list of episode dicts."""
+        if not result:
+            return []
+        raw_ids = result.get("ids", [])
+        raw_docs = result.get("documents", [])
+        raw_metas = result.get("metadatas", [])
+
+        # ChromaDB query returns nested [[...]], get returns flat [...]
+        ids = raw_ids[0] if raw_ids and isinstance(raw_ids[0], list) else raw_ids
+        docs = raw_docs[0] if raw_docs and isinstance(raw_docs[0], list) else raw_docs
+        metas = raw_metas[0] if raw_metas and isinstance(raw_metas[0], list) else raw_metas
+
+        episodes = []
+        for i, ep_id in enumerate(ids):
+            meta = metas[i] if i < len(metas) else {}
+            doc = docs[i] if i < len(docs) else ""
+            episodes.append({
+                "id": ep_id,
+                "text": doc,
+                "summary": doc,
+                "turn": meta.get("turn", 0),
+                "importance": meta.get("importance", 10),
+                "episode_type": meta.get("episode_type", "episode"),
+                "location": meta.get("location", ""),
+                "npcs": meta.get("npcs", ""),
+            })
+        return episodes
+
+    async def _get_relevant_episodes_rrf(self, session_id: str, query: str) -> list[dict]:
+        """Select episodes using Reciprocal Rank Fusion across 3 sources.
+
+        Sources:
+          recent   — get_recent_episodes (turn-ordered, no semantic filter)
+          important — search_important_episodes (importance >= 40)
+          similar   — search_episodes (semantic similarity to current query)
+
+        RRF formula: score += weight / (k + rank + 1)
+        """
+        k = 60  # standard RRF constant
+
+        recent_raw = self.vector_db.get_recent_episodes(session_id, n_results=10)
+        important_raw = self.vector_db.search_important_episodes(session_id, min_importance=40, n_results=10)
+        similar_raw = self.vector_db.search_episodes(session_id, query, n_results=15)
+
+        sources = [
+            ("recent", 1.2, self._normalize_chroma_result(recent_raw)),
+            ("important", 1.0, self._normalize_chroma_result(important_raw)),
+            ("similar", 0.8, self._normalize_chroma_result(similar_raw)),
+        ]
+
+        scores: dict[str, float] = {}
+        episode_cache: dict[str, dict] = {}
+
+        for source_name, weight, episodes in sources:
+            for rank, ep in enumerate(episodes):
+                eid = ep["id"]
+                scores[eid] = scores.get(eid, 0.0) + weight / (k + rank + 1)
+                if eid not in episode_cache:
+                    episode_cache[eid] = {**ep, "source": source_name}
+
+        ranked_ids = sorted(scores, key=lambda x: scores[x], reverse=True)
+        selected = [episode_cache[eid] for eid in ranked_ids]
+
+        logger.debug(
+            "RRF episode selection: %d candidates → %d selected (session=%s)",
+            len(scores),
+            len(selected),
+            session_id,
+        )
+        return selected
 
     async def _get_active_lore(self, session_id: str, query: str) -> list[str]:
         """Get relevant lore from SQLite + vector search."""

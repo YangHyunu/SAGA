@@ -107,6 +107,12 @@ class ModulesConfig(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class CacheWarmingConfig(BaseModel):
+    enabled: bool = True
+    interval: int = 270  # seconds (4.5 minutes — just before 5-min TTL expiry)
+    max_warmings: int = 4  # per session before giving up
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
@@ -124,6 +130,7 @@ class SagaConfig(BaseModel):
     graph: GraphConfig = Field(default_factory=GraphConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     modules: ModulesConfig = Field(default_factory=ModulesConfig)
+    cache_warming: CacheWarmingConfig = Field(default_factory=CacheWarmingConfig)
 
 
 # ---------------------------------------------------------------------------

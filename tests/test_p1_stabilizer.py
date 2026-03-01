@@ -273,6 +273,62 @@ def test_jaccard_high_overlap(stabilizer):
 
 
 # ──────────────────────────────────────────────────────────────────
+# Test: inject-modified paragraphs (P1-b)
+# ──────────────────────────────────────────────────────────────────
+
+def test_inject_append(stabilizer):
+    """@@inject_at append: modified paragraph should not appear in delta."""
+    canonical = "A is friendly."
+    current = "A is friendly. [New lore about A]"
+    _, delta = stabilizer._extract_delta(canonical, current)
+    assert delta == "", f"Expected empty delta, got: {delta!r}"
+
+
+def test_inject_replace(stabilizer):
+    """@@inject_replace: paragraph with >50% word overlap should not appear in delta."""
+    canonical = "The hero stands tall and proud in battle."
+    # Replaced version shares most words but differs
+    current = "The hero stands tall and proud in glorious battle today."
+    _, delta = stabilizer._extract_delta(canonical, current)
+    assert delta == "", f"Expected empty delta for replaced para, got: {delta!r}"
+
+
+def test_inject_plus_new(stabilizer):
+    """Modified para excluded + genuinely new para included in delta."""
+    para_a = "A is friendly."
+    para_a_modified = "A is friendly. [New lore about A]"
+    para_b = "B is quiet."
+    para_c = "[Lorebook: Forest]\nThe forest is dark and deep."
+
+    canonical = f"{para_a}\n\n{para_b}"
+    # A is modified (inject append), B unchanged, C is new
+    current = f"{para_a_modified}\n\n{para_b}\n\n{para_c}"
+
+    _, delta = stabilizer._extract_delta(canonical, current)
+
+    # Modified A must not be in delta
+    assert "A is friendly. [New lore about A]" not in delta
+    # Genuinely new lorebook entry must be in delta
+    assert "Forest" in delta
+    assert "dark and deep" in delta
+
+
+def test_normal_lorebook_unchanged(stabilizer):
+    """Existing behavior preserved: unchanged canonical + new lorebook = delta contains lorebook."""
+    para_a = "Character: Yui"
+    para_b = "Age: 18"
+    para_c = "[Lorebook: Beach]\nThe beach is beautiful."
+
+    canonical = f"{para_a}\n\n{para_b}"
+    current = f"{para_a}\n\n{para_b}\n\n{para_c}"
+
+    _, delta = stabilizer._extract_delta(canonical, current)
+
+    assert "[Lorebook: Beach]" in delta
+    assert "beautiful" in delta
+
+
+# ──────────────────────────────────────────────────────────────────
 # Test: session isolation
 # ──────────────────────────────────────────────────────────────────
 

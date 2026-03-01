@@ -35,6 +35,45 @@ from saga.system_stabilizer import SystemStabilizer
 
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# autoContinue detection & pending response buffer
+# ============================================================
+
+_CONTINUE_PATTERN = re.compile(r"Continue the last response", re.IGNORECASE)
+
+# Buffer for autoContinue partial responses
+# key: session_id -> {"response": str, "timestamp": float}
+_pending_responses: dict[str, dict] = {}
+
+_PENDING_TTL_SECONDS = 60
+
+
+def _is_continuation(messages: list[dict]) -> bool:
+    """Detect RisuAI autoContinue requests.
+
+    RisuAI inserts '[Continue the last response]' as a system message in
+    postEverything when autoContinueChat fires.  We scan from the end,
+    stopping at the first user message so we only look at the trailing
+    system messages of the current turn.
+    """
+    for msg in reversed(messages):
+        if msg["role"] == "system" and _CONTINUE_PATTERN.search(msg.get("content", "")):
+            return True
+        if msg["role"] == "user":
+            break
+    return False
+
+
+def _prune_pending_responses() -> None:
+    """Remove stale pending response entries older than TTL."""
+    now = time.time()
+    stale = [sid for sid, v in _pending_responses.items()
+             if now - v["timestamp"] > _PENDING_TTL_SECONDS]
+    for sid in stale:
+        logger.info(f"[Trace] autoContinue: pruned stale pending for session={sid}")
+        del _pending_responses[sid]
+
+
 # Global instances
 config: SagaConfig = None
 sqlite_db: SQLiteDB = None
@@ -46,6 +85,46 @@ post_turn: PostTurnExtractor = None
 curator: CuratorRunner = None
 session_mgr: SessionManager = None
 system_stabilizer: SystemStabilizer = None
+
+# Cache warming: track last request per session
+# session_id -> {timestamp, messages, model, count}
+_warming_data: dict = {}
+
+
+async def _cache_warming_loop():
+    """Background task: send lightweight keepalive to maintain Anthropic cache.
+
+    Runs every 30 seconds, fires a max_tokens=1 ping for any Anthropic session
+    that has been idle longer than cache_warming.interval seconds and has not
+    yet exhausted its max_warmings quota.  Sessions idle for 10+ minutes are
+    evicted from tracking.
+    """
+    while True:
+        await asyncio.sleep(30)
+        if not config or not config.cache_warming.enabled:
+            continue
+        now = time.time()
+        expired = []
+        for sid, data in list(_warming_data.items()):
+            elapsed = now - data["timestamp"]
+            if elapsed > config.cache_warming.interval and data["count"] < config.cache_warming.max_warmings:
+                try:
+                    await llm_client.call_llm(
+                        model=data["model"],
+                        messages=data["messages"],
+                        max_tokens=1,
+                        temperature=0,
+                    )
+                    data["timestamp"] = now
+                    data["count"] += 1
+                    logger.info(f"[CacheWarming] session={sid} warming #{data['count']}")
+                except Exception as e:
+                    logger.warning(f"[CacheWarming] Failed for {sid}: {e}")
+            elif elapsed > 600:  # 10 min idle -> cleanup
+                expired.append(sid)
+        for sid in expired:
+            del _warming_data[sid]
+            logger.debug(f"[CacheWarming] Cleaned up session {sid}")
 
 
 @asynccontextmanager
@@ -91,9 +170,13 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"[SAGA] Server initialized. Listening on {config.server.host}:{config.server.port}")
 
+    # Start cache warming background loop
+    warming_task = asyncio.create_task(_cache_warming_loop())
+
     yield
 
     # Cleanup
+    warming_task.cancel()
     await sqlite_db.close()
     await llm_client.close()
     logger.info("[SAGA] Server shutdown complete")
@@ -194,6 +277,12 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     )
     messages_dicts = stabilized_messages
 
+    # autoContinue detection (uses pre-stabilization dicts — pattern is in system msgs)
+    _prune_pending_responses()
+    is_continuation = _is_continuation(messages_dicts)
+    if is_continuation:
+        logger.info(f"[Trace] autoContinue detected — deferring turn increment & Sub-B")
+
     context_result = await context_builder.build_context(session_id, messages_dicts, dynamic_budget)
     t_ctx_end = time.time()
 
@@ -226,7 +315,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
 
     if request.stream:
         return StreamingResponse(
-            _stream_response(session_id, session, augmented_messages, request, last_user_input),
+            _stream_response(session_id, session, augmented_messages, request, last_user_input, is_continuation),
             media_type="text/event-stream"
         )
 
@@ -248,6 +337,44 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     has_state = len(clean_response) < len(llm_response)
     logger.info(f"[Trace] State block: {'found & stripped' if has_state else 'not found'} | clean={len(clean_response)}ch")
 
+    # autoContinue: accumulate partial responses; defer turn+Sub-B until final response
+    if is_continuation:
+        prev = _pending_responses.get(session_id, {}).get("response", "")
+        combined = prev + llm_response
+        _pending_responses[session_id] = {"response": combined, "timestamp": time.time()}
+        logger.info(
+            f"[Trace] autoContinue: buffered partial response "
+            f"(cumulative={len(combined)}ch) — skipping turn increment"
+        )
+        combined_clean = strip_state_block(combined)
+        return ChatCompletionResponse(
+            id=f"chatcmpl-saga-{session_id}-cont",
+            object="chat.completion",
+            created=int(time.time()),
+            model=request.model or "saga-proxy",
+            choices=[Choice(
+                index=0,
+                message=ChatMessage(role="assistant", content=combined_clean),
+                finish_reason="stop"
+            )],
+            usage=Usage(
+                prompt_tokens=messages_tokens,
+                completion_tokens=count_tokens(combined_clean),
+                total_tokens=messages_tokens + count_tokens(combined_clean)
+            )
+        )
+
+    # Final (non-continuation) response: combine with any pending partial
+    pending_entry = _pending_responses.pop(session_id, None)
+    if pending_entry:
+        combined_response = pending_entry["response"] + llm_response
+        logger.info(
+            f"[Trace] autoContinue: final response — combining "
+            f"pending({len(pending_entry['response'])}ch) + current({len(llm_response)}ch)"
+        )
+        llm_response = combined_response
+        clean_response = strip_state_block(llm_response)
+
     # Increment turn
     turn_number = await sqlite_db.increment_turn(session_id)
     logger.info(f"[Trace] ━━━ DONE turn={turn_number} total={( time.time() - t_start)*1000:.0f}ms ━━━")
@@ -258,6 +385,15 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     # Curator check
     if config.curator.enabled and turn_number % config.curator.interval == 0:
         asyncio.create_task(curator.run(session_id, turn_number))
+
+    # Cache warming: record last request for this session (Anthropic only)
+    if "claude" in (request.model or "").lower() or "claude" in config.models.narration.lower():
+        _warming_data[session_id] = {
+            "timestamp": time.time(),
+            "messages": augmented_messages,
+            "model": config.models.narration,
+            "count": 0,
+        }
 
     # Build response
     resp = ChatCompletionResponse(
@@ -279,7 +415,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     return resp
 
 
-async def _stream_response(session_id, session, augmented_messages, request, last_user_input):
+async def _stream_response(session_id, session, augmented_messages, request, last_user_input, is_continuation=False):
     """SSE streaming response generator with state block filtering.
 
     State blocks (```state ... ```) are stripped from the stream sent to the
@@ -366,11 +502,42 @@ async def _stream_response(session_id, session, augmented_messages, request, las
         f"[Trace] Stream done: {(time.time() - t_stream_start)*1000:.0f}ms | "
         f"response={len(full_response)}ch state_filtered={state_block_filtered}"
     )
+
+    # autoContinue: accumulate partial responses; defer turn+Sub-B until final response
+    if is_continuation:
+        prev = _pending_responses.get(session_id, {}).get("response", "")
+        combined = prev + full_response
+        _pending_responses[session_id] = {"response": combined, "timestamp": time.time()}
+        logger.info(
+            f"[Trace] autoContinue (stream): buffered partial response "
+            f"(cumulative={len(combined)}ch) — skipping turn increment"
+        )
+        return
+
+    # Final (non-continuation) response: combine with any pending partial
+    pending_entry = _pending_responses.pop(session_id, None)
+    if pending_entry:
+        combined_response = pending_entry["response"] + full_response
+        logger.info(
+            f"[Trace] autoContinue (stream): final response — combining "
+            f"pending({len(pending_entry['response'])}ch) + current({len(full_response)}ch)"
+        )
+        full_response = combined_response
+
     turn_number = await sqlite_db.increment_turn(session_id)
     logger.info(f"[Trace] ━━━ DONE turn={turn_number} (stream) ━━━")
     asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input))
     if config.curator.enabled and turn_number % config.curator.interval == 0:
         asyncio.create_task(curator.run(session_id, turn_number))
+
+    # Cache warming: record last request for this session (Anthropic only)
+    if "claude" in (request.model or "").lower() or "claude" in config.models.narration.lower():
+        _warming_data[session_id] = {
+            "timestamp": time.time(),
+            "messages": augmented_messages,
+            "model": config.models.narration,
+            "count": 0,
+        }
 
 
 def _make_sse_chunk(session_id: str, model: str | None, content: str) -> str:
