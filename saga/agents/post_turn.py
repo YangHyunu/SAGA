@@ -15,6 +15,7 @@ from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.utils.parsers import parse_state_block, format_turn_narrative
 from saga.llm.client import LLMClient
+from saga.observability import tracer
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,11 @@ _sub_b_lock.set()  # Initially open
 
 
 class PostTurnExtractor:
+    # Korean honorific suffixes to strip for matching (longest first)
+    _KO_SUFFIXES = ("선배", "후배", "언니", "오빠", "누나", "씨", "님", "양", "군", "형")
+    # Common Korean surnames for suffix-match validation
+    _KO_SURNAMES = set("김이박최정강조윤장임한오서신권황안송류홍전배노하유남심")
+
     def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client: LLMClient, config):
         self.sqlite_db = sqlite_db
         self.vector_db = vector_db
@@ -31,16 +37,100 @@ class PostTurnExtractor:
         self.llm_client = llm_client
         self.config = config
 
+    @classmethod
+    def _strip_suffix(cls, name: str) -> str:
+        """Strip Korean honorific suffixes to get a match key."""
+        stripped = name.strip()
+        for suffix in cls._KO_SUFFIXES:
+            if stripped.endswith(suffix) and len(stripped) > len(suffix):
+                stripped = stripped[:-len(suffix)].strip()
+                break  # Only strip one suffix
+        return stripped
+
+    @classmethod
+    def _match_existing_name(cls, raw_name: str, existing_names: list[str]) -> str:
+        """Match raw_name against existing character names using suffix matching.
+
+        Returns the existing canonical name if matched, otherwise the raw_name as-is.
+        """
+        if not raw_name or len(raw_name) < 2:
+            return raw_name
+
+        key = cls._strip_suffix(raw_name).lower()
+        if len(key) < 2:
+            return raw_name
+
+        for existing in existing_names:
+            ex_key = cls._strip_suffix(existing).lower()
+            if len(ex_key) < 2:
+                continue
+
+            # Exact match after stripping
+            if key == ex_key:
+                return existing
+
+            # Suffix match: shorter is suffix of longer
+            shorter, longer = (key, ex_key) if len(key) <= len(ex_key) else (ex_key, key)
+            if longer.endswith(shorter):
+                prefix = longer[:-len(shorter)]
+                # If prefix is 1 char, only allow if it's a Korean surname
+                if len(prefix) == 1 and prefix not in cls._KO_SURNAMES:
+                    continue
+                # If prefix is >1 char, skip (too risky for false positives)
+                if len(prefix) > 1:
+                    continue
+                return existing
+
+        return raw_name
+
+    async def _normalize_state_block_names(self, session_id: str, state_block: dict) -> None:
+        """Normalize all NPC names in state_block against existing characters (in-place)."""
+        existing_chars = await self.sqlite_db.get_session_characters(session_id)
+        existing_names = [c["name"] for c in existing_chars if not c.get("is_player")]
+
+        if not existing_names:
+            return
+
+        # npc_met
+        if state_block.get("npc_met"):
+            state_block["npc_met"] = [
+                self._match_existing_name(n, existing_names)
+                for n in state_block["npc_met"] if n
+            ]
+
+        # npc_separated
+        if state_block.get("npc_separated"):
+            state_block["npc_separated"] = [
+                self._match_existing_name(n, existing_names)
+                for n in state_block["npc_separated"] if n
+            ]
+
+        # relationship_changes
+        for change in (state_block.get("relationship_changes") or []):
+            if not isinstance(change, dict):
+                continue
+            if change.get("from"):
+                change["from"] = self._match_existing_name(change["from"], existing_names)
+            if change.get("to"):
+                change["to"] = self._match_existing_name(change["to"], existing_names)
+
+        # items_transferred
+        for transfer in (state_block.get("items_transferred") or []):
+            if not isinstance(transfer, dict):
+                continue
+            if transfer.get("to"):
+                transfer["to"] = self._match_existing_name(transfer["to"], existing_names)
+
     async def extract_and_update(self, session_id: str, response_text: str, turn_number: int, user_input: str = ""):
         """Main entry point. Called as asyncio.create_task after response is sent."""
-        print(f"[DEBUG Sub-B] ▶ Task started for turn {turn_number}, session={session_id}", flush=True)
+        logger.debug(f"[Sub-B] Task started for turn {turn_number}, session={session_id}")
         logger.info(f"[Sub-B] ▶ Task started for turn {turn_number}, session={session_id}")
 
         # Wait for previous Sub-B to finish
         await _sub_b_lock.wait()
         _sub_b_lock.clear()
-        print(f"[DEBUG Sub-B] 🔒 Lock acquired for turn {turn_number}", flush=True)
-        logger.info(f"[Sub-B] 🔒 Lock acquired for turn {turn_number}")
+        logger.debug(f"[Sub-B] Lock acquired for turn {turn_number}")
+        logger.info(f"[Sub-B] Lock acquired for turn {turn_number}")
 
         t_start = time.monotonic()
         extraction_method = "failed"
@@ -48,6 +138,10 @@ class PostTurnExtractor:
         state_block = None
         importance = 0
         metrics_written = False
+        _span = tracer.start_span("sub_b.post_process")
+        _span.set_attribute("saga.session_id", session_id)
+        _span.set_attribute("saga.turn_number", turn_number)
+        _span.set_attribute("saga.response_len", len(response_text))
 
         try:
             # 1. Parse state block
@@ -59,7 +153,7 @@ class PostTurnExtractor:
                 # Regex failed → log tail for debugging, then try Flash
                 tail = response_text[-500:] if len(response_text) > 500 else response_text
                 logger.warning(f"[Sub-B] Regex parse failed for turn {turn_number}, trying Flash extraction. Response tail:\n{tail}")
-                state_block = await self._extract_with_flash(response_text)
+                state_block = await self._extract_with_flash(session_id, response_text)
                 if state_block is not None:
                     extraction_method = "flash"
 
@@ -71,6 +165,9 @@ class PostTurnExtractor:
                                     time.monotonic() - t_start, response_text, flash_tokens_used)
                 metrics_written = True
                 return
+
+            # 1.5. Normalize NPC names against existing characters (in-place)
+            await self._normalize_state_block_names(session_id, state_block)
 
             # 2. Update SQLite state tables
             await self._update_state_db(session_id, state_block, turn_number)
@@ -98,11 +195,17 @@ class PostTurnExtractor:
             logger.info(f"[Sub-B] Turn {turn_number} post-processing complete (importance={importance}, method={extraction_method})")
 
         except Exception as e:
-            print(f"[DEBUG Sub-B] ❌ Error turn {turn_number}: {e}", flush=True)
-            logger.error(f"[Sub-B] ❌ Error processing turn {turn_number}: {e}", exc_info=True)
+            logger.error(f"[Sub-B] Error processing turn {turn_number}: {e}", exc_info=True)
+            _span.set_attribute("error", True)
+            _span.set_attribute("error.message", str(e))
         finally:
-            print(f"[DEBUG Sub-B] 🔓 Releasing lock for turn {turn_number}", flush=True)
-            logger.info(f"[Sub-B] 🔓 Releasing lock for turn {turn_number}")
+            elapsed_ms = (time.monotonic() - t_start) * 1000
+            _span.set_attribute("saga.sub_b.extraction_method", extraction_method)
+            _span.set_attribute("saga.sub_b.importance", importance)
+            _span.set_attribute("saga.sub_b.duration_ms", round(elapsed_ms))
+            _span.end()
+            logger.debug(f"[Sub-B] Releasing lock for turn {turn_number}")
+            logger.info(f"[Sub-B] Releasing lock for turn {turn_number}")
             # Write metrics on exception path (success/failure paths already wrote)
             if not metrics_written:
                 try:
@@ -141,15 +244,22 @@ class PostTurnExtractor:
         except Exception as e:
             logger.warning(f"[Sub-B] Failed to write metrics: {e}")
 
-    async def _extract_with_flash(self, response_text: str) -> dict | None:
+    async def _extract_with_flash(self, session_id: str, response_text: str) -> dict | None:
         """Use Flash-tier LLM to extract state from unstructured response."""
         try:
+            # Build existing character list for name consistency
+            existing_chars = await self.sqlite_db.get_session_characters(session_id)
+            char_names = [c["name"] for c in existing_chars if c.get("name")]
+            char_hint = ""
+            if char_names:
+                char_hint = f"\n\nIMPORTANT: These characters already exist in this session: {', '.join(char_names)}. When referring to the same character, use EXACTLY the same name form as listed above. Do not use nicknames, honorifics, or alternate spellings."
+
             # Sanitize non-printable characters that can break HTTP requests
             clean_text = ''.join(c if c.isprintable() or c in '\n\r' else ' ' for c in response_text)
             result = await self.llm_client.call_llm(
                 model=self.config.models.extraction,
                 messages=[
-                    {"role": "system", "content": "Extract game state changes from the RP response. Return ONLY valid JSON (no markdown, no explanation) with keys: location, location_moved, hp_change, items_gained, items_lost, items_transferred, npc_met, npc_separated, relationship_changes, mood, event_trigger, notes. Use defaults (false, 0, [], null) for missing values."},
+                    {"role": "system", "content": f"Extract game state changes from the RP response. Return ONLY valid JSON (no markdown, no explanation) with keys: location, location_moved, hp_change, items_gained, items_lost, items_transferred, npc_met, npc_separated, relationship_changes, mood, event_trigger, notes. Use defaults (false, 0, [], null) for missing values.{char_hint}"},
                     {"role": "user", "content": clean_text}
                 ],
                 temperature=0.1,

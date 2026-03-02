@@ -9,8 +9,20 @@ import logging
 import os
 from collections import OrderedDict
 
-# Ensure all saga loggers output at INFO level
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+# Logging setup: structured format + file handler
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
+_LOG_DATE_FORMAT = "%H:%M:%S"
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATE_FORMAT)
+
+# File handler for persistent logs
+os.makedirs("logs", exist_ok=True)
+_file_handler = logging.FileHandler("logs/saga.log", encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+logging.getLogger().addHandler(_file_handler)
+
 for _name in ("saga", "saga.llm.client", "saga.system_stabilizer"):
     logging.getLogger(_name).setLevel(logging.INFO)
 from contextlib import asynccontextmanager
@@ -36,6 +48,7 @@ from saga.session import SessionManager
 from saga.utils.tokens import count_tokens, count_messages_tokens
 from saga.utils.parsers import strip_state_block
 from saga.system_stabilizer import SystemStabilizer
+from saga.observability import init_tracing, tracer as otel_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +183,9 @@ async def lifespan(app: FastAPI):
     config_path = os.environ.get("SAGA_CONFIG", "config.yaml")
     config = load_config(config_path)
 
+    # Initialize OpenTelemetry tracing (Phoenix)
+    init_tracing()
+
     # Ensure directories exist
     os.makedirs("db", exist_ok=True)
     os.makedirs("cache/sessions", exist_ok=True)
@@ -280,9 +296,16 @@ async def chat_completions(
 
 async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     t_start = time.time()
+    mode = "stream" if request.stream else "sync"
+
+    # ── OTel root span for the entire pipeline ──
+    span_ctx = otel_tracer.start_as_current_span(
+        "saga.pipeline",
+        attributes={"saga.mode": mode, "saga.model": request.model or config.models.narration},
+    )
+    pipeline_span = span_ctx.__enter__()
 
     # ── Trace: Request ──
-    mode = "stream" if request.stream else "sync"
     sys_msgs = sum(1 for m in request.messages if m.role == "system")
     usr_msgs = sum(1 for m in request.messages if m.role == "user")
     asst_msgs = sum(1 for m in request.messages if m.role == "assistant")
@@ -301,6 +324,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     session = await session_mgr.get_or_create_session(session_id)
     session_id = session["id"]
     logger.info(f"[Trace] Session: {session_id} (via {session_src})")
+    pipeline_span.set_attribute("saga.session_id", session_id)
 
     # Token counting
     messages_tokens = count_messages_tokens([{"role": m.role, "content": m.get_text_content()} for m in request.messages])
@@ -315,6 +339,9 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     prefix_content = "".join(m.get_text_content()[:50] for m in non_system[:3])
     prefix_hash = hashlib.md5(prefix_content.encode()).hexdigest()[:8]
     logger.debug(f"[CacheDiag] msgs={msg_count} first_hash={first_msg_hash} prefix_hash={prefix_hash}")
+
+    pipeline_span.set_attribute("saga.tokens.input", messages_tokens)
+    pipeline_span.set_attribute("saga.tokens.dynamic_budget", dynamic_budget)
 
     t_ctx_start = time.time()
     # Sub-A: Context Builder
@@ -337,10 +364,14 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
 
     md_len = len(context_result["md_prefix"]) if context_result["md_prefix"] else 0
     dyn_len = len(context_result["dynamic_suffix"]) if context_result["dynamic_suffix"] else 0
+    ctx_ms = (t_ctx_end - t_ctx_start) * 1000
     logger.info(
-        f"[Trace] Sub-A Context: {(t_ctx_end - t_ctx_start)*1000:.0f}ms | "
+        f"[Trace] Sub-A Context: {ctx_ms:.0f}ms | "
         f"md_prefix={md_len}ch dynamic_suffix={dyn_len}ch"
     )
+    pipeline_span.set_attribute("saga.sub_a.duration_ms", round(ctx_ms))
+    pipeline_span.set_attribute("saga.sub_a.md_prefix_len", md_len)
+    pipeline_span.set_attribute("saga.sub_a.dynamic_suffix_len", dyn_len)
     if context_result["dynamic_suffix"]:
         # Show first 200 chars of dynamic context for debugging
         logger.debug(f"[Trace] Dynamic suffix preview: {context_result['dynamic_suffix'][:200]}...")
@@ -355,6 +386,13 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     bp_count = sum(1 for m in augmented_messages if isinstance(m, dict) and m.get("cache_control"))
     logger.info(f"[Trace] Cacheable messages: {len(augmented_messages)} msgs, {bp_count} breakpoints")
 
+    # DEBUG: Log actual messages being sent to LLM
+    for i, msg in enumerate(augmented_messages):
+        role = msg.get("role", "?") if isinstance(msg, dict) else "?"
+        content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+        content_str = content if isinstance(content, str) else str(content)
+        logger.info(f"[LLM-Input] msg[{i}] role={role} len={len(content_str)}ch preview: {content_str[:300]}")
+
     # Get last user input for post-turn
     last_user_input = ""
     for msg in reversed(request.messages):
@@ -364,7 +402,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
 
     if request.stream:
         # Mutable container: generator stores full_response here for BackgroundTask
-        stream_ctx = {"full_response": ""}
+        stream_ctx = {"full_response": "", "pipeline_span": pipeline_span, "span_ctx": span_ctx}
 
         async def _post_stream_task():
             """Runs AFTER response is fully sent, outside Starlette's cancel scope."""
@@ -419,6 +457,12 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
                         }
             except Exception as e:
                 logger.error(f"[Trace] Post-stream task failed: {e}", exc_info=True)
+            finally:
+                # Close pipeline span after all post-stream work
+                try:
+                    stream_ctx["span_ctx"].__exit__(None, None, None)
+                except Exception:
+                    pass
 
         return StreamingResponse(
             _stream_response(session_id, session, augmented_messages, request, stream_ctx),
@@ -454,6 +498,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
             f"(cumulative={len(combined)}ch) — skipping turn increment"
         )
         combined_clean = strip_state_block(combined)
+        span_ctx.__exit__(None, None, None)
         return ChatCompletionResponse(
             id=f"chatcmpl-saga-{session_id}-cont",
             object="chat.completion",
@@ -510,6 +555,11 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
             }
 
     # Build response
+    pipeline_span.set_attribute("saga.turn_number", turn_number)
+    pipeline_span.set_attribute("saga.response_len", len(clean_response))
+    pipeline_span.set_attribute("saga.total_ms", round((time.time() - t_start) * 1000))
+    span_ctx.__exit__(None, None, None)
+
     resp = ChatCompletionResponse(
         id=f"chatcmpl-saga-{session_id}-{turn_number}",
         object="chat.completion",
@@ -541,6 +591,7 @@ async def _stream_response(session_id, session, augmented_messages, request, str
     in_state_block = False  # True while inside a ```state block
     t_stream_start = time.time()
     state_block_filtered = False
+    ttft_recorded = False   # Track first token time
 
     gen_params = _extract_gen_params(request)
     logger.info(f"[Trace] Stream start: model={config.models.narration}")
@@ -554,6 +605,17 @@ async def _stream_response(session_id, session, augmented_messages, request, str
     ):
         full_response += chunk
         stream_ctx["full_response"] = full_response  # incremental update for BackgroundTask
+
+        # TTFT measurement
+        if not ttft_recorded:
+            ttft_ms = (time.time() - t_stream_start) * 1000
+            ttft_recorded = True
+            logger.info(f"[Trace] TTFT: {ttft_ms:.0f}ms")
+            p_span = stream_ctx.get("pipeline_span")
+            if p_span:
+                p_span.add_event("first_token", {"ttft_ms": round(ttft_ms)})
+                p_span.set_attribute("saga.ttft_ms", round(ttft_ms))
+
         buffer += chunk
 
         # Process buffer for state block markers
@@ -612,10 +674,16 @@ async def _stream_response(session_id, session, augmented_messages, request, str
     yield "data: [DONE]\n\n"
 
     # Store full_response for BackgroundTask (post-stream processing runs there)
+    stream_total_ms = (time.time() - t_stream_start) * 1000
     logger.info(
-        f"[Trace] Stream done: {(time.time() - t_stream_start)*1000:.0f}ms | "
+        f"[Trace] Stream done: {stream_total_ms:.0f}ms | "
         f"response={len(full_response)}ch state_filtered={state_block_filtered}"
     )
+    p_span = stream_ctx.get("pipeline_span")
+    if p_span:
+        p_span.set_attribute("saga.stream.total_ms", round(stream_total_ms))
+        p_span.set_attribute("saga.response_len", len(full_response))
+        p_span.set_attribute("saga.state_block_filtered", state_block_filtered)
     stream_ctx["full_response"] = full_response
 
 
@@ -676,9 +744,11 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
             raise HTTPException(400, "Invalid user/session ID format")
         return user
 
-    # Priority 3: System message hash (legacy fallback)
+    # Priority 3: System message hash (stable fallback)
     # Use first paragraph only — Lorebook entries appended later would cause
     # different hashes each turn, breaking session continuity.
+    # NOTE: first-user-message composite hash was tried but breaks when
+    # RisuAI truncates old messages (context window sliding).
     for msg in request.messages:
         if msg.role == "system":
             first_para = msg.get_text_content().split('\n\n')[0][:300]
@@ -830,9 +900,19 @@ async def get_turn_logs(session_id: str, from_turn: int = 0, to_turn: int | None
     logs = await sqlite_db.get_turn_logs(session_id, from_turn, to_turn)
     return logs
 
+@app.post("/api/sessions/reset-latest", dependencies=[Depends(_verify_bearer)])
+async def reset_latest_session():
+    """Reset the most recently active session (by updated_at)."""
+    sessions = await sqlite_db.list_sessions()
+    if not sessions:
+        raise HTTPException(404, "No active sessions")
+    latest = sessions[0]  # list_sessions returns ORDER BY updated_at DESC
+    await session_mgr.reset_session(latest["id"], curator=curator)
+    return {"status": "reset", "session_id": latest["id"], "name": latest.get("name", "")}
+
 @app.post("/api/sessions/{session_id}/reset", dependencies=[Depends(_verify_bearer)])
 async def reset_session(session_id: str):
-    await session_mgr.reset_session(session_id)
+    await session_mgr.reset_session(session_id, curator=curator)
     return {"status": "reset", "session_id": session_id}
 
 @app.post("/api/reset-all", dependencies=[Depends(_verify_bearer)])
