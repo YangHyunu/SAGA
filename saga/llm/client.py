@@ -1,8 +1,13 @@
-"""LLM API client supporting Anthropic, Google, and OpenAI providers."""
-import httpx
-import json
+"""LLM API client supporting Anthropic, Google, and OpenAI providers.
+
+Uses official SDKs with optional LangSmith tracing via wrap_* wrappers.
+"""
+import asyncio
 import logging
 from typing import AsyncIterator
+
+import anthropic
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +15,6 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     def __init__(self, config):
         self.config = config
-        self._http = httpx.AsyncClient(timeout=60.0)
         # Sanitize API keys (strip whitespace/tabs that may leak from env vars or YAML)
         if config.api_keys.anthropic:
             config.api_keys.anthropic = config.api_keys.anthropic.strip()
@@ -19,8 +23,56 @@ class LLMClient:
         if config.api_keys.google:
             config.api_keys.google = config.api_keys.google.strip()
 
+        # --- Anthropic ---
+        ant_client = None
+        if config.api_keys.anthropic:
+            ant_client = anthropic.AsyncAnthropic(
+                api_key=config.api_keys.anthropic,
+                default_headers={
+                    "anthropic-beta": "prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11"
+                },
+            )
+
+        # --- OpenAI ---
+        oai_client = None
+        if config.api_keys.openai:
+            oai_client = openai.AsyncOpenAI(api_key=config.api_keys.openai)
+
+        # --- Google GenAI ---
+        google_client = None
+        if config.api_keys.google:
+            try:
+                from google import genai
+                google_client = genai.Client(api_key=config.api_keys.google)
+            except ImportError:
+                logger.warning("[LLMClient] google-genai not installed, Google provider unavailable")
+
+        # --- LangSmith wrapping (conditional) ---
+        if config.langsmith.enabled:
+            try:
+                from langsmith.wrappers import wrap_anthropic, wrap_openai
+                if ant_client:
+                    ant_client = wrap_anthropic(ant_client)
+                if oai_client:
+                    oai_client = wrap_openai(oai_client)
+            except ImportError:
+                logger.warning("[LangSmith] langsmith.wrappers not available")
+            try:
+                from langsmith.wrappers import wrap_gemini
+                if google_client:
+                    google_client = wrap_gemini(google_client)
+            except ImportError:
+                logger.debug("[LangSmith] wrap_gemini not available")
+
+        self._anthropic = ant_client
+        self._openai = oai_client
+        self._google = google_client
+
     async def close(self):
-        await self._http.aclose()
+        if self._anthropic and hasattr(self._anthropic, "close"):
+            await self._anthropic.close()
+        if self._openai and hasattr(self._openai, "close"):
+            await self._openai.close()
 
     async def call_llm(self, model: str, messages: list[dict], temperature: float = 0.7, max_tokens: int = 2048, **kwargs) -> str:
         """Call LLM API and return text response. Auto-detects provider from model name."""
@@ -54,12 +106,16 @@ class LLMClient:
         else:
             return "openai"
 
-    async def _call_anthropic(self, model, messages, temperature, max_tokens, **kwargs):
-        """Call Anthropic Messages API with 3-BP prompt caching support."""
-        api_key = self.config.api_keys.anthropic
+    # --- Message preparation helpers ---
+
+    @staticmethod
+    def _prepare_anthropic_messages(messages: list[dict]):
+        """Split messages into system content blocks and non-system messages.
+
+        Returns (system_parts, non_system) preserving cache_control.
+        """
         system_parts = []
         non_system = []
-
         for msg in messages:
             if msg["role"] == "system":
                 part = {"type": "text", "text": msg["content"]}
@@ -77,112 +133,11 @@ class LLMClient:
                 else:
                     entry = {"role": msg["role"], "content": msg["content"]}
                 non_system.append(entry)
+        return system_parts, non_system
 
-        body = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": non_system,
-        }
-        if system_parts:
-            body["system"] = system_parts
-        # Anthropic supports top_p and stop_sequences
-        if kwargs.get("top_p") is not None:
-            body["top_p"] = kwargs["top_p"]
-        if kwargs.get("stop") is not None:
-            stop = kwargs["stop"]
-            body["stop_sequences"] = [stop] if isinstance(stop, str) else stop
-
-        resp = await self._http.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": "prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11",
-                "content-type": "application/json",
-            },
-            json=body,
-        )
-        if resp.status_code == 401:
-            raise RuntimeError(f"Anthropic API 인증 실패 (401). API 키 확인: config.yaml api_keys.anthropic 또는 $ANTHROPIC_API_KEY")
-        resp.raise_for_status()
-        data = resp.json()
-
-        # Log prompt caching stats
-        usage = data.get("usage", {})
-        cache_read = usage.get("cache_read_input_tokens", 0)
-        cache_create = usage.get("cache_creation_input_tokens", 0)
-        input_tokens = usage.get("input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
-        if cache_read or cache_create:
-            logger.info(
-                f"[Cache] input={input_tokens} cache_read={cache_read} cache_create={cache_create} output={output_tokens}"
-            )
-
-        return "".join(block.get("text", "") for block in data.get("content", []))
-
-    async def _call_google(self, model, messages, temperature, max_tokens, **kwargs):
-        """Call Google Gemini API."""
-        api_key = self.config.api_keys.google
-        # Convert messages to Gemini format (merge all system messages)
-        contents = []
-        system_parts = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_parts.append(msg["content"])
-            else:
-                role = "user" if msg["role"] == "user" else "model"
-                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-        system_instruction = "\n\n".join(system_parts) if system_parts else None
-
-        gen_config = {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        }
-        if kwargs.get("top_p") is not None:
-            gen_config["topP"] = kwargs["top_p"]
-        if kwargs.get("frequency_penalty") is not None:
-            gen_config["frequencyPenalty"] = kwargs["frequency_penalty"]
-        if kwargs.get("presence_penalty") is not None:
-            gen_config["presencePenalty"] = kwargs["presence_penalty"]
-        if kwargs.get("stop") is not None:
-            stop = kwargs["stop"]
-            gen_config["stopSequences"] = [stop] if isinstance(stop, str) else stop
-
-        body = {
-            "contents": contents,
-            "generationConfig": gen_config,
-        }
-        if system_instruction:
-            body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        import asyncio as _aio
-        for attempt in range(4):
-            resp = await self._http.post(
-                url,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=body,
-            )
-            if resp.status_code == 429:
-                wait = 2 ** attempt
-                logger.warning(f"[Google] 429 rate limit, retrying in {wait}s (attempt {attempt+1}/4)")
-                await _aio.sleep(wait)
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                return "".join(p.get("text", "") for p in parts)
-            return ""
-        resp.raise_for_status()
-        return ""
-
-    async def _call_openai(self, model, messages, temperature, max_tokens, **kwargs):
-        """Call OpenAI Chat Completions API."""
-        api_key = self.config.api_keys.openai
-        # Merge multiple system messages into one (OpenAI only supports one)
+    @staticmethod
+    def _prepare_openai_messages(messages: list[dict]):
+        """Merge multiple system messages into one (OpenAI only supports one)."""
         merged = []
         system_parts = []
         for m in messages:
@@ -192,141 +147,201 @@ class LLMClient:
                 merged.append({"role": m["role"], "content": m["content"]})
         if system_parts:
             merged.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
-        body = {
-            "model": model,
-            "messages": merged,
-            "temperature": temperature,
-            "max_completion_tokens": max_tokens,
-        }
-        if kwargs.get("top_p") is not None:
-            body["top_p"] = kwargs["top_p"]
-        if kwargs.get("frequency_penalty") is not None:
-            body["frequency_penalty"] = kwargs["frequency_penalty"]
-        if kwargs.get("presence_penalty") is not None:
-            body["presence_penalty"] = kwargs["presence_penalty"]
-        if kwargs.get("stop") is not None:
-            body["stop"] = kwargs["stop"]
-        resp = await self._http.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-        )
-        if resp.status_code != 200:
-            logger.error(f"[OpenAI] {resp.status_code}: {resp.text[:500]}")
-        resp.raise_for_status()
-        data = resp.json()
-        choices = data.get("choices", [])
-        return choices[0]["message"]["content"] if choices else ""
+        return merged
 
-    async def _stream_anthropic(self, model, messages, temperature, max_tokens, **kwargs):
-        """Stream from Anthropic with 3-BP prompt caching support."""
-        api_key = self.config.api_keys.anthropic
+    @staticmethod
+    def _prepare_google_messages(messages: list[dict]):
+        """Convert to Gemini format: contents list + system instruction string."""
+        contents = []
         system_parts = []
-        non_system = []
-
         for msg in messages:
             if msg["role"] == "system":
-                part = {"type": "text", "text": msg["content"]}
-                if msg.get("cache_control"):
-                    part["cache_control"] = msg["cache_control"]
-                system_parts.append(part)
+                system_parts.append(msg["content"])
             else:
-                if msg.get("cache_control"):
-                    entry = {
-                        "role": msg["role"],
-                        "content": [
-                            {"type": "text", "text": msg["content"], "cache_control": msg["cache_control"]}
-                        ],
-                    }
-                else:
-                    entry = {"role": msg["role"], "content": msg["content"]}
-                non_system.append(entry)
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        system_instruction = "\n\n".join(system_parts) if system_parts else None
+        return contents, system_instruction
 
-        body = {
+    # --- Anthropic ---
+
+    async def _call_anthropic(self, model, messages, temperature, max_tokens, **kwargs):
+        """Call Anthropic Messages API with 3-BP prompt caching support."""
+        if not self._anthropic:
+            raise RuntimeError("Anthropic API key not configured. Set api_keys.anthropic in config.yaml or $ANTHROPIC_API_KEY")
+        system_parts, non_system = self._prepare_anthropic_messages(messages)
+
+        create_kwargs = {
             "model": model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": non_system,
-            "stream": True,
         }
         if system_parts:
-            body["system"] = system_parts
+            create_kwargs["system"] = system_parts
         if kwargs.get("top_p") is not None:
-            body["top_p"] = kwargs["top_p"]
+            create_kwargs["top_p"] = kwargs["top_p"]
         if kwargs.get("stop") is not None:
             stop = kwargs["stop"]
-            body["stop_sequences"] = [stop] if isinstance(stop, str) else stop
+            create_kwargs["stop_sequences"] = [stop] if isinstance(stop, str) else stop
 
-        cache_stats = {}
-
-        async with self._http.stream(
-            "POST",
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": "prompt-caching-2024-07-31,extended-cache-ttl-2025-04-11",
-                "content-type": "application/json",
-            },
-            json=body,
-        ) as resp:
-            if resp.status_code != 200:
-                body = await resp.aread()
-                raise RuntimeError(f"Anthropic API error {resp.status_code}: {body.decode(errors='replace')[:500]}")
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    data = json.loads(line[6:])
-                    event_type = data.get("type", "")
-
-                    if event_type == "message_start":
-                        usage = data.get("message", {}).get("usage", {})
-                        cache_stats["input"] = usage.get("input_tokens", 0)
-                        cache_stats["cache_read"] = usage.get("cache_read_input_tokens", 0)
-                        cache_stats["cache_create"] = usage.get("cache_creation_input_tokens", 0)
-                    elif event_type == "message_delta":
-                        cache_stats["output"] = data.get("usage", {}).get("output_tokens", 0)
-                    elif event_type == "content_block_delta":
-                        text = data.get("delta", {}).get("text", "")
-                        if text:
-                            yield text
-
-        # Log cache stats after stream completes
-        if cache_stats.get("cache_read") or cache_stats.get("cache_create"):
-            logger.info(
-                f"[Cache] input={cache_stats.get('input', 0)} "
-                f"cache_read={cache_stats.get('cache_read', 0)} "
-                f"cache_create={cache_stats.get('cache_create', 0)} "
-                f"output={cache_stats.get('output', 0)}"
+        try:
+            response = await self._anthropic.messages.create(**create_kwargs)
+        except anthropic.AuthenticationError:
+            raise RuntimeError(
+                "Anthropic API 인증 실패 (401). API 키 확인: config.yaml api_keys.anthropic 또는 $ANTHROPIC_API_KEY"
             )
 
-    async def _stream_openai(self, model, messages, temperature, max_tokens, **kwargs):
-        """Stream from OpenAI."""
-        api_key = self.config.api_keys.openai
-        body = {
+        # Log prompt caching stats
+        usage = response.usage
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        if cache_read or cache_create:
+            logger.info(
+                f"[Cache] input={usage.input_tokens} cache_read={cache_read} "
+                f"cache_create={cache_create} output={usage.output_tokens}"
+            )
+
+        return "".join(block.text for block in response.content if hasattr(block, "text"))
+
+    async def _stream_anthropic(self, model, messages, temperature, max_tokens, **kwargs):
+        """Stream from Anthropic with 3-BP prompt caching support."""
+        if not self._anthropic:
+            raise RuntimeError("Anthropic API key not configured. Set api_keys.anthropic in config.yaml or $ANTHROPIC_API_KEY")
+        system_parts, non_system = self._prepare_anthropic_messages(messages)
+
+        create_kwargs = {
             "model": model,
-            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-            "temperature": temperature, "max_tokens": max_tokens, "stream": True,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": non_system,
+        }
+        if system_parts:
+            create_kwargs["system"] = system_parts
+        if kwargs.get("top_p") is not None:
+            create_kwargs["top_p"] = kwargs["top_p"]
+        if kwargs.get("stop") is not None:
+            stop = kwargs["stop"]
+            create_kwargs["stop_sequences"] = [stop] if isinstance(stop, str) else stop
+
+        async with self._anthropic.messages.stream(**create_kwargs) as stream:
+            async for text in stream.text_stream:
+                yield text
+            # Get final message for cache stats after stream completes
+            response = await stream.get_final_message()
+
+        usage = response.usage
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        if cache_read or cache_create:
+            logger.info(
+                f"[Cache] input={usage.input_tokens} cache_read={cache_read} "
+                f"cache_create={cache_create} output={usage.output_tokens}"
+            )
+
+    # --- Google ---
+
+    async def _call_google(self, model, messages, temperature, max_tokens, **kwargs):
+        """Call Google Gemini API via google-genai SDK."""
+        if not self._google:
+            raise RuntimeError("Google API key not configured. Set api_keys.google in config.yaml or $GOOGLE_API_KEY")
+        from google import genai
+
+        contents, system_instruction = self._prepare_google_messages(messages)
+
+        gen_config = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
         }
         if kwargs.get("top_p") is not None:
-            body["top_p"] = kwargs["top_p"]
+            gen_config["top_p"] = kwargs["top_p"]
         if kwargs.get("frequency_penalty") is not None:
-            body["frequency_penalty"] = kwargs["frequency_penalty"]
+            gen_config["frequency_penalty"] = kwargs["frequency_penalty"]
         if kwargs.get("presence_penalty") is not None:
-            body["presence_penalty"] = kwargs["presence_penalty"]
+            gen_config["presence_penalty"] = kwargs["presence_penalty"]
         if kwargs.get("stop") is not None:
-            body["stop"] = kwargs["stop"]
-        async with self._http.stream("POST", "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body) as resp:
-            async for line in resp.aiter_lines():
-                if line.startswith("data: ") and line.strip() != "data: [DONE]":
-                    data = json.loads(line[6:])
-                    delta = data.get("choices", [{}])[0].get("delta", {})
-                    if delta.get("content"):
-                        yield delta["content"]
+            stop = kwargs["stop"]
+            gen_config["stop_sequences"] = [stop] if isinstance(stop, str) else stop
+        if system_instruction:
+            gen_config["system_instruction"] = system_instruction
+
+        config_obj = genai.types.GenerateContentConfig(**gen_config)
+
+        for attempt in range(4):
+            try:
+                response = await asyncio.to_thread(
+                    self._google.models.generate_content,
+                    model=model,
+                    contents=contents,
+                    config=config_obj,
+                )
+                return response.text or ""
+            except Exception as e:
+                if "429" in str(e) and attempt < 3:
+                    wait = 2 ** attempt
+                    logger.warning(f"[Google] 429 rate limit, retrying in {wait}s (attempt {attempt+1}/4)")
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+        return ""
 
     async def _stream_google(self, model, messages, temperature, max_tokens, **kwargs):
         """Stream from Google (simplified — Gemini streaming)."""
         # For simplicity, use non-streaming and yield full result
         result = await self._call_google(model, messages, temperature, max_tokens, **kwargs)
         yield result
+
+    # --- OpenAI ---
+
+    async def _call_openai(self, model, messages, temperature, max_tokens, **kwargs):
+        """Call OpenAI Chat Completions API."""
+        if not self._openai:
+            raise RuntimeError("OpenAI API key not configured. Set api_keys.openai in config.yaml or $OPENAI_API_KEY")
+        merged = self._prepare_openai_messages(messages)
+
+        create_kwargs = {
+            "model": model,
+            "messages": merged,
+            "temperature": temperature,
+            "max_completion_tokens": max_tokens,
+        }
+        if kwargs.get("top_p") is not None:
+            create_kwargs["top_p"] = kwargs["top_p"]
+        if kwargs.get("frequency_penalty") is not None:
+            create_kwargs["frequency_penalty"] = kwargs["frequency_penalty"]
+        if kwargs.get("presence_penalty") is not None:
+            create_kwargs["presence_penalty"] = kwargs["presence_penalty"]
+        if kwargs.get("stop") is not None:
+            create_kwargs["stop"] = kwargs["stop"]
+
+        response = await self._openai.chat.completions.create(**create_kwargs)
+
+        choices = response.choices
+        return choices[0].message.content if choices else ""
+
+    async def _stream_openai(self, model, messages, temperature, max_tokens, **kwargs):
+        """Stream from OpenAI."""
+        if not self._openai:
+            raise RuntimeError("OpenAI API key not configured. Set api_keys.openai in config.yaml or $OPENAI_API_KEY")
+        merged = self._prepare_openai_messages(messages)
+
+        create_kwargs = {
+            "model": model,
+            "messages": merged,
+            "temperature": temperature,
+            "max_completion_tokens": max_tokens,
+            "stream": True,
+        }
+        if kwargs.get("top_p") is not None:
+            create_kwargs["top_p"] = kwargs["top_p"]
+        if kwargs.get("frequency_penalty") is not None:
+            create_kwargs["frequency_penalty"] = kwargs["frequency_penalty"]
+        if kwargs.get("presence_penalty") is not None:
+            create_kwargs["presence_penalty"] = kwargs["presence_penalty"]
+        if kwargs.get("stop") is not None:
+            create_kwargs["stop"] = kwargs["stop"]
+
+        stream = await self._openai.chat.completions.create(**create_kwargs)
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content

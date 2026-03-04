@@ -1,5 +1,8 @@
 import chromadb
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class VectorDB:
@@ -29,6 +32,7 @@ class VectorDB:
             documents=[text],
             metadatas=[metadata],
         )
+        logger.debug(f"[VectorDB] upsert lorebook: id={entry_id} text_len={len(text)}")
 
     def search_lorebook(
         self, session_id: str, query: str, n_results: int = 10
@@ -40,19 +44,9 @@ class VectorDB:
                 n_results=n_results,
                 where={"session_id": session_id},
             )
-        except Exception:
-            # If collection is empty or no matching docs, return empty structure
+        except Exception as e:
+            logger.warning(f"[VectorDB] search_lorebook failed: {e}")
             result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-        return result
-
-    def search_lorebook_by_ids(self, entry_ids: list[str]) -> dict:
-        """Retrieve lorebook entries by their IDs."""
-        if not entry_ids:
-            return {"ids": [], "documents": [], "metadatas": []}
-        try:
-            result = self.lorebook.get(ids=entry_ids)
-        except Exception:
-            result = {"ids": [], "documents": [], "metadatas": []}
         return result
 
     # ------------------------------------------------------------------ #
@@ -87,6 +81,7 @@ class VectorDB:
             documents=[summary],
             metadatas=[metadata],
         )
+        logger.debug(f"[VectorDB] upsert episode: id={episode_id} importance={importance} summary_len={len(summary)}")
 
     def search_episodes(
         self, session_id: str, query: str, n_results: int = 20
@@ -98,7 +93,8 @@ class VectorDB:
                 n_results=n_results,
                 where={"session_id": session_id},
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[VectorDB] search_episodes failed: {e}")
             result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
         return result
 
@@ -117,21 +113,8 @@ class VectorDB:
                     ]
                 },
             )
-        except Exception:
-            result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-        return result
-
-    def search_episodes_by_entity(
-        self, session_id: str, entity_name: str, n_results: int = 10
-    ) -> dict:
-        """Search episodes mentioning a specific entity (NPC, location, item)."""
-        try:
-            result = self.episodes.query(
-                query_texts=[entity_name],
-                n_results=n_results,
-                where={"session_id": session_id},
-            )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[VectorDB] search_important_episodes failed: {e}")
             result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
         return result
 
@@ -158,7 +141,8 @@ class VectorDB:
                     result["ids"] = list(ids)
                     result["documents"] = list(docs)
                     result["metadatas"] = list(metas)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[VectorDB] get_recent_episodes failed: {e}")
             result = {"ids": [], "documents": [], "metadatas": []}
         return result
 
@@ -173,5 +157,5 @@ class VectorDB:
                 continue
             try:
                 collection.delete(where={"session_id": session_id})
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[VectorDB] delete_session_data failed for {collection.name}: {e}")

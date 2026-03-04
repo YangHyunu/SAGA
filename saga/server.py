@@ -30,12 +30,11 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from saga.config import load_config, SagaConfig
 from saga.models import (
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
     Choice, Usage, ChatCompletionChunk, StreamChoice, StreamDelta,
-    StatusResponse, SessionInfo
+    StatusResponse,
 )
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
@@ -48,8 +47,6 @@ from saga.session import SessionManager
 from saga.utils.tokens import count_tokens, count_messages_tokens
 from saga.utils.parsers import strip_state_block
 from saga.system_stabilizer import SystemStabilizer
-from saga.observability import init_tracing, tracer as otel_tracer
-
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -183,8 +180,11 @@ async def lifespan(app: FastAPI):
     config_path = os.environ.get("SAGA_CONFIG", "config.yaml")
     config = load_config(config_path)
 
-    # Initialize OpenTelemetry tracing (Phoenix)
-    init_tracing()
+    # LangSmith tracing setup
+    if config.langsmith.enabled:
+        os.environ.setdefault("LANGSMITH_TRACING", "true")
+        os.environ.setdefault("LANGSMITH_PROJECT", config.langsmith.project)
+        logger.info(f"[LangSmith] Tracing enabled, project={config.langsmith.project}")
 
     # Ensure directories exist
     os.makedirs("db", exist_ok=True)
@@ -261,20 +261,40 @@ app.add_middleware(
 # Bearer Auth
 # ============================================================
 
-_bearer_scheme = HTTPBearer(auto_error=False)
 
+async def _verify_bearer(request: Request) -> None:
+    """Verify API key from Authorization header if server.api_key is configured.
 
-async def _verify_bearer(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> None:
-    """Verify Bearer token if server.api_key is configured."""
-    api_key = config.server.api_key if config else ""
+    Supports both 'Authorization: Bearer <key>' and 'Authorization: <key>' formats
+    for compatibility with various OpenAI-compatible clients.
+    """
+    api_key = (config.server.api_key if config else None) or ""
     if not api_key:
         return  # Auth disabled
-    if credentials is None or not hmac.compare_digest(
-        credentials.credentials.encode("utf-8"), api_key.encode("utf-8")
-    ):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": {"message": "Missing API key in Authorization header",
+                              "type": "auth_error", "code": "missing_api_key"}},
+        )
+
+    # Support both "Bearer <key>" and raw "<key>"
+    token = auth_header.removeprefix("Bearer ").removeprefix("bearer ").strip()
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": {"message": "Empty API key in Authorization header",
+                              "type": "auth_error", "code": "empty_api_key"}},
+        )
+
+    if not hmac.compare_digest(token.encode("utf-8"), api_key.encode("utf-8")):
+        raise HTTPException(
+            status_code=401,
+            detail={"error": {"message": "Invalid API key",
+                              "type": "auth_error", "code": "invalid_api_key"}},
+        )
 
 
 # ============================================================
@@ -298,13 +318,6 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     t_start = time.time()
     mode = "stream" if request.stream else "sync"
 
-    # ── OTel root span for the entire pipeline ──
-    span_ctx = otel_tracer.start_as_current_span(
-        "saga.pipeline",
-        attributes={"saga.mode": mode, "saga.model": request.model or config.models.narration},
-    )
-    pipeline_span = span_ctx.__enter__()
-
     # ── Trace: Request ──
     sys_msgs = sum(1 for m in request.messages if m.role == "system")
     usr_msgs = sum(1 for m in request.messages if m.role == "user")
@@ -324,7 +337,6 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     session = await session_mgr.get_or_create_session(session_id)
     session_id = session["id"]
     logger.info(f"[Trace] Session: {session_id} (via {session_src})")
-    pipeline_span.set_attribute("saga.session_id", session_id)
 
     # Token counting
     messages_tokens = count_messages_tokens([{"role": m.role, "content": m.get_text_content()} for m in request.messages])
@@ -339,9 +351,6 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     prefix_content = "".join(m.get_text_content()[:50] for m in non_system[:3])
     prefix_hash = hashlib.md5(prefix_content.encode()).hexdigest()[:8]
     logger.debug(f"[CacheDiag] msgs={msg_count} first_hash={first_msg_hash} prefix_hash={prefix_hash}")
-
-    pipeline_span.set_attribute("saga.tokens.input", messages_tokens)
-    pipeline_span.set_attribute("saga.tokens.dynamic_budget", dynamic_budget)
 
     t_ctx_start = time.time()
     # Sub-A: Context Builder
@@ -369,9 +378,6 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         f"[Trace] Sub-A Context: {ctx_ms:.0f}ms | "
         f"md_prefix={md_len}ch dynamic_suffix={dyn_len}ch"
     )
-    pipeline_span.set_attribute("saga.sub_a.duration_ms", round(ctx_ms))
-    pipeline_span.set_attribute("saga.sub_a.md_prefix_len", md_len)
-    pipeline_span.set_attribute("saga.sub_a.dynamic_suffix_len", dyn_len)
     if context_result["dynamic_suffix"]:
         # Show first 200 chars of dynamic context for debugging
         logger.debug(f"[Trace] Dynamic suffix preview: {context_result['dynamic_suffix'][:200]}...")
@@ -391,7 +397,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         role = msg.get("role", "?") if isinstance(msg, dict) else "?"
         content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
         content_str = content if isinstance(content, str) else str(content)
-        logger.info(f"[LLM-Input] msg[{i}] role={role} len={len(content_str)}ch preview: {content_str[:300]}")
+        logger.debug(f"[LLM-Input] msg[{i}] role={role} len={len(content_str)}ch preview: {content_str[:300]}")
 
     # Get last user input for post-turn
     last_user_input = ""
@@ -402,7 +408,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
 
     if request.stream:
         # Mutable container: generator stores full_response here for BackgroundTask
-        stream_ctx = {"full_response": "", "pipeline_span": pipeline_span, "span_ctx": span_ctx}
+        stream_ctx = {"full_response": ""}
 
         async def _post_stream_task():
             """Runs AFTER response is fully sent, outside Starlette's cancel scope."""
@@ -457,12 +463,6 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
                         }
             except Exception as e:
                 logger.error(f"[Trace] Post-stream task failed: {e}", exc_info=True)
-            finally:
-                # Close pipeline span after all post-stream work
-                try:
-                    stream_ctx["span_ctx"].__exit__(None, None, None)
-                except Exception:
-                    pass
 
         return StreamingResponse(
             _stream_response(session_id, session, augmented_messages, request, stream_ctx),
@@ -498,7 +498,6 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
             f"(cumulative={len(combined)}ch) — skipping turn increment"
         )
         combined_clean = strip_state_block(combined)
-        span_ctx.__exit__(None, None, None)
         return ChatCompletionResponse(
             id=f"chatcmpl-saga-{session_id}-cont",
             object="chat.completion",
@@ -555,11 +554,6 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
             }
 
     # Build response
-    pipeline_span.set_attribute("saga.turn_number", turn_number)
-    pipeline_span.set_attribute("saga.response_len", len(clean_response))
-    pipeline_span.set_attribute("saga.total_ms", round((time.time() - t_start) * 1000))
-    span_ctx.__exit__(None, None, None)
-
     resp = ChatCompletionResponse(
         id=f"chatcmpl-saga-{session_id}-{turn_number}",
         object="chat.completion",
@@ -611,10 +605,6 @@ async def _stream_response(session_id, session, augmented_messages, request, str
             ttft_ms = (time.time() - t_stream_start) * 1000
             ttft_recorded = True
             logger.info(f"[Trace] TTFT: {ttft_ms:.0f}ms")
-            p_span = stream_ctx.get("pipeline_span")
-            if p_span:
-                p_span.add_event("first_token", {"ttft_ms": round(ttft_ms)})
-                p_span.set_attribute("saga.ttft_ms", round(ttft_ms))
 
         buffer += chunk
 
@@ -679,11 +669,6 @@ async def _stream_response(session_id, session, augmented_messages, request, str
         f"[Trace] Stream done: {stream_total_ms:.0f}ms | "
         f"response={len(full_response)}ch state_filtered={state_block_filtered}"
     )
-    p_span = stream_ctx.get("pipeline_span")
-    if p_span:
-        p_span.set_attribute("saga.stream.total_ms", round(stream_total_ms))
-        p_span.set_attribute("saga.response_len", len(full_response))
-        p_span.set_attribute("saga.state_block_filtered", state_block_filtered)
     stream_ctx["full_response"] = full_response
 
 
@@ -716,6 +701,7 @@ def _partial_state_marker(text: str) -> int:
 
 
 _SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+_SAGA_META_PREFIX = "@@SAGA:"
 
 
 def _is_anthropic_model(model: str | None) -> bool:
@@ -724,12 +710,28 @@ def _is_anthropic_model(model: str | None) -> bool:
 
 
 def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) -> str | None:
-    """Extract session ID with priority: header > user field > system hash.
+    """Extract session ID with priority: plugin sentinel > header > user field > system hash.
 
-    1. X-SAGA-Session-ID header (explicit, e.g. from future RisuAI plugin)
+    0. @@SAGA: sentinel in messages[0] (RisuAI plugin injection)
+    1. X-SAGA-Session-ID header (explicit)
     2. request.user field (OpenAI spec, configurable in RisuAI)
     3. System message hash fallback (legacy, backward-compatible)
     """
+    # Priority 0: SAGA plugin sentinel in messages[0]
+    if request.messages and request.messages[0].role == "system":
+        text = request.messages[0].get_text_content()
+        if text.startswith(_SAGA_META_PREFIX):
+            meta = dict(
+                kv.split("=", 1)
+                for kv in text[len(_SAGA_META_PREFIX):].split("&")
+                if "=" in kv
+            )
+            sid = meta.get("sid", "").strip()
+            if sid and _SESSION_ID_RE.match(sid):
+                request.messages.pop(0)  # strip sentinel before LLM forwarding
+                logger.info(f"[Session] Plugin sentinel: sid={sid} grp={meta.get('grp', '0')}")
+                return sid
+
     # Priority 1: Custom header
     header_id = raw_request.headers.get("x-saga-session-id", "").strip()
     if header_id:
@@ -752,7 +754,10 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
     for msg in request.messages:
         if msg.role == "system":
             first_para = msg.get_text_content().split('\n\n')[0][:300]
-            return hashlib.sha256(first_para.encode()).hexdigest()[:16]
+            sid = hashlib.sha256(first_para.encode()).hexdigest()[:16]
+            logger.debug(f"[Session] Hash input (first 150ch): {first_para[:150]!r}")
+            logger.debug(f"[Session] Hash result: {sid}")
+            return sid
     return None
 
 
@@ -860,6 +865,12 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
 # Admin API
 # ============================================================
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint — no auth required."""
+    return {"status": "ok"}
+
+
 @app.get("/api/status", dependencies=[Depends(_verify_bearer)])
 async def get_status():
     sessions = await sqlite_db.list_sessions()
@@ -872,7 +883,6 @@ async def list_sessions():
 
 @app.post("/api/sessions", dependencies=[Depends(_verify_bearer)])
 async def create_session(name: str = "", world: str = ""):
-    world_name = world or config.session.default_world
     session = await session_mgr.get_or_create_session()
     return session
 

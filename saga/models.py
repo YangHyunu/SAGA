@@ -120,14 +120,6 @@ class ChatCompletionChunk(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SessionInfo(BaseModel):
-    id: str
-    name: str
-    turn_count: int = 0
-    created_at: float = Field(default_factory=time.time)
-    updated_at: float = Field(default_factory=time.time)
-
-
 class StatusResponse(BaseModel):
     status: str = "ok"
     active_sessions: int = 0
@@ -157,16 +149,6 @@ class ItemTransfer(BaseModel):
 
     item: str
     to: str
-
-
-class CuratorResult(BaseModel):
-    """Result produced by the Curator after each curation run."""
-
-    contradictions: List[dict] = Field(default_factory=list)
-    events: List[dict] = Field(default_factory=list)
-    compress_story: bool = False
-    compressed_summary: str = ""
-    narrative_notes: str = ""
 
 
 class StateBlockData(BaseModel):

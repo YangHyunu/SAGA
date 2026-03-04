@@ -1,12 +1,23 @@
 """Letta Curator — N턴마다 비동기 실행. Memory Block 기반 서사 판단 연속성."""
+import asyncio
 import json
 import logging
+import time
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.adapters.curator_adapter import LettaCuratorAdapter, DirectLLMCuratorAdapter
+from saga.utils.parsers import parse_llm_json
 
 logger = logging.getLogger(__name__)
+
+
+def _log_lore_task_exception(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error(f"[Curator] Deferred lore task failed: {exc}", exc_info=exc)
 
 
 class CuratorRunner:
@@ -21,6 +32,7 @@ class CuratorRunner:
         self.letta_adapter = LettaCuratorAdapter(config)
         self.fallback_adapter = DirectLLMCuratorAdapter(llm_client, config)
         self._use_letta = False
+        self._lore_tasks: set = set()  # GC protection for deferred lore tasks
 
     def initialize(self):
         """Connect Letta client only. Agent creation is lazy (per session on first run)."""
@@ -39,6 +51,9 @@ class CuratorRunner:
     async def run(self, session_id: str, turn_number: int):
         """Run curator. Called every N turns asynchronously."""
         context = None
+        t_start = time.monotonic()
+        adapter_name = "letta" if self._use_letta else "fallback"
+
         try:
             context = await self._gather_context(session_id, turn_number)
 
@@ -47,10 +62,11 @@ class CuratorRunner:
 
             await self._apply_results(session_id, turn_number, result)
 
-            # Auto-generate lore for entities without lore
-            await self._auto_generate_lore(session_id, turn_number)
+            elapsed_ms = (time.monotonic() - t_start) * 1000
+            logger.info(f"[Curator] Curation complete for session {session_id} at turn {turn_number} ({elapsed_ms:.0f}ms)")
 
-            logger.info(f"[Curator] Curation complete for session {session_id} at turn {turn_number}")
+            # Auto-generate lore: deferred fire-and-forget to avoid LLM API contention
+            self._schedule_deferred_lore(session_id, turn_number)
 
         except Exception as e:
             logger.error(f"[Curator] Error: {e}", exc_info=True)
@@ -60,9 +76,21 @@ class CuratorRunner:
                     logger.info("[Curator] Retrying with fallback adapter")
                     result = await self.fallback_adapter.run(session_id, context)
                     await self._apply_results(session_id, turn_number, result)
-                    await self._auto_generate_lore(session_id, turn_number)
+                    self._schedule_deferred_lore(session_id, turn_number)
                 except Exception as e2:
                     logger.error(f"[Curator] Fallback also failed: {e2}")
+
+    def _schedule_deferred_lore(self, session_id: str, turn_number: int):
+        """Schedule lore generation as a deferred task with delay to avoid LLM API contention."""
+        async def _deferred():
+            await asyncio.sleep(10)  # Wait for narration requests to finish
+            logger.info(f"[Curator] Deferred lore generation starting for turn {turn_number}")
+            await self._auto_generate_lore(session_id, turn_number)
+
+        task = asyncio.create_task(_deferred())
+        self._lore_tasks.add(task)
+        task.add_done_callback(self._lore_tasks.discard)
+        task.add_done_callback(_log_lore_task_exception)
 
     async def _gather_context(self, session_id, turn_number):
         graph_summary = await self.sqlite_db.get_state_summary(session_id)
@@ -186,30 +214,7 @@ class CuratorRunner:
         )
 
         # Parse response
-        import re
-        lore_data = None
-        response = response.strip()
-        # Try direct JSON
-        try:
-            lore_data = json.loads(response)
-        except json.JSONDecodeError:
-            pass
-        # Try code block
-        if not lore_data:
-            match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response)
-            if match:
-                try:
-                    lore_data = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-        # Try brace matching
-        if not lore_data:
-            match = re.search(r'\{.*\}', response, re.DOTALL)
-            if match:
-                try:
-                    lore_data = json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    pass
+        lore_data = parse_llm_json(response)
 
         if not lore_data or not lore_data.get("content"):
             logger.warning(f"[Curator] Could not parse lore for {entity_name}: {response[:200]}")

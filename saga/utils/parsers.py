@@ -116,6 +116,47 @@ def strip_state_block(response_text: str) -> str:
     return cleaned.strip()
 
 
+def parse_llm_json(text: str) -> dict | None:
+    """LLM 응답에서 JSON dict 추출. 3단계: 직접 파싱 → 코드블록 → 균형 중괄호 매칭."""
+    if not text:
+        return None
+    text = text.strip()
+    # 1) Direct parse
+    try:
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return result
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # 2) Code block (```json ... ``` or ``` ... ```)
+    match = re.search(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL)
+    if match:
+        try:
+            result = json.loads(match.group(1).strip())
+            if isinstance(result, dict):
+                return result
+        except (json.JSONDecodeError, ValueError):
+            pass
+    # 3) Balanced brace matching (outermost { ... })
+    start = text.find('{')
+    if start != -1:
+        depth = 0
+        for i, ch in enumerate(text[start:], start=start):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        result = json.loads(text[start:i + 1])
+                        if isinstance(result, dict):
+                            return result
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+    return None
+
+
 def format_turn_narrative(turn_number: int, user_input: str, response_text: str, state_block: dict) -> str:
     """Format a turn into a narrative summary for episode storage."""
     clean_response = strip_state_block(response_text)

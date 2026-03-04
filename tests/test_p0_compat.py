@@ -14,7 +14,17 @@ from saga.config import SagaConfig, ServerConfig, ApiKeysConfig, ModelsConfig, P
 # ============================================================
 
 class TestBearerAuth:
-    """Test _verify_bearer dependency."""
+    """Test _verify_bearer dependency — supports Bearer and raw key formats."""
+
+    @staticmethod
+    def _make_request(auth_header: str | None = None) -> MagicMock:
+        """Create a mock Request with optional Authorization header."""
+        request = MagicMock()
+        headers = {}
+        if auth_header is not None:
+            headers["authorization"] = auth_header
+        request.headers = headers
+        return request
 
     @pytest.fixture
     def _patch_config(self):
@@ -30,36 +40,60 @@ class TestBearerAuth:
             yield cfg
 
     @pytest.mark.asyncio
-    async def test_valid_key_passes(self, _patch_config):
+    async def test_valid_bearer_key_passes(self, _patch_config):
         from saga.server import _verify_bearer
-        creds = MagicMock()
-        creds.credentials = "test-secret-key"
-        # Should not raise
-        await _verify_bearer(creds)
+        request = self._make_request("Bearer test-secret-key")
+        await _verify_bearer(request)
+
+    @pytest.mark.asyncio
+    async def test_valid_raw_key_passes(self, _patch_config):
+        from saga.server import _verify_bearer
+        request = self._make_request("test-secret-key")
+        await _verify_bearer(request)
 
     @pytest.mark.asyncio
     async def test_invalid_key_rejects(self, _patch_config):
         from saga.server import _verify_bearer
         from fastapi import HTTPException
-        creds = MagicMock()
-        creds.credentials = "wrong-key"
+        request = self._make_request("Bearer wrong-key")
         with pytest.raises(HTTPException) as exc_info:
-            await _verify_bearer(creds)
+            await _verify_bearer(request)
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_missing_credentials_rejects(self, _patch_config):
+    async def test_missing_header_rejects(self, _patch_config):
         from saga.server import _verify_bearer
         from fastapi import HTTPException
+        request = self._make_request()  # No Authorization header
         with pytest.raises(HTTPException) as exc_info:
-            await _verify_bearer(None)
+            await _verify_bearer(request)
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
     async def test_empty_api_key_disables_auth(self, _patch_config_no_auth):
         from saga.server import _verify_bearer
-        # Should not raise even without credentials
-        await _verify_bearer(None)
+        request = self._make_request()  # No header, no auth configured
+        await _verify_bearer(request)
+
+    @pytest.mark.asyncio
+    async def test_none_api_key_disables_auth(self):
+        from saga.server import _verify_bearer
+        cfg = SagaConfig(server=ServerConfig(api_key=None))
+        with patch("saga.server.config", cfg):
+            request = self._make_request()
+            await _verify_bearer(request)
+
+    @pytest.mark.asyncio
+    async def test_error_response_has_openai_format(self, _patch_config):
+        from saga.server import _verify_bearer
+        from fastapi import HTTPException
+        request = self._make_request("Bearer wrong-key")
+        with pytest.raises(HTTPException) as exc_info:
+            await _verify_bearer(request)
+        detail = exc_info.value.detail
+        assert "error" in detail
+        assert "message" in detail["error"]
+        assert "type" in detail["error"]
 
     def test_server_config_api_key_default(self):
         cfg = ServerConfig()
@@ -68,6 +102,10 @@ class TestBearerAuth:
     def test_server_config_api_key_set(self):
         cfg = ServerConfig(api_key="my-key")
         assert cfg.api_key == "my-key"
+
+    def test_server_config_api_key_none(self):
+        cfg = ServerConfig(api_key=None)
+        assert cfg.api_key is None
 
 
 # ============================================================

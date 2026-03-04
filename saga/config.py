@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
-    api_key: str = ""  # Empty = auth disabled; set to enable Bearer token auth
+    api_key: str | None = ""  # Empty/None = auth disabled; set to enable Bearer token auth
 
 
 class ModelsConfig(BaseModel):
@@ -71,28 +71,8 @@ class CuratorConfig(BaseModel):
     letta_embedding: str = "openai/text-embedding-3-small"
 
 
-class DynamicLorebookConfig(BaseModel):
-    character_layers: List[str] = Field(default_factory=lambda: ["A1", "A2", "A3", "A4"])
-    decay_threshold: int = 5
-    propagation_depth: int = 2
-
-
 class SessionConfig(BaseModel):
-    auto_save: bool = True
-    auto_save_interval: int = 5
     default_world: str = "my_world"
-
-
-class ModuleEntry(BaseModel):
-    enabled: bool = False
-    config: Optional[str] = None
-
-
-class ModulesConfig(BaseModel):
-    rpg: ModuleEntry = Field(default_factory=ModuleEntry)
-    map: ModuleEntry = Field(default_factory=ModuleEntry)
-
-    model_config = {"extra": "allow"}
 
 
 class CacheWarmingConfig(BaseModel):
@@ -105,12 +85,19 @@ class StateInstructionConfig(BaseModel):
     enabled: bool = True
 
 
+class LangSmithConfig(BaseModel):
+    enabled: bool = False
+    project: str = "saga-risu"
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
 
 
 class SagaConfig(BaseModel):
+    model_config = {"extra": "ignore"}
+
     server: ServerConfig = Field(default_factory=ServerConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
@@ -118,11 +105,10 @@ class SagaConfig(BaseModel):
     md_cache: MdCacheConfig = Field(default_factory=MdCacheConfig)
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
     curator: CuratorConfig = Field(default_factory=CuratorConfig)
-    dynamic_lorebook: DynamicLorebookConfig = Field(default_factory=DynamicLorebookConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
-    modules: ModulesConfig = Field(default_factory=ModulesConfig)
     cache_warming: CacheWarmingConfig = Field(default_factory=CacheWarmingConfig)
     state_instruction: StateInstructionConfig = Field(default_factory=StateInstructionConfig)
+    langsmith: LangSmithConfig = Field(default_factory=LangSmithConfig)
 
 
 # ---------------------------------------------------------------------------

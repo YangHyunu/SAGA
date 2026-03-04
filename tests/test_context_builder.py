@@ -4,7 +4,6 @@ Covers:
 - _get_last_user_message        (message scanning)
 - _normalize_chroma_result      (nested vs flat ChromaDB formats)
 - _get_relevant_episodes_rrf    (RRF ranking, deduplication, weights)
-- _merge_episodes               (deduplication, priority ordering)
 - _assemble_dynamic             (token budget enforcement, section order)
 
 All tests use lightweight stubs — no real DB or LLM calls.
@@ -200,50 +199,6 @@ class TestGetRelevantEpisodesRrf:
         builder = _make_builder(vector_results={"recent": recent})
         episodes = await builder._get_relevant_episodes_rrf("s1", "query")
         assert len(episodes) == 3
-
-
-# ─────────────────────────────────────────────────────────────
-# _merge_episodes
-# ─────────────────────────────────────────────────────────────
-
-class TestMergeEpisodes:
-    def setup_method(self):
-        self.builder = _make_builder()
-
-    def test_deduplication_by_id(self):
-        ep = _make_chroma_result(["ep1"], ["Doc"], [{"turn": 1, "importance": 50}])
-        merged = self.builder._merge_episodes(ep, ep, ep)
-        assert len(merged) == 1
-
-    def test_priority_recent_over_later_sources(self):
-        recent = _make_chroma_result(["ep1"], ["From recent"], [{"turn": 5, "importance": 20}])
-        similar = _make_chroma_result(["ep1"], ["From similar"], [{"turn": 5, "importance": 20}])
-        merged = self.builder._merge_episodes(recent, {}, similar)
-        assert merged[0]["source"] == "recent"
-
-    def test_sorted_by_importance_desc_then_turn_desc(self):
-        recent = _make_chroma_result(
-            ["low", "high"],
-            ["low doc", "high doc"],
-            [{"turn": 10, "importance": 10}, {"turn": 1, "importance": 90}],
-        )
-        merged = self.builder._merge_episodes(recent, {}, {})
-        assert merged[0]["id"] == "high"
-        assert merged[1]["id"] == "low"
-
-    def test_empty_sources_returns_empty(self):
-        assert self.builder._merge_episodes({}, {}, {}) == []
-
-    def test_none_source_skipped(self):
-        recent = _make_chroma_result(["ep1"], ["Doc"], [{"turn": 1}])
-        merged = self.builder._merge_episodes(recent, None, None)
-        assert len(merged) == 1
-
-    def test_flat_chroma_format_also_handled(self):
-        flat = _make_chroma_result(["ep1"], ["Doc"], [{"turn": 1}], nested=False)
-        merged = self.builder._merge_episodes(flat, {}, {})
-        assert len(merged) == 1
-        assert merged[0]["id"] == "ep1"
 
 
 # ─────────────────────────────────────────────────────────────

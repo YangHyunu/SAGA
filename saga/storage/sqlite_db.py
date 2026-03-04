@@ -1,7 +1,10 @@
 import aiosqlite
 import hashlib
 import json
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class SQLiteDB:
@@ -227,6 +230,7 @@ class SQLiteDB:
             (session_id, key, value, now),
         )
         await self._db.commit()
+        logger.debug(f"[DB] upsert_world_state: session={session_id} key={key} value={value[:100]}")
 
     async def get_world_state(self, session_id: str) -> dict:
         async with self._db.execute(
@@ -277,6 +281,8 @@ class SQLiteDB:
             ),
         )
         await self._db.commit()
+        fields = len(state_changes) if state_changes else 0
+        logger.debug(f"[DB] insert_turn_log: session={session_id} turn={turn_number} fields={fields}")
 
     async def get_turn_logs(
         self,
@@ -340,32 +346,6 @@ class SQLiteDB:
         )
         await self._db.commit()
 
-    async def get_triggered_events(self, session_id: str) -> list[dict]:
-        """Return all pending events for a session, ordered by priority desc."""
-        async with self._db.execute(
-            """
-            SELECT * FROM event_queue
-            WHERE session_id = ? AND status = 'pending'
-            ORDER BY priority DESC, id ASC
-            """,
-            (session_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-
-        result = []
-        for row in rows:
-            r = dict(row)
-            try:
-                r["payload"] = json.loads(r.get("payload") or "{}")
-            except (json.JSONDecodeError, TypeError):
-                r["payload"] = {}
-            result.append(r)
-        return result
-
-    async def mark_event_done(self, event_id: int):
-        await self._db.execute(
-            "UPDATE event_queue SET status = 'done' WHERE id = ?", (event_id,)
-        )
         await self._db.commit()
 
     # ------------------------------------------------------------------ #
@@ -382,6 +362,7 @@ class SQLiteDB:
             "SELECT id FROM characters WHERE id = ?", (char_id,)
         ) as cursor:
             if await cursor.fetchone() is None:
+                logger.info(f"[DB] ensure_player: creating player char for session={session_id} name={name!r}")
                 await self.create_character(session_id, name, is_player=True)
 
     async def create_character(
@@ -412,6 +393,7 @@ class SQLiteDB:
             (char_id, session_id, name, is_player, hp, max_hp, location, mood, now, now),
         )
         await self._db.commit()
+        logger.debug(f"[DB] create_character: session={session_id} name={name!r} is_player={is_player} loc={location}")
         return await self.get_character(session_id, name)
 
     async def get_character(self, session_id: str, name: str) -> dict | None:
@@ -603,28 +585,6 @@ class SQLiteDB:
         )
         await self._db.commit()
 
-    async def get_important_events(
-        self, session_id: str, min_importance: int = 40
-    ) -> list[dict]:
-        async with self._db.execute(
-            """
-            SELECT * FROM events
-            WHERE session_id = ? AND importance >= ?
-            ORDER BY importance DESC, turn DESC
-            """,
-            (session_id, min_importance),
-        ) as cursor:
-            rows = await cursor.fetchall()
-        result = []
-        for row in rows:
-            r = dict(row)
-            try:
-                r["entities"] = json.loads(r.get("entities") or "[]")
-            except (json.JSONDecodeError, TypeError):
-                r["entities"] = []
-            result.append(r)
-        return result
-
     async def get_recent_events(self, session_id: str, limit: int = 5) -> list[dict]:
         async with self._db.execute(
             """
@@ -684,18 +644,6 @@ class SQLiteDB:
         )
         await self._db.commit()
 
-    async def get_lore_for_entity(self, session_id: str, entity_name: str) -> list[dict]:
-        pattern = f"%{entity_name}%"
-        async with self._db.execute(
-            """
-            SELECT * FROM lore
-            WHERE session_id = ? AND (name LIKE ? OR keywords LIKE ?)
-            ORDER BY priority DESC
-            """,
-            (session_id, pattern, pattern),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
 
     async def get_all_lore(self, session_id: str) -> list[dict]:
         async with self._db.execute(

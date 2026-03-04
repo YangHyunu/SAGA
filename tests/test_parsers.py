@@ -8,6 +8,7 @@ from saga.utils.parsers import (
     format_turn_narrative,
     parse_characters_md,
     parse_lorebook_md,
+    parse_llm_json,
     _parse_list,
     _parse_transfer_list,
     _parse_relationship_changes,
@@ -401,3 +402,55 @@ class TestParseLorebookMd:
         assert e["type"] == "lore"
         assert e["layer"] == "A1"
         assert e["tags"] == []
+
+
+# ============================================================
+# parse_llm_json
+# ============================================================
+
+class TestParseLlmJson:
+    def test_direct_json(self):
+        """Valid JSON string parses directly."""
+        assert parse_llm_json('{"key": "value"}') == {"key": "value"}
+
+    def test_code_block_json(self):
+        """JSON inside ```json ... ``` code block is extracted."""
+        text = 'Some preamble\n```json\n{"a": 1, "b": 2}\n```\ntrailing text'
+        assert parse_llm_json(text) == {"a": 1, "b": 2}
+
+    def test_code_block_no_lang(self):
+        """JSON inside ``` ... ``` (no language tag) is extracted."""
+        text = '```\n{"x": true}\n```'
+        assert parse_llm_json(text) == {"x": True}
+
+    def test_balanced_brace_with_surrounding_text(self):
+        """JSON embedded in natural language text is extracted via brace matching."""
+        text = 'Here is the result: {"status": "ok", "count": 3} and that is all.'
+        assert parse_llm_json(text) == {"status": "ok", "count": 3}
+
+    def test_nested_braces(self):
+        """Nested JSON objects are handled correctly by balanced brace matching."""
+        text = 'Response: {"outer": {"inner": 42}, "list": [1, 2]}'
+        result = parse_llm_json(text)
+        assert result == {"outer": {"inner": 42}, "list": [1, 2]}
+
+    def test_empty_input_returns_none(self):
+        assert parse_llm_json("") is None
+        assert parse_llm_json(None) is None
+
+    def test_no_json_returns_none(self):
+        assert parse_llm_json("This is just plain text with no JSON.") is None
+
+    def test_invalid_json_returns_none(self):
+        """Malformed JSON returns None instead of raising."""
+        assert parse_llm_json("{invalid json}") is None
+
+    def test_array_returns_none(self):
+        """Top-level JSON arrays are not returned (only dicts)."""
+        assert parse_llm_json('[1, 2, 3]') is None
+
+    def test_greedy_regex_avoided(self):
+        """Balanced brace matching picks the first valid object."""
+        text = '{"a": 1} some text {"b": 2}'
+        result = parse_llm_json(text)
+        assert result == {"a": 1}

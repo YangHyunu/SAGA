@@ -165,47 +165,6 @@ class ContextBuilder:
 
         return lore_texts
 
-    def _merge_episodes(self, recent, important, similar) -> list[dict]:
-        """Merge 3-stage episode results, deduplicating by ID. Priority: Recent > Important > Similar."""
-        seen_ids = set()
-        merged = []
-
-        for source, label in [(recent, "recent"), (important, "important"), (similar, "similar")]:
-            if not source:
-                continue
-            # Handle both nested [[...]] and flat [...] formats from ChromaDB
-            raw_ids = source.get("ids", [])
-            raw_docs = source.get("documents", [])
-            raw_metas = source.get("metadatas", [])
-
-            ids = raw_ids[0] if raw_ids and isinstance(raw_ids[0], list) else raw_ids
-            docs = raw_docs[0] if raw_docs and isinstance(raw_docs[0], list) else raw_docs
-            metas = raw_metas[0] if raw_metas and isinstance(raw_metas[0], list) else raw_metas
-
-            if not ids:
-                continue
-
-            for i, ep_id in enumerate(ids):
-                if ep_id in seen_ids:
-                    continue
-                seen_ids.add(ep_id)
-                meta = metas[i] if i < len(metas) else {}
-                merged.append({
-                    "id": ep_id,
-                    "text": docs[i] if i < len(docs) else "",
-                    "summary": docs[i] if i < len(docs) else "",
-                    "turn": meta.get("turn", 0),
-                    "importance": meta.get("importance", 10),
-                    "source": label,
-                    "episode_type": meta.get("episode_type", "episode"),
-                    "location": meta.get("location", ""),
-                    "npcs": meta.get("npcs", ""),
-                })
-
-        # Sort: important first, then by turn descending
-        merged.sort(key=lambda x: (-x["importance"], -x["turn"]))
-        return merged
-
     def _assemble_dynamic(self, live_state: str, episodes: list[dict], active_lore: list[str], token_budget: int, stable_prefix: str) -> str:
         """Assemble dynamic suffix from live state + episodes + lore."""
         parts = []

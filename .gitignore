@@ -4,11 +4,13 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.coverage
+.pytest_cache/
 
 # Runtime data (recreated on server start)
 db/
 cache/
-logs/turns/
+logs/
 
 # Environment & Secrets
 .env
@@ -18,9 +20,18 @@ config.yaml
 # IDE
 .vscode/
 .idea/
+.groupedtimelineinclude
 
 # OMC state
 .omc/
+
+# Generated files
+cache-visualization.html
+package-lock.json
+
+# Test results (generated, not source)
+tests/ab_results/
+tests/e2e_results/
 
 # Benchmark results
 tests/bench_*_results.json

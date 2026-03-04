@@ -1,9 +1,10 @@
 """Curator adapter pattern for Letta (primary) and Direct LLM (fallback)."""
 from abc import ABC, abstractmethod
+import asyncio
 import json
 import logging
-import re
 from typing import Any, Dict, List, Optional
+from saga.utils.parsers import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class LettaCuratorAdapter(CuratorAdapter):
             logger.warning(f"[Curator] Letta client connection failed: {e}. Will use fallback.")
             self._initialized = False
 
-    def _get_or_create_agent(self, session_id: str) -> Any:
+    async def _get_or_create_agent(self, session_id: str) -> Any:
         """Return cached agent for session_id, or find/create one on the server."""
         if session_id in self._agents:
             return self._agents[session_id]
@@ -74,7 +75,7 @@ class LettaCuratorAdapter(CuratorAdapter):
 
         # Search for existing agent on the server
         try:
-            existing_agents = list(self.client.agents.list())
+            existing_agents = list(await asyncio.to_thread(self.client.agents.list))
             for agent in existing_agents:
                 if getattr(agent, "name", None) == agent_name:
                     self._agents[session_id] = agent
@@ -90,7 +91,8 @@ class LettaCuratorAdapter(CuratorAdapter):
             initial_value = _BLOCK_INITIAL_VALUES.get(label, f"## {label}\n(없음)")
             memory_blocks.append({"label": label, "value": initial_value})
 
-        agent = self.client.agents.create(
+        agent = await asyncio.to_thread(
+            self.client.agents.create,
             name=agent_name,
             model=self.config.curator.letta_model,
             embedding=self.config.curator.letta_embedding,
@@ -102,41 +104,114 @@ class LettaCuratorAdapter(CuratorAdapter):
         logger.info(f"[Curator] Created new agent '{agent_name}' (id={agent.id}) with {len(memory_blocks)} memory block(s)")
         return agent
 
-    def _recreate_agent(self, session_id: str) -> Any:
-        """Delete and recreate agent when context window is exceeded."""
+    async def _recreate_agent(self, session_id: str) -> Any:
+        """Delete and recreate agent when context window is exceeded.
+
+        Preserves Memory Block contents from the old agent so curation
+        history is not lost on context overflow.
+        """
         agent_name = f"saga_curator_{session_id}"
         old_agent = self._agents.pop(session_id, None)
+
+        # Read existing block contents before deleting
+        preserved_blocks: Dict[str, str] = {}
         if old_agent:
             try:
-                self.client.agents.delete(old_agent.id)
+                blocks = list(await asyncio.to_thread(self.client.agents.blocks.list, old_agent.id))
+                for block in blocks:
+                    label = getattr(block, "label", None)
+                    value = getattr(block, "value", "")
+                    if label and value:
+                        preserved_blocks[label] = value
+                if preserved_blocks:
+                    logger.info(f"[Curator] Preserved {len(preserved_blocks)} block(s) from old agent: {list(preserved_blocks.keys())}")
+            except Exception as e:
+                logger.warning(f"[Curator] Could not read old agent blocks: {e}")
+
+            try:
+                await asyncio.to_thread(self.client.agents.delete, old_agent.id)
                 logger.info(f"[Curator] Deleted overflowed agent '{agent_name}' (id={old_agent.id})")
             except Exception as e:
                 logger.warning(f"[Curator] Failed to delete old agent: {e}")
-        return self._get_or_create_agent(session_id)
+
+        # Create new agent (via _get_or_create_agent)
+        new_agent = await self._get_or_create_agent(session_id)
+
+        # Restore preserved block contents
+        if preserved_blocks:
+            try:
+                blocks = list(await asyncio.to_thread(self.client.agents.blocks.list, new_agent.id))
+                for block in blocks:
+                    label = getattr(block, "label", None)
+                    if label and label in preserved_blocks:
+                        await asyncio.to_thread(
+                            self.client.agents.blocks.update,
+                            label,
+                            agent_id=new_agent.id,
+                            value=preserved_blocks[label],
+                        )
+                logger.info(f"[Curator] Restored {len(preserved_blocks)} block(s) to new agent")
+            except Exception as e:
+                logger.warning(f"[Curator] Could not restore blocks to new agent: {e}")
+
+        return new_agent
 
     async def run(self, session_id: str, context: dict) -> dict:
         if not self._initialized:
             raise RuntimeError("Letta curator not initialized")
 
-        agent = self._get_or_create_agent(session_id)
+        agent = await self._get_or_create_agent(session_id)
         prompt = self._build_prompt(session_id, context)
+        logger.info(f"[Curator] Letta request: agent={getattr(agent, 'name', '?')} prompt_len={len(prompt)}ch")
+        logger.debug(f"[Curator] Letta prompt preview: {prompt[:300]}...")
         try:
-            response = self.client.agents.messages.create(
+            response = await asyncio.to_thread(
+                self.client.agents.messages.create,
                 agent_id=agent.id,
                 messages=[{"role": "user", "content": prompt}],
             )
+            self._log_raw_response(response)
             return self._parse_response(response)
         except Exception as e:
             err_str = str(e).lower()
             if "context_window_exceeded" in err_str or "too many tokens" in err_str or "400" in err_str:
                 logger.warning(f"[Curator] Context window exceeded for session {session_id}, recreating agent")
-                agent = self._recreate_agent(session_id)
-                response = self.client.agents.messages.create(
+                agent = await self._recreate_agent(session_id)
+                response = await asyncio.to_thread(
+                    self.client.agents.messages.create,
                     agent_id=agent.id,
                     messages=[{"role": "user", "content": prompt}],
                 )
+                self._log_raw_response(response)
                 return self._parse_response(response)
             raise
+
+    def _log_raw_response(self, response) -> None:
+        """Log Letta response message types and content for debugging."""
+        try:
+            items = response if isinstance(response, list) else getattr(response, "messages", [response])
+            msg_types = []
+            for msg in items:
+                msg_type = getattr(msg, "message_type", type(msg).__name__)
+                msg_types.append(msg_type)
+            logger.info(f"[Curator] Letta response: {len(items)} messages, types={msg_types}")
+            for i, msg in enumerate(items):
+                msg_type = getattr(msg, "message_type", type(msg).__name__)
+                if msg_type == "reasoning_message":
+                    val = getattr(msg, "reasoning", "")
+                    logger.debug(f"[Curator]   [{i}] reasoning: {str(val)[:200]}")
+                elif msg_type == "assistant_message":
+                    val = getattr(msg, "content", "")
+                    logger.debug(f"[Curator]   [{i}] assistant: {str(val)[:200]}")
+                elif msg_type == "tool_call_message":
+                    tc = getattr(msg, "tool_call", None) or getattr(msg, "tool_calls", None)
+                    logger.debug(f"[Curator]   [{i}] tool_call: {str(tc)[:200]}")
+                elif msg_type == "tool_return_message":
+                    status = getattr(msg, "status", "?")
+                    ret = getattr(msg, "tool_return", "")
+                    logger.debug(f"[Curator]   [{i}] tool_return: status={status} return={str(ret)[:200]}")
+        except Exception as e:
+            logger.debug(f"[Curator] Could not log raw response: {e}")
 
     def _build_prompt(self, session_id: str, context: dict) -> str:
         # Truncate individual sections to prevent context overflow
@@ -169,56 +244,68 @@ class LettaCuratorAdapter(CuratorAdapter):
         )
 
     def _parse_response(self, response) -> dict:
-        """Parse Letta response: JSON code block -> direct parse -> brace matching."""
+        """Parse Letta response: extract text from typed messages, then JSON parse.
+
+        Letta returns a list of typed message objects:
+        - ReasoningMessage: text in .reasoning
+        - AssistantMessage: text in .content (str or list of TextContent)
+        - ToolCallMessage: tool call metadata (skip for text extraction)
+        - ToolReturnMessage: tool result in .tool_return / .status (check block update success)
+        """
         default = {"contradictions": [], "events": [], "compress_story": False,
                    "compressed_summary": "", "narrative_notes": ""}
 
-        # Collect all text from response messages
         texts: list[str] = []
+        tool_returns_ok = 0
+        tool_returns_fail = 0
         try:
-            # letta-client returns a list of message objects
             items = response if isinstance(response, list) else getattr(response, "messages", [response])
             for msg in items:
-                text = getattr(msg, "content", None) or getattr(msg, "text", None) or str(msg)
-                texts.append(text)
+                msg_type = getattr(msg, "message_type", "")
+
+                if msg_type == "reasoning_message":
+                    val = getattr(msg, "reasoning", None)
+                    if val:
+                        texts.append(val)
+
+                elif msg_type == "assistant_message":
+                    val = getattr(msg, "content", None)
+                    if isinstance(val, str):
+                        texts.append(val)
+                    elif isinstance(val, list):
+                        for part in val:
+                            part_text = getattr(part, "text", None)
+                            if part_text:
+                                texts.append(part_text)
+                            else:
+                                texts.append(str(part))
+
+                elif msg_type == "tool_return_message":
+                    status = getattr(msg, "status", None)
+                    tool_return_text = getattr(msg, "tool_return", "")
+                    if status == "success" or (status is None and "OK" in str(tool_return_text)):
+                        tool_returns_ok += 1
+                    else:
+                        tool_returns_fail += 1
+                        logger.warning(f"[Curator] Tool return error: status={status} return={str(tool_return_text)[:200]}")
+
+                # ToolCallMessage: skip (no user-facing text)
+
         except Exception as e:
             logger.warning(f"[Curator] Failed to extract message text: {e}")
             return default
 
+        if tool_returns_ok > 0:
+            logger.info(f"[Curator] Memory Block updates: {tool_returns_ok} succeeded, {tool_returns_fail} failed")
+        elif tool_returns_fail > 0:
+            logger.warning(f"[Curator] No successful Memory Block updates ({tool_returns_fail} failed)")
+        else:
+            logger.debug("[Curator] No tool_return messages in response (agent may not have called core_memory tools)")
+
         full_text = "\n".join(texts)
-
-        # 1) Try ```json ... ``` code block
-        code_block = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", full_text)
-        if code_block:
-            try:
-                return json.loads(code_block.group(1))
-            except json.JSONDecodeError as e:
-                logger.debug(f"[Curator] Code block JSON parse failed: {e}")
-
-        # 2) Try direct JSON parse of stripped text
-        stripped = full_text.strip()
-        if stripped.startswith("{"):
-            try:
-                return json.loads(stripped)
-            except json.JSONDecodeError as e:
-                logger.debug(f"[Curator] Direct JSON parse failed: {e}")
-
-        # 3) Brace matching (find outermost {...})
-        start_idx = full_text.find("{")
-        if start_idx != -1:
-            depth = 0
-            for i, ch in enumerate(full_text[start_idx:], start=start_idx):
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidate = full_text[start_idx:i + 1]
-                        try:
-                            return json.loads(candidate)
-                        except json.JSONDecodeError as e:
-                            logger.debug(f"[Curator] Brace-matched JSON parse failed: {e}")
-                        break
+        parsed = parse_llm_json(full_text)
+        if parsed is not None:
+            return parsed
 
         logger.warning(f"[Curator] Could not parse JSON from response. Raw text (first 500 chars): {full_text[:500]!r}")
         return default
@@ -255,17 +342,9 @@ class DirectLLMCuratorAdapter(CuratorAdapter):
                 ],
                 temperature=0.3,
             )
-            # Brace matching for fallback
-            if "{" in response:
-                start = response.index("{")
-                depth = 0
-                for i, ch in enumerate(response[start:], start=start):
-                    if ch == "{":
-                        depth += 1
-                    elif ch == "}":
-                        depth -= 1
-                        if depth == 0:
-                            return json.loads(response[start:i + 1])
+            return parse_llm_json(response) or {
+                "contradictions": [], "events": [], "compress_story": False,
+                "compressed_summary": "", "narrative_notes": ""}
         except Exception as e:
             logger.error(f"[Curator Fallback] Error: {e}")
         return {"contradictions": [], "events": [], "compress_story": False,

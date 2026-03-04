@@ -791,13 +791,10 @@ async def verify_letta(session_id: str, letta_url: str) -> dict:
                 # Check memory blocks
                 try:
                     mem_r = await client.get(
-                        f"{letta_url}/v1/agents/{agent_id}/memory/"
+                        f"{letta_url}/v1/agents/{agent_id}/core-memory/blocks"
                     )
                     if mem_r.status_code == 200:
-                        memory = mem_r.json()
-                        blocks = memory.get("memory", {}).get("blocks", [])
-                        if not blocks:
-                            blocks = memory.get("blocks", [])
+                        blocks = mem_r.json()  # list[BlockResponse] directly
                         checks["memory_blocks"] = len(blocks)
                         block_names = [b.get("label", b.get("name", "?")) for b in blocks]
                         checks["block_labels"] = block_names

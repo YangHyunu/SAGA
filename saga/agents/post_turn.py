@@ -1,27 +1,22 @@
 """Sub-B: Post-turn Extractor — 매 턴 비동기, Flash급, 유저 안 기다림.
 
 state 블록 파싱 → SQLite + ChromaDB 업데이트 → live_state.md 갱신
-asyncio.Event 락으로 빠른 연속 입력 방지
+asyncio.Lock으로 빠른 연속 입력 방지
 """
 import asyncio
 import logging
 import json
-import os
-import re
 import time
 from pathlib import Path
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
-from saga.utils.parsers import parse_state_block, format_turn_narrative
+from saga.utils.parsers import parse_state_block, format_turn_narrative, parse_llm_json
 from saga.llm.client import LLMClient
-from saga.observability import tracer
-
 logger = logging.getLogger(__name__)
 
 # Sub-B concurrency lock
-_sub_b_lock = asyncio.Event()
-_sub_b_lock.set()  # Initially open
+_sub_b_lock = asyncio.Lock()
 
 
 class PostTurnExtractor:
@@ -123,13 +118,10 @@ class PostTurnExtractor:
 
     async def extract_and_update(self, session_id: str, response_text: str, turn_number: int, user_input: str = ""):
         """Main entry point. Called as asyncio.create_task after response is sent."""
-        logger.debug(f"[Sub-B] Task started for turn {turn_number}, session={session_id}")
         logger.info(f"[Sub-B] ▶ Task started for turn {turn_number}, session={session_id}")
 
         # Wait for previous Sub-B to finish
-        await _sub_b_lock.wait()
-        _sub_b_lock.clear()
-        logger.debug(f"[Sub-B] Lock acquired for turn {turn_number}")
+        await _sub_b_lock.acquire()
         logger.info(f"[Sub-B] Lock acquired for turn {turn_number}")
 
         t_start = time.monotonic()
@@ -138,11 +130,6 @@ class PostTurnExtractor:
         state_block = None
         importance = 0
         metrics_written = False
-        _span = tracer.start_span("sub_b.post_process")
-        _span.set_attribute("saga.session_id", session_id)
-        _span.set_attribute("saga.turn_number", turn_number)
-        _span.set_attribute("saga.response_len", len(response_text))
-
         try:
             # 1. Parse state block
             state_block = parse_state_block(response_text)
@@ -196,15 +183,8 @@ class PostTurnExtractor:
 
         except Exception as e:
             logger.error(f"[Sub-B] Error processing turn {turn_number}: {e}", exc_info=True)
-            _span.set_attribute("error", True)
-            _span.set_attribute("error.message", str(e))
         finally:
             elapsed_ms = (time.monotonic() - t_start) * 1000
-            _span.set_attribute("saga.sub_b.extraction_method", extraction_method)
-            _span.set_attribute("saga.sub_b.importance", importance)
-            _span.set_attribute("saga.sub_b.duration_ms", round(elapsed_ms))
-            _span.end()
-            logger.debug(f"[Sub-B] Releasing lock for turn {turn_number}")
             logger.info(f"[Sub-B] Releasing lock for turn {turn_number}")
             # Write metrics on exception path (success/failure paths already wrote)
             if not metrics_written:
@@ -215,7 +195,7 @@ class PostTurnExtractor:
                                         importance=importance)
                 except Exception as me:
                     logger.error(f"[Sub-B] Failed to write metrics for turn {turn_number}: {me}")
-            _sub_b_lock.set()
+            _sub_b_lock.release()
 
     def _write_metrics(self, session_id: str, turn_number: int, extraction_method: str,
                        state_block: dict | None, elapsed: float, response_text: str,
@@ -265,22 +245,10 @@ class PostTurnExtractor:
                 temperature=0.1,
                 max_tokens=1024
             )
-            # Try direct parse first
-            result = result.strip()
-            try:
-                return json.loads(result)
-            except json.JSONDecodeError:
-                pass
-            # Try extracting JSON from markdown code block
-            json_match = re.search(r'```(?:json)?\s*\n?(.*?)```', result, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(1).strip())
-            # Try finding first { ... } block
-            brace_match = re.search(r'\{.*\}', result, re.DOTALL)
-            if brace_match:
-                return json.loads(brace_match.group(0))
-            logger.warning(f"[Sub-B] Flash returned unparseable: {result[:200]}")
-            return None
+            parsed = parse_llm_json(result)
+            if parsed is None:
+                logger.warning(f"[Sub-B] Flash returned unparseable: {result[:200]}")
+            return parsed
         except Exception as e:
             logger.error(f"[Sub-B] Flash extraction failed: {e}")
             return None
