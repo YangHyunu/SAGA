@@ -132,6 +132,7 @@ class MdCache:
         characters: list,
         lore_entries: list,
         world_config: str = "",
+        narrative_summary: str = "",
     ) -> str:
         """Build stable_prefix.md content from DB data.
         Called by Curator or on session init.
@@ -139,9 +140,15 @@ class MdCache:
         """
         lines = []
 
-        lines.append("## 세계관")
-        lines.append(world_config.strip() if world_config else "")
-        lines.append("")
+        if world_config and world_config.strip():
+            lines.append("## 세계관")
+            lines.append(world_config.strip())
+            lines.append("")
+
+        if narrative_summary and narrative_summary.strip():
+            lines.append("## 서사 요약")
+            lines.append(narrative_summary.strip()[:500])  # 예산 잠식 방지
+            lines.append("")
 
         lines.append("## 등장인물")
         for char in characters:

@@ -3,6 +3,7 @@
 2-tier 조회: .md 캐시(~5ms) → DB 동적 보충(~30ms) → 조립
 반환: {"md_prefix": str, "dynamic_suffix": str}
 """
+import asyncio
 import logging
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
@@ -106,9 +107,19 @@ class ContextBuilder:
         """
         k = 60  # standard RRF constant
 
-        recent_raw = self.vector_db.get_recent_episodes(session_id, n_results=10)
-        important_raw = self.vector_db.search_important_episodes(session_id, min_importance=40, n_results=10)
-        similar_raw = self.vector_db.search_episodes(session_id, query, n_results=15)
+        # P2: VectorDB 호출 병렬화 (return_exceptions=True for partial failure resilience)
+        results = await asyncio.gather(
+            asyncio.to_thread(self.vector_db.get_recent_episodes, session_id, 10),
+            asyncio.to_thread(self.vector_db.search_important_episodes, session_id, 40, 10),
+            asyncio.to_thread(self.vector_db.search_episodes, session_id, query, 15),
+            return_exceptions=True,
+        )
+        recent_raw, important_raw, similar_raw = [
+            r if not isinstance(r, Exception) else {} for r in results
+        ]
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                logger.warning(f"[ContextBuilder] VectorDB query {i} failed: {r}")
 
         sources = [
             ("recent", 1.2, self._normalize_chroma_result(recent_raw)),
@@ -177,25 +188,46 @@ class ContextBuilder:
                 parts.append(live_state)
                 remaining -= live_tokens
 
-        # Episodes
+        # P1: Episodes — 개별 삽입 (예산 초과 시 가능한 만큼만)
         if episodes:
-            episode_text = "[에피소드 기억]\n"
-            for ep in episodes[:10]:
-                marker = "[!]" if ep.get("importance", 0) >= 50 else "[R]"
-                line = f"{marker} Turn {ep.get('turn', '?')}: {ep.get('summary', '')[:200]}"
-                episode_text += line + "\n"
-            ep_tokens = count_tokens(episode_text)
-            if ep_tokens <= remaining:
-                parts.append(episode_text)
-                remaining -= ep_tokens
+            episode_header = "[에피소드 기억]\n"
+            header_tokens = count_tokens(episode_header)
+            if header_tokens <= remaining:
+                episode_lines = []
+                remaining -= header_tokens
+                for ep in episodes[:10]:
+                    marker = "[!]" if ep.get("importance", 0) >= 50 else "[R]"
+                    line = f"{marker} Turn {ep.get('turn', '?')}: {ep.get('summary', '')[:200]}\n"
+                    line_tokens = count_tokens(line)
+                    if line_tokens <= remaining:
+                        episode_lines.append(line)
+                        remaining -= line_tokens
+                    else:
+                        break
+                if episode_lines:
+                    parts.append(episode_header + "".join(episode_lines))
+                else:
+                    remaining += header_tokens  # 헤더만 넣고 내용 없으면 되돌림
 
-        # Active lore
+        # P1: Active lore — 개별 삽입 (per-entry 400자 cap)
         if active_lore:
-            lore_text = "[활성 로어]\n" + "\n".join(active_lore[:5])
-            lore_tokens = count_tokens(lore_text)
-            if lore_tokens <= remaining:
-                parts.append(lore_text)
-                remaining -= lore_tokens
+            lore_header = "[활성 로어]\n"
+            header_tokens = count_tokens(lore_header)
+            if header_tokens <= remaining:
+                lore_lines = []
+                remaining -= header_tokens
+                for entry in active_lore[:5]:
+                    entry = entry[:400]  # 단일 로어 엔트리가 전체 예산 잠식 방지
+                    entry_tokens = count_tokens(entry + "\n")
+                    if entry_tokens <= remaining:
+                        lore_lines.append(entry)
+                        remaining -= entry_tokens
+                    else:
+                        break
+                if lore_lines:
+                    parts.append(lore_header + "\n".join(lore_lines))
+                else:
+                    remaining += header_tokens
 
         # State tracking instruction (toggle via config)
         if self.config.state_instruction.enabled:

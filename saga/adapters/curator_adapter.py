@@ -156,6 +156,24 @@ class LettaCuratorAdapter(CuratorAdapter):
 
         return new_agent
 
+    _BLOCK_LABELS = {"narrative_summary", "curation_decisions", "contradiction_log"}
+
+    async def read_memory_blocks(self, session_id: str) -> dict[str, str]:
+        """Read current Memory Block contents for a session.
+
+        Returns dict of {label: value} for known block labels.
+        Raises RuntimeError if Letta is not initialized.
+        """
+        if not self._initialized:
+            raise RuntimeError("Letta curator not initialized")
+        agent = await self._get_or_create_agent(session_id)
+        blocks = list(await asyncio.to_thread(self.client.agents.blocks.list, agent.id))
+        return {
+            getattr(b, "label", ""): getattr(b, "value", "")
+            for b in blocks
+            if getattr(b, "label", "") in self._BLOCK_LABELS
+        }
+
     async def run(self, session_id: str, context: dict) -> dict:
         if not self._initialized:
             raise RuntimeError("Letta curator not initialized")

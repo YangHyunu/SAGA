@@ -42,7 +42,7 @@ class ApiKeysConfig(BaseModel):
 
 class TokenBudgetConfig(BaseModel):
     total_context_max: int = 180000   # Anthropic 200K 기준 안전 마진 (~90%)
-    dynamic_context_max: int = 2000   # 동적 컨텍스트 (state + episodes + lore + instruction)
+    dynamic_context_max: int = 4000   # 동적 컨텍스트 (state + episodes + lore + instruction)
 
 
 class MdCacheConfig(BaseModel):

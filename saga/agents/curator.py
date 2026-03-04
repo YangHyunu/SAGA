@@ -62,6 +62,23 @@ class CuratorRunner:
 
             await self._apply_results(session_id, turn_number, result)
 
+            # P0-1: Force compress_story if stable_prefix is empty after threshold.
+            # Uses _compress_story_md directly to avoid duplicate _apply_results call.
+            if (turn_number >= self.config.curator.compress_story_after_turns
+                    and not result.get("compress_story")):
+                existing = await self.md_cache.read_stable(session_id)
+                if not existing.strip():
+                    summary = (result.get("compressed_summary") or result.get("narrative_notes") or "").strip()
+                    if summary:
+                        await self._compress_story_md(session_id, turn_number, summary)
+                        logger.info(f"[Curator] Forced compress_story at turn {turn_number} (stable_prefix was empty)")
+                    else:
+                        logger.warning(f"[Curator] Forced compress skipped at turn {turn_number}: no summary available")
+
+            # P0-2: Sync Letta Memory Block → stable_prefix (overwrites forced compress
+            # when Letta has a more authoritative narrative_summary)
+            await self._sync_letta_memory(session_id)
+
             elapsed_ms = (time.monotonic() - t_start) * 1000
             logger.info(f"[Curator] Curation complete for session {session_id} at turn {turn_number} ({elapsed_ms:.0f}ms)")
 
@@ -256,9 +273,35 @@ class CuratorRunner:
 
         logger.info(f"[Curator] Auto-generated lore for '{entity_name}' ({lore_type}, priority={priority})")
 
+    async def _sync_letta_memory(self, session_id: str):
+        """P0-2: Sync Letta narrative_summary Memory Block → stable_prefix.md."""
+        if not self._use_letta:
+            return
+        try:
+            blocks = await asyncio.wait_for(
+                self.letta_adapter.read_memory_blocks(session_id),
+                timeout=5.0,
+            )
+            narrative = blocks.get("narrative_summary", "")
+            if not narrative or len(narrative) < 50:
+                return
+            chars = await self.sqlite_db.get_session_characters(session_id)
+            lore = await self.sqlite_db.get_all_lore(session_id)
+            content = await self.md_cache.build_stable_content(
+                chars, lore, narrative_summary=narrative
+            )
+            await self.md_cache.write_stable(session_id, content)
+            logger.info(f"[Curator] Synced Letta narrative_summary to stable_prefix ({len(narrative)} chars)")
+        except asyncio.TimeoutError:
+            logger.warning("[Curator] Letta memory block read timed out (5s)")
+        except Exception as e:
+            logger.warning(f"[Curator] Memory block sync failed: {e}")
+
     async def _compress_story_md(self, session_id, turn_number, compressed_summary):
         """Update stable prefix with compressed story summary."""
         chars = await self.sqlite_db.get_session_characters(session_id)
         lore = await self.sqlite_db.get_all_lore(session_id)
-        content = await self.md_cache.build_stable_content(chars, lore, compressed_summary)
+        content = await self.md_cache.build_stable_content(
+            chars, lore, narrative_summary=compressed_summary
+        )
         await self.md_cache.write_stable(session_id, content)
