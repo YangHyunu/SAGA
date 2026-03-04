@@ -219,7 +219,7 @@ SAGA의 .md 캐시는 임의적 선택이 아니라, **에이전트 생태계 �
 
 ### 에피소드 검색: 3-stage ChromaDB + SQLite 로어 조회
 
-에피소드 기억은 ChromaDB 3-stage 검색으로 가져온다: Recent(최근 턴), Important(중요도 높은 에피소드), Similar(현재 맥락과 유사한 에피소드)를 각각 검색한 뒤 병합한다. 로어북은 SQLite lore 테이블 조회와 ChromaDB 벡터 검색을 함께 사용한다.
+에피소드 기억은 ChromaDB 3-stage 검색 + **Reciprocal Rank Fusion(RRF)**으로 가져온다: Recent(최근 턴, 가중치 1.2), Important(중요도 높은 에피소드, 1.0), Similar(현재 맥락과 유사한 에피소드, 0.8)를 각각 검색한 뒤 RRF 공식(`score += weight / (k + rank + 1)`)으로 통합 랭킹한다. 로어북은 SQLite lore 테이블 조회와 ChromaDB 벡터 검색을 함께 사용한다.
 
 ```
 ChromaDB 3-stage 에피소드 검색:
@@ -359,7 +359,7 @@ Sub-A의 결과는 시스템 메시지에 주입된다:
 
 > **역할**: 매 턴 비동기 실행, 유저 대기 없음
 
-응답이 클라이언트에 반환된 후 `asyncio.create_task`로 백그라운드에서 실행된다.
+SSE 스트리밍 응답이 완료된 후, Starlette `BackgroundTask`로 cancel scope 외부에서 안전하게 실행된다.
 
 **파이프라인:**
 
@@ -673,9 +673,36 @@ python -m saga
 
 기본 포트 `8000`에서 서버가 시작된다.
 
+### Letta 서버 (Curator용, 선택사항)
+
+Curator 기능을 사용하려면 Letta 서버가 필요하다. Docker Compose로 실행:
+
+```bash
+docker compose -f docker-compose.letta.yaml up -d
+```
+
+`.env` 파일에 `OPENAI_API_KEY`와 `ANTHROPIC_API_KEY`를 설정해야 Letta 서버가 임베딩/LLM을 사용할 수 있다. Letta 없이도 SAGA는 동작하지만, 서사 큐레이션(모순 탐지, 장기 서사 압축)이 비활성화된다.
+
 ### 클라이언트 연결
 
 RisuAI, SillyTavern 등에서 API Base URL을 `http://localhost:8000`으로 변경하면 된다. 별도의 클라이언트 설정은 필요 없다.
+
+### E2E 통합 테스트
+
+전체 파이프라인(Sub-A → LLM → Sub-B → Curator → Letta)을 자동 검증:
+
+```bash
+# 기본 위지소연 시나리오 (10턴)
+python tests/e2e_integration.py
+
+# 던전 보스 시나리오 (23턴)
+python tests/e2e_integration.py --scenario dungeon --turns 23
+
+# charx 캐릭터 파일로 실행
+python tests/e2e_integration.py --charx /path/to/character.charx
+```
+
+SAGA 서버(`localhost:8000`)와 Letta 서버(`localhost:8283`)가 실행 중이어야 한다.
 
 ### 환경변수
 
@@ -694,12 +721,13 @@ RisuAI, SillyTavern 등에서 API Base URL을 `http://localhost:8000`으로 변�
 server:
   host: "0.0.0.0"
   port: 8000
+  api_key: ""                   # Bearer 토큰 인증. 빈 문자열 = 인증 비활성화
 
 models:
   narration: "claude-sonnet-4-5-20250929"   # 메인 내레이션
   extraction: "gemini-2.0-flash"            # 상태 추출 (경량 LLM)
   curator: "claude-sonnet-4-5-20250929"     # 큐레이터
-  embedding: "text-embedding-3-small"       # 벡터 임베딩
+  embedding: "text-embedding-3-small"       # 벡터 임베딩 ("local" → all-MiniLM-L6-v2)
 
 api_keys:
   anthropic: "${ANTHROPIC_API_KEY}"
@@ -707,22 +735,19 @@ api_keys:
   google: "${GOOGLE_API_KEY}"
 
 token_budget:
-  total_context_max: 128000     # 전체 컨텍스트 상한
-  dynamic_context_max: 1500     # 동적 컨텍스트 상한
-  md_cache_max: 600             # .md 캐시 토큰
-  lorebook_max: 800             # 로어북 토큰
-  state_briefing_max: 200       # 상태 브리핑 토큰
-  state_block_instruction: 100  # State Block 지시 토큰
+  total_context_max: 180000     # Anthropic 200K 기준 안전 마진 (~90%)
+  dynamic_context_max: 2000     # SAGA 동적 컨텍스트 (state + episodes + lore + instruction)
 
 md_cache:
   enabled: true
   cache_dir: "cache/sessions"
-  files: [stable_prefix.md, live_state.md]
   atomic_write: true
 
 prompt_caching:
   enabled: true
-  strategy: "md_prefix"         # stable_prefix.md를 프롬프트 프리픽스로
+  strategy: "md_prefix"
+  stabilize_system: true              # System message 안정화 (Lorebook 동적삽입 대응)
+  canonical_similarity_threshold: 0.30
 
 curator:
   interval: 10                  # N턴마다 큐레이터 실행
@@ -732,6 +757,17 @@ curator:
     - curation_decisions
     - contradiction_log
   compress_story_after_turns: 50
+  letta_base_url: "http://localhost:8283"
+  letta_model: "anthropic/claude-sonnet-4-5-20250929"
+  letta_embedding: "openai/text-embedding-3-small"
+
+cache_warming:
+  enabled: true
+  interval: 270                 # 초 (4.5분 — 5분 TTL 만료 직전 갱신)
+  max_warmings: 4
+
+state_instruction:
+  enabled: true                 # false = LLM에 state block 지시 안 함 (Flash 추출로 대체)
 
 dynamic_lorebook:
   decay_threshold: 5
@@ -741,7 +777,7 @@ session:
   auto_save_interval: 5
   default_world: "my_world"
 
-modules:                        # Phase 4 예정
+modules:                        # Phase 5 예정
   rpg:
     enabled: false
   map:
@@ -819,20 +855,21 @@ POST /v1/chat/completions
 ```
 saga/
   __main__.py              # 엔트리포인트
-  server.py                # FastAPI 서버 + OpenAI-compatible 엔드포인트
+  server.py                # FastAPI 서버 + OpenAI-compatible 엔드포인트 + BackgroundTask SSE
   config.py                # Pydantic 설정 모델 + YAML 로더
   models.py                # 요청/응답 Pydantic 모델
   session.py               # 세션 관리자
+  system_stabilizer.py     # SystemStabilizer: canonical system 저장 → Lorebook delta 분리
   llm/
     client.py              # 멀티 프로바이더 LLM 클라이언트 (Anthropic/Google/OpenAI)
   agents/
-    context_builder.py     # Sub-A: 동적 컨텍스트 조립 (~35ms, LLM 호출 없음)
-    post_turn.py           # Sub-B: 비동기 상태 추출 + DB 갱신
-    curator.py             # 큐레이터: N턴마다 서사 관리
+    context_builder.py     # Sub-A: 동적 컨텍스트 조립 + RRF 에피소드 선택 (LLM 호출 없음)
+    post_turn.py           # Sub-B: 비동기 상태 추출 (12필드) + DB 갱신 + importance 스코어링
+    curator.py             # 큐레이터: N턴마다 서사 관리 + 모순 탐지 + 로어 자동생성
   storage/
     sqlite_db.py           # SQLite (세션, 턴 로그, 캐릭터, 관계, 장소, 이벤트, 로어)
-    vector_db.py           # ChromaDB (로어북, 에피소드)
-    md_cache.py            # .md 파일 캐시 (stable_prefix + live_state)
+    vector_db.py           # ChromaDB (에피소드 기억, 로어북 벡터 검색)
+    md_cache.py            # .md 파일 캐시 (stable_prefix + live_state, 원자적 쓰기)
   lorebook/
     dynamic_filter.py      # 다이나믹 로어북 필터 (우선순위 + 게이트 + 감쇠)
   world/
@@ -840,11 +877,15 @@ saga/
   adapters/
     curator_adapter.py     # 큐레이터 어댑터 (Letta Primary / Direct LLM Fallback)
   utils/
-    parsers.py             # State Block 파서, .md 파서
+    parsers.py             # State Block 파서, .md 파서, strip_state_block
     tokens.py              # tiktoken 기반 토큰 카운팅
+    log_analyzer.py        # 서버 로그 분석 유틸리티
 data/worlds/my_world/      # 예시 월드 데이터 (에르시아)
 tests/
+  e2e_integration.py       # E2E 통합 테스트 (charx 파싱, 멀티턴 RP, 파이프라인 검증)
   eval_llm_judge.py        # LLM-as-a-Judge 평가 스크립트 (8 시나리오)
+  ab_state_instruction.py  # A/B 테스트: state instruction ON/OFF 비교
+  bench_prompt_caching.py  # 프롬프트 캐싱 벤치마크 (3-BP vs 자동 vs no-cache)
 ```
 
 ---
@@ -856,9 +897,11 @@ tests/
 | **Phase 1** | 완료 | 코어 프록시 + 3-Agent 파이프라인 + 2종 DB |
 | **Phase 2** | 완료 | 다이나믹 로어북 + .md 캐시 + 프롬프트 캐싱 |
 | **Phase 3** | 완료 | LLM-as-a-Judge 평가 + 크로스 프로바이더 저지 + 네거티브 캘리브레이션 |
-| **Phase 4** | 예정 | 모듈 시스템 (RPG 스탯, 맵 그래프) |
-| **Phase 5** | 예정 | 멀티 세션 상태 공유 + 세션 간 월드 연속성 |
-| **Phase 6** | 예정 | 웹 UI 대시보드 (그래프 시각화, 세션 관리) |
+| **Phase 3.5** | 완료 | Letta Curator 통합 + E2E 통합 검증 (23턴 ALL PASS) + BackgroundTask SSE 수정 |
+| **Phase 4** | 예정 | RisuAI 프록시 호환성 강화 (멀티모달, Pydantic extra, 캐시 TTL) |
+| **Phase 5** | 예정 | 모듈 시스템 (RPG 스탯, 맵 그래프) |
+| **Phase 6** | 예정 | 멀티 세션 상태 공유 + 세션 간 월드 연속성 |
+| **Phase 7** | 예정 | 웹 UI 대시보드 (그래프 시각화, 세션 관리) |
 
 ---
 

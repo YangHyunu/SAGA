@@ -3,6 +3,7 @@
 2-tier 조회: .md 캐시(~5ms) → DB 동적 보충(~30ms) → 조립
 반환: {"md_prefix": str, "dynamic_suffix": str}
 """
+import asyncio
 import logging
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
@@ -48,8 +49,8 @@ class ContextBuilder:
         # Read live state (dynamic, every turn)
         live_state = await self.md_cache.read_live(session_id)
 
-        # Query ChromaDB for relevant episodes
-        episodes = await self._get_relevant_episodes(session_id, last_user_msg)
+        # Query ChromaDB for relevant episodes (RRF-ranked)
+        episodes = await self._get_relevant_episodes_rrf(session_id, last_user_msg)
 
         # Query lore (SQLite-based now)
         active_lore = await self._get_active_lore(session_id, last_user_msg)
@@ -65,12 +66,88 @@ class ContextBuilder:
                 return msg.get("content", "")
         return ""
 
-    async def _get_relevant_episodes(self, session_id: str, query: str) -> list[dict]:
-        """3-stage episode retrieval from ChromaDB: Recent + Important + Similar."""
-        recent = self.vector_db.search_episodes(session_id, query, n_results=5)
-        important = self.vector_db.search_important_episodes(session_id, n_results=5, min_importance=50)
-        similar = self.vector_db.search_episodes(session_id, query, n_results=10)
-        return self._merge_episodes(recent, important, similar)
+    def _normalize_chroma_result(self, result: dict) -> list[dict]:
+        """Flatten a ChromaDB query/get result into a list of episode dicts."""
+        if not result:
+            return []
+        raw_ids = result.get("ids", [])
+        raw_docs = result.get("documents", [])
+        raw_metas = result.get("metadatas", [])
+
+        # ChromaDB query returns nested [[...]], get returns flat [...]
+        ids = raw_ids[0] if raw_ids and isinstance(raw_ids[0], list) else raw_ids
+        docs = raw_docs[0] if raw_docs and isinstance(raw_docs[0], list) else raw_docs
+        metas = raw_metas[0] if raw_metas and isinstance(raw_metas[0], list) else raw_metas
+
+        episodes = []
+        for i, ep_id in enumerate(ids):
+            meta = metas[i] if i < len(metas) else {}
+            doc = docs[i] if i < len(docs) else ""
+            episodes.append({
+                "id": ep_id,
+                "text": doc,
+                "summary": doc,
+                "turn": meta.get("turn", 0),
+                "importance": meta.get("importance", 10),
+                "episode_type": meta.get("episode_type", "episode"),
+                "location": meta.get("location", ""),
+                "npcs": meta.get("npcs", ""),
+            })
+        return episodes
+
+    async def _get_relevant_episodes_rrf(self, session_id: str, query: str, top_n: int = 10) -> list[dict]:
+        """Select episodes using Reciprocal Rank Fusion across 3 sources.
+
+        Sources:
+          recent   — get_recent_episodes (turn-ordered, no semantic filter)
+          important — search_important_episodes (importance >= 40)
+          similar   — search_episodes (semantic similarity to current query)
+
+        RRF formula: score += weight / (k + rank + 1)
+        """
+        k = 60  # standard RRF constant
+
+        # P2: VectorDB 호출 병렬화 (return_exceptions=True for partial failure resilience)
+        results = await asyncio.gather(
+            asyncio.to_thread(self.vector_db.get_recent_episodes, session_id, 10),
+            asyncio.to_thread(self.vector_db.search_important_episodes, session_id, 40, 10),
+            asyncio.to_thread(self.vector_db.search_episodes, session_id, query, 15),
+            return_exceptions=True,
+        )
+        recent_raw, important_raw, similar_raw = [
+            r if not isinstance(r, Exception) else {} for r in results
+        ]
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                logger.warning(f"[ContextBuilder] VectorDB query {i} failed: {r}")
+
+        sources = [
+            ("recent", 1.2, self._normalize_chroma_result(recent_raw)),
+            ("important", 1.0, self._normalize_chroma_result(important_raw)),
+            ("similar", 0.8, self._normalize_chroma_result(similar_raw)),
+        ]
+
+        scores: dict[str, float] = {}
+        episode_cache: dict[str, dict] = {}
+
+        for source_name, weight, episodes in sources:
+            for rank, ep in enumerate(episodes):
+                eid = ep["id"]
+                scores[eid] = scores.get(eid, 0.0) + weight / (k + rank + 1)
+                if eid not in episode_cache:
+                    episode_cache[eid] = {**ep, "source": source_name}
+
+        ranked_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:top_n]
+        selected = [episode_cache[eid] for eid in ranked_ids]
+
+        logger.debug(
+            "RRF episode selection: %d candidates → %d ranked (top_n=%d, session=%s)",
+            len(scores),
+            len(selected),
+            top_n,
+            session_id,
+        )
+        return selected
 
     async def _get_active_lore(self, session_id: str, query: str) -> list[str]:
         """Get relevant lore from SQLite + vector search."""
@@ -99,47 +176,6 @@ class ContextBuilder:
 
         return lore_texts
 
-    def _merge_episodes(self, recent, important, similar) -> list[dict]:
-        """Merge 3-stage episode results, deduplicating by ID. Priority: Recent > Important > Similar."""
-        seen_ids = set()
-        merged = []
-
-        for source, label in [(recent, "recent"), (important, "important"), (similar, "similar")]:
-            if not source:
-                continue
-            # Handle both nested [[...]] and flat [...] formats from ChromaDB
-            raw_ids = source.get("ids", [])
-            raw_docs = source.get("documents", [])
-            raw_metas = source.get("metadatas", [])
-
-            ids = raw_ids[0] if raw_ids and isinstance(raw_ids[0], list) else raw_ids
-            docs = raw_docs[0] if raw_docs and isinstance(raw_docs[0], list) else raw_docs
-            metas = raw_metas[0] if raw_metas and isinstance(raw_metas[0], list) else raw_metas
-
-            if not ids:
-                continue
-
-            for i, ep_id in enumerate(ids):
-                if ep_id in seen_ids:
-                    continue
-                seen_ids.add(ep_id)
-                meta = metas[i] if i < len(metas) else {}
-                merged.append({
-                    "id": ep_id,
-                    "text": docs[i] if i < len(docs) else "",
-                    "summary": docs[i] if i < len(docs) else "",
-                    "turn": meta.get("turn", 0),
-                    "importance": meta.get("importance", 10),
-                    "source": label,
-                    "episode_type": meta.get("episode_type", "episode"),
-                    "location": meta.get("location", ""),
-                    "npcs": meta.get("npcs", ""),
-                })
-
-        # Sort: important first, then by turn descending
-        merged.sort(key=lambda x: (-x["importance"], -x["turn"]))
-        return merged
-
     def _assemble_dynamic(self, live_state: str, episodes: list[dict], active_lore: list[str], token_budget: int, stable_prefix: str) -> str:
         """Assemble dynamic suffix from live state + episodes + lore."""
         parts = []
@@ -152,27 +188,49 @@ class ContextBuilder:
                 parts.append(live_state)
                 remaining -= live_tokens
 
-        # Episodes
+        # P1: Episodes — 개별 삽입 (예산 초과 시 가능한 만큼만)
         if episodes:
-            episode_text = "[에피소드 기억]\n"
-            for ep in episodes[:10]:
-                marker = "[!]" if ep.get("importance", 0) >= 50 else "[R]"
-                line = f"{marker} Turn {ep.get('turn', '?')}: {ep.get('summary', '')[:200]}"
-                episode_text += line + "\n"
-            ep_tokens = count_tokens(episode_text)
-            if ep_tokens <= remaining:
-                parts.append(episode_text)
-                remaining -= ep_tokens
+            episode_header = "[에피소드 기억]\n"
+            header_tokens = count_tokens(episode_header)
+            if header_tokens <= remaining:
+                episode_lines = []
+                remaining -= header_tokens
+                for ep in episodes[:10]:
+                    marker = "[!]" if ep.get("importance", 0) >= 50 else "[R]"
+                    line = f"{marker} Turn {ep.get('turn', '?')}: {ep.get('summary', '')[:200]}\n"
+                    line_tokens = count_tokens(line)
+                    if line_tokens <= remaining:
+                        episode_lines.append(line)
+                        remaining -= line_tokens
+                    else:
+                        break
+                if episode_lines:
+                    parts.append(episode_header + "".join(episode_lines))
+                else:
+                    remaining += header_tokens  # 헤더만 넣고 내용 없으면 되돌림
 
-        # Active lore
+        # P1: Active lore — 개별 삽입 (per-entry 400자 cap)
         if active_lore:
-            lore_text = "[활성 로어]\n" + "\n".join(active_lore[:5])
-            lore_tokens = count_tokens(lore_text)
-            if lore_tokens <= remaining:
-                parts.append(lore_text)
-                remaining -= lore_tokens
+            lore_header = "[활성 로어]\n"
+            header_tokens = count_tokens(lore_header)
+            if header_tokens <= remaining:
+                lore_lines = []
+                remaining -= header_tokens
+                for entry in active_lore[:5]:
+                    entry = entry[:400]  # 단일 로어 엔트리가 전체 예산 잠식 방지
+                    entry_tokens = count_tokens(entry + "\n")
+                    if entry_tokens <= remaining:
+                        lore_lines.append(entry)
+                        remaining -= entry_tokens
+                    else:
+                        break
+                if lore_lines:
+                    parts.append(lore_header + "\n".join(lore_lines))
+                else:
+                    remaining += header_tokens
 
-        # State tracking instruction (always added)
-        parts.append(STATE_BLOCK_INSTRUCTION)
+        # State tracking instruction (toggle via config)
+        if self.config.state_instruction.enabled:
+            parts.append(STATE_BLOCK_INSTRUCTION)
 
         return "\n\n".join(parts)

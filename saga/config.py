@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
+    api_key: str | None = ""  # Empty/None = auth disabled; set to enable Bearer token auth
 
 
 class ModelsConfig(BaseModel):
@@ -40,13 +41,8 @@ class ApiKeysConfig(BaseModel):
 
 
 class TokenBudgetConfig(BaseModel):
-    total_context_max: int = 128000
-    dynamic_context_max: int = 1500
-    md_cache_max: int = 600
-    lorebook_max: int = 800
-    state_briefing_max: int = 200
-    graph_context_max: int = 300
-    state_block_instruction: int = 100
+    total_context_max: int = 180000   # Anthropic 200K 기준 안전 마진 (~90%)
+    dynamic_context_max: int = 4000   # 동적 컨텍스트 (state + episodes + lore + instruction)
 
 
 class MdCacheConfig(BaseModel):
@@ -59,6 +55,8 @@ class MdCacheConfig(BaseModel):
 class PromptCachingConfig(BaseModel):
     enabled: bool = True
     strategy: str = "md_prefix"
+    stabilize_system: bool = True
+    canonical_similarity_threshold: float = 0.30
 
 
 class CuratorConfig(BaseModel):
@@ -73,35 +71,23 @@ class CuratorConfig(BaseModel):
     letta_embedding: str = "openai/text-embedding-3-small"
 
 
-class DynamicLorebookConfig(BaseModel):
-    character_layers: List[str] = Field(default_factory=lambda: ["A1", "A2", "A3", "A4"])
-    decay_threshold: int = 5
-    propagation_depth: int = 2
-
-
-class GraphConfig(BaseModel):
-    db_path: str = "db/graph.kuzu"
-    mode: str = "on-disk"
-    max_hop: int = 3
-    hybrid_rerank: bool = True
-
-
 class SessionConfig(BaseModel):
-    auto_save: bool = True
-    auto_save_interval: int = 5
     default_world: str = "my_world"
 
 
-class ModuleEntry(BaseModel):
+class CacheWarmingConfig(BaseModel):
+    enabled: bool = True
+    interval: int = 270  # seconds (4.5 minutes — just before 5-min TTL expiry)
+    max_warmings: int = 4  # per session before giving up
+
+
+class StateInstructionConfig(BaseModel):
+    enabled: bool = True
+
+
+class LangSmithConfig(BaseModel):
     enabled: bool = False
-    config: Optional[str] = None
-
-
-class ModulesConfig(BaseModel):
-    rpg: ModuleEntry = Field(default_factory=ModuleEntry)
-    map: ModuleEntry = Field(default_factory=ModuleEntry)
-
-    model_config = {"extra": "allow"}
+    project: str = "saga-risu"
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +96,8 @@ class ModulesConfig(BaseModel):
 
 
 class SagaConfig(BaseModel):
+    model_config = {"extra": "ignore"}
+
     server: ServerConfig = Field(default_factory=ServerConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
@@ -117,10 +105,10 @@ class SagaConfig(BaseModel):
     md_cache: MdCacheConfig = Field(default_factory=MdCacheConfig)
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
     curator: CuratorConfig = Field(default_factory=CuratorConfig)
-    dynamic_lorebook: DynamicLorebookConfig = Field(default_factory=DynamicLorebookConfig)
-    graph: GraphConfig = Field(default_factory=GraphConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
-    modules: ModulesConfig = Field(default_factory=ModulesConfig)
+    cache_warming: CacheWarmingConfig = Field(default_factory=CacheWarmingConfig)
+    state_instruction: StateInstructionConfig = Field(default_factory=StateInstructionConfig)
+    langsmith: LangSmithConfig = Field(default_factory=LangSmithConfig)
 
 
 # ---------------------------------------------------------------------------

@@ -1,12 +1,23 @@
 """Letta Curator — N턴마다 비동기 실행. Memory Block 기반 서사 판단 연속성."""
+import asyncio
 import json
 import logging
+import time
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.adapters.curator_adapter import LettaCuratorAdapter, DirectLLMCuratorAdapter
+from saga.utils.parsers import parse_llm_json
 
 logger = logging.getLogger(__name__)
+
+
+def _log_lore_task_exception(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error(f"[Curator] Deferred lore task failed: {exc}", exc_info=exc)
 
 
 class CuratorRunner:
@@ -21,6 +32,7 @@ class CuratorRunner:
         self.letta_adapter = LettaCuratorAdapter(config)
         self.fallback_adapter = DirectLLMCuratorAdapter(llm_client, config)
         self._use_letta = False
+        self._lore_tasks: set = set()  # GC protection for deferred lore tasks
 
     def initialize(self):
         """Connect Letta client only. Agent creation is lazy (per session on first run)."""
@@ -39,6 +51,9 @@ class CuratorRunner:
     async def run(self, session_id: str, turn_number: int):
         """Run curator. Called every N turns asynchronously."""
         context = None
+        t_start = time.monotonic()
+        adapter_name = "letta" if self._use_letta else "fallback"
+
         try:
             context = await self._gather_context(session_id, turn_number)
 
@@ -47,10 +62,28 @@ class CuratorRunner:
 
             await self._apply_results(session_id, turn_number, result)
 
-            # Auto-generate lore for entities without lore
-            await self._auto_generate_lore(session_id, turn_number)
+            # P0-1: Force compress_story if stable_prefix is empty after threshold.
+            # Uses _compress_story_md directly to avoid duplicate _apply_results call.
+            if (turn_number >= self.config.curator.compress_story_after_turns
+                    and not result.get("compress_story")):
+                existing = await self.md_cache.read_stable(session_id)
+                if not existing.strip():
+                    summary = (result.get("compressed_summary") or result.get("narrative_notes") or "").strip()
+                    if summary:
+                        await self._compress_story_md(session_id, turn_number, summary)
+                        logger.info(f"[Curator] Forced compress_story at turn {turn_number} (stable_prefix was empty)")
+                    else:
+                        logger.warning(f"[Curator] Forced compress skipped at turn {turn_number}: no summary available")
 
-            logger.info(f"[Curator] Curation complete for session {session_id} at turn {turn_number}")
+            # P0-2: Sync Letta Memory Block → stable_prefix (overwrites forced compress
+            # when Letta has a more authoritative narrative_summary)
+            await self._sync_letta_memory(session_id)
+
+            elapsed_ms = (time.monotonic() - t_start) * 1000
+            logger.info(f"[Curator] Curation complete for session {session_id} at turn {turn_number} ({elapsed_ms:.0f}ms)")
+
+            # Auto-generate lore: deferred fire-and-forget to avoid LLM API contention
+            self._schedule_deferred_lore(session_id, turn_number)
 
         except Exception as e:
             logger.error(f"[Curator] Error: {e}", exc_info=True)
@@ -60,9 +93,21 @@ class CuratorRunner:
                     logger.info("[Curator] Retrying with fallback adapter")
                     result = await self.fallback_adapter.run(session_id, context)
                     await self._apply_results(session_id, turn_number, result)
-                    await self._auto_generate_lore(session_id, turn_number)
+                    self._schedule_deferred_lore(session_id, turn_number)
                 except Exception as e2:
                     logger.error(f"[Curator] Fallback also failed: {e2}")
+
+    def _schedule_deferred_lore(self, session_id: str, turn_number: int):
+        """Schedule lore generation as a deferred task with delay to avoid LLM API contention."""
+        async def _deferred():
+            await asyncio.sleep(10)  # Wait for narration requests to finish
+            logger.info(f"[Curator] Deferred lore generation starting for turn {turn_number}")
+            await self._auto_generate_lore(session_id, turn_number)
+
+        task = asyncio.create_task(_deferred())
+        self._lore_tasks.add(task)
+        task.add_done_callback(self._lore_tasks.discard)
+        task.add_done_callback(_log_lore_task_exception)
 
     async def _gather_context(self, session_id, turn_number):
         graph_summary = await self.sqlite_db.get_state_summary(session_id)
@@ -97,6 +142,9 @@ class CuratorRunner:
 
         if result.get("events"):
             for event in result["events"]:
+                if not isinstance(event, dict):
+                    logger.debug(f"[Curator] Skipping non-dict event: {event!r}")
+                    continue
                 await self.sqlite_db.queue_event(session_id, event)
 
         if result.get("compress_story") and result.get("compressed_summary"):
@@ -183,30 +231,7 @@ class CuratorRunner:
         )
 
         # Parse response
-        import re
-        lore_data = None
-        response = response.strip()
-        # Try direct JSON
-        try:
-            lore_data = json.loads(response)
-        except json.JSONDecodeError:
-            pass
-        # Try code block
-        if not lore_data:
-            match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response)
-            if match:
-                try:
-                    lore_data = json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-        # Try brace matching
-        if not lore_data:
-            match = re.search(r'\{.*\}', response, re.DOTALL)
-            if match:
-                try:
-                    lore_data = json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    pass
+        lore_data = parse_llm_json(response)
 
         if not lore_data or not lore_data.get("content"):
             logger.warning(f"[Curator] Could not parse lore for {entity_name}: {response[:200]}")
@@ -248,9 +273,35 @@ class CuratorRunner:
 
         logger.info(f"[Curator] Auto-generated lore for '{entity_name}' ({lore_type}, priority={priority})")
 
+    async def _sync_letta_memory(self, session_id: str):
+        """P0-2: Sync Letta narrative_summary Memory Block → stable_prefix.md."""
+        if not self._use_letta:
+            return
+        try:
+            blocks = await asyncio.wait_for(
+                self.letta_adapter.read_memory_blocks(session_id),
+                timeout=5.0,
+            )
+            narrative = blocks.get("narrative_summary", "")
+            if not narrative or len(narrative) < 50:
+                return
+            chars = await self.sqlite_db.get_session_characters(session_id)
+            lore = await self.sqlite_db.get_all_lore(session_id)
+            content = await self.md_cache.build_stable_content(
+                chars, lore, narrative_summary=narrative
+            )
+            await self.md_cache.write_stable(session_id, content)
+            logger.info(f"[Curator] Synced Letta narrative_summary to stable_prefix ({len(narrative)} chars)")
+        except asyncio.TimeoutError:
+            logger.warning("[Curator] Letta memory block read timed out (5s)")
+        except Exception as e:
+            logger.warning(f"[Curator] Memory block sync failed: {e}")
+
     async def _compress_story_md(self, session_id, turn_number, compressed_summary):
         """Update stable prefix with compressed story summary."""
         chars = await self.sqlite_db.get_session_characters(session_id)
         lore = await self.sqlite_db.get_all_lore(session_id)
-        content = await self.md_cache.build_stable_content(chars, lore, compressed_summary)
+        content = await self.md_cache.build_stable_content(
+            chars, lore, narrative_summary=compressed_summary
+        )
         await self.md_cache.write_stable(session_id, content)

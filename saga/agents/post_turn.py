@@ -1,26 +1,30 @@
 """Sub-B: Post-turn Extractor — 매 턴 비동기, Flash급, 유저 안 기다림.
 
 state 블록 파싱 → SQLite + ChromaDB 업데이트 → live_state.md 갱신
-asyncio.Event 락으로 빠른 연속 입력 방지
+asyncio.Lock으로 빠른 연속 입력 방지
 """
 import asyncio
 import logging
 import json
-import re
+import time
+from pathlib import Path
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
-from saga.utils.parsers import parse_state_block, format_turn_narrative
+from saga.utils.parsers import parse_state_block, format_turn_narrative, parse_llm_json
 from saga.llm.client import LLMClient
-
 logger = logging.getLogger(__name__)
 
 # Sub-B concurrency lock
-_sub_b_lock = asyncio.Event()
-_sub_b_lock.set()  # Initially open
+_sub_b_lock = asyncio.Lock()
 
 
 class PostTurnExtractor:
+    # Korean honorific suffixes to strip for matching (longest first)
+    _KO_SUFFIXES = ("선배", "후배", "언니", "오빠", "누나", "씨", "님", "양", "군", "형")
+    # Common Korean surnames for suffix-match validation
+    _KO_SURNAMES = set("김이박최정강조윤장임한오서신권황안송류홍전배노하유남심")
+
     def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client: LLMClient, config):
         self.sqlite_db = sqlite_db
         self.vector_db = vector_db
@@ -28,28 +32,129 @@ class PostTurnExtractor:
         self.llm_client = llm_client
         self.config = config
 
+    @classmethod
+    def _strip_suffix(cls, name: str) -> str:
+        """Strip Korean honorific suffixes to get a match key."""
+        stripped = name.strip()
+        for suffix in cls._KO_SUFFIXES:
+            if stripped.endswith(suffix) and len(stripped) > len(suffix):
+                stripped = stripped[:-len(suffix)].strip()
+                break  # Only strip one suffix
+        return stripped
+
+    @classmethod
+    def _match_existing_name(cls, raw_name: str, existing_names: list[str]) -> str:
+        """Match raw_name against existing character names using suffix matching.
+
+        Returns the existing canonical name if matched, otherwise the raw_name as-is.
+        """
+        if not raw_name or len(raw_name) < 2:
+            return raw_name
+
+        key = cls._strip_suffix(raw_name).lower()
+        if len(key) < 2:
+            return raw_name
+
+        for existing in existing_names:
+            ex_key = cls._strip_suffix(existing).lower()
+            if len(ex_key) < 2:
+                continue
+
+            # Exact match after stripping
+            if key == ex_key:
+                return existing
+
+            # Suffix match: shorter is suffix of longer
+            shorter, longer = (key, ex_key) if len(key) <= len(ex_key) else (ex_key, key)
+            if longer.endswith(shorter):
+                prefix = longer[:-len(shorter)]
+                # If prefix is 1 char, only allow if it's a Korean surname
+                if len(prefix) == 1 and prefix not in cls._KO_SURNAMES:
+                    continue
+                # If prefix is >1 char, skip (too risky for false positives)
+                if len(prefix) > 1:
+                    continue
+                return existing
+
+        return raw_name
+
+    async def _normalize_state_block_names(self, session_id: str, state_block: dict) -> None:
+        """Normalize all NPC names in state_block against existing characters (in-place)."""
+        existing_chars = await self.sqlite_db.get_session_characters(session_id)
+        existing_names = [c["name"] for c in existing_chars if not c.get("is_player")]
+
+        if not existing_names:
+            return
+
+        # npc_met
+        if state_block.get("npc_met"):
+            state_block["npc_met"] = [
+                self._match_existing_name(n, existing_names)
+                for n in state_block["npc_met"] if n
+            ]
+
+        # npc_separated
+        if state_block.get("npc_separated"):
+            state_block["npc_separated"] = [
+                self._match_existing_name(n, existing_names)
+                for n in state_block["npc_separated"] if n
+            ]
+
+        # relationship_changes
+        for change in (state_block.get("relationship_changes") or []):
+            if not isinstance(change, dict):
+                continue
+            if change.get("from"):
+                change["from"] = self._match_existing_name(change["from"], existing_names)
+            if change.get("to"):
+                change["to"] = self._match_existing_name(change["to"], existing_names)
+
+        # items_transferred
+        for transfer in (state_block.get("items_transferred") or []):
+            if not isinstance(transfer, dict):
+                continue
+            if transfer.get("to"):
+                transfer["to"] = self._match_existing_name(transfer["to"], existing_names)
+
     async def extract_and_update(self, session_id: str, response_text: str, turn_number: int, user_input: str = ""):
         """Main entry point. Called as asyncio.create_task after response is sent."""
+        logger.info(f"[Sub-B] ▶ Task started for turn {turn_number}, session={session_id}")
 
         # Wait for previous Sub-B to finish
-        await _sub_b_lock.wait()
-        _sub_b_lock.clear()
+        await _sub_b_lock.acquire()
+        logger.info(f"[Sub-B] Lock acquired for turn {turn_number}")
 
+        t_start = time.monotonic()
+        extraction_method = "failed"
+        flash_tokens_used = None
+        state_block = None
+        importance = 0
+        metrics_written = False
         try:
             # 1. Parse state block
             state_block = parse_state_block(response_text)
 
-            if state_block is None:
+            if state_block is not None:
+                extraction_method = "regex"
+            else:
                 # Regex failed → log tail for debugging, then try Flash
                 tail = response_text[-500:] if len(response_text) > 500 else response_text
                 logger.warning(f"[Sub-B] Regex parse failed for turn {turn_number}, trying Flash extraction. Response tail:\n{tail}")
-                state_block = await self._extract_with_flash(response_text)
+                state_block = await self._extract_with_flash(session_id, response_text)
+                if state_block is not None:
+                    extraction_method = "flash"
 
             if state_block is None:
                 # Flash also failed → skip this turn's state tracking
                 logger.warning(f"[Sub-B] Flash extraction also failed for turn {turn_number}, skipping")
                 await self.sqlite_db.insert_turn_log(session_id, turn_number, None, user_input=user_input, assistant_output=response_text)
+                self._write_metrics(session_id, turn_number, extraction_method, None,
+                                    time.monotonic() - t_start, response_text, flash_tokens_used)
+                metrics_written = True
                 return
+
+            # 1.5. Normalize NPC names against existing characters (in-place)
+            await self._normalize_state_block_names(session_id, state_block)
 
             # 2. Update SQLite state tables
             await self._update_state_db(session_id, state_block, turn_number)
@@ -68,76 +173,118 @@ class PostTurnExtractor:
             # 6. Update live_state.md
             await self._update_md_cache(session_id, turn_number, state_block)
 
-            logger.info(f"[Sub-B] Turn {turn_number} post-processing complete (importance={importance})")
+            # 7. Write metrics JSON
+            self._write_metrics(session_id, turn_number, extraction_method, state_block,
+                                time.monotonic() - t_start, response_text, flash_tokens_used,
+                                importance=importance)
+            metrics_written = True
+
+            logger.info(f"[Sub-B] Turn {turn_number} post-processing complete (importance={importance}, method={extraction_method})")
 
         except Exception as e:
             logger.error(f"[Sub-B] Error processing turn {turn_number}: {e}", exc_info=True)
         finally:
-            _sub_b_lock.set()
+            elapsed_ms = (time.monotonic() - t_start) * 1000
+            logger.info(f"[Sub-B] Releasing lock for turn {turn_number}")
+            # Write metrics on exception path (success/failure paths already wrote)
+            if not metrics_written:
+                try:
+                    self._write_metrics(session_id, turn_number, extraction_method,
+                                        state_block, time.monotonic() - t_start,
+                                        response_text, flash_tokens_used,
+                                        importance=importance)
+                except Exception as me:
+                    logger.error(f"[Sub-B] Failed to write metrics for turn {turn_number}: {me}")
+            _sub_b_lock.release()
 
-    async def _extract_with_flash(self, response_text: str) -> dict | None:
+    def _write_metrics(self, session_id: str, turn_number: int, extraction_method: str,
+                       state_block: dict | None, elapsed: float, response_text: str,
+                       flash_tokens_used: int | None = None, importance: int = 0):
+        """Write per-turn metrics JSON for A/B analysis."""
+        from saga.utils.parsers import strip_state_block
+        clean_len = len(strip_state_block(response_text)) if response_text else 0
+        fields_extracted = len(state_block) if state_block else 0
+        metrics = {
+            "turn": turn_number,
+            "extraction_method": extraction_method,
+            "fields_extracted": fields_extracted,
+            "field_values": state_block or {},
+            "extraction_latency_ms": round(elapsed * 1000, 1),
+            "response_length": clean_len,
+            "state_block_present": extraction_method == "regex",
+            "importance_score": importance,
+            "flash_tokens_used": flash_tokens_used,
+        }
+        try:
+            metrics_dir = Path("logs/ab_metrics") / session_id
+            metrics_dir.mkdir(parents=True, exist_ok=True)
+            metrics_path = metrics_dir / f"turn_{turn_number}.json"
+            metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.debug(f"[Sub-B] Metrics written: {metrics_path}")
+        except Exception as e:
+            logger.warning(f"[Sub-B] Failed to write metrics: {e}")
+
+    async def _extract_with_flash(self, session_id: str, response_text: str) -> dict | None:
         """Use Flash-tier LLM to extract state from unstructured response."""
         try:
+            # Build existing character list for name consistency
+            existing_chars = await self.sqlite_db.get_session_characters(session_id)
+            char_names = [c["name"] for c in existing_chars if c.get("name")]
+            char_hint = ""
+            if char_names:
+                char_hint = f"\n\nIMPORTANT: These characters already exist in this session: {', '.join(char_names)}. When referring to the same character, use EXACTLY the same name form as listed above. Do not use nicknames, honorifics, or alternate spellings."
+
             # Sanitize non-printable characters that can break HTTP requests
             clean_text = ''.join(c if c.isprintable() or c in '\n\r' else ' ' for c in response_text)
             result = await self.llm_client.call_llm(
                 model=self.config.models.extraction,
                 messages=[
-                    {"role": "system", "content": "Extract game state changes from the RP response. Return ONLY valid JSON (no markdown, no explanation) with keys: location, location_moved, hp_change, items_gained, items_lost, items_transferred, npc_met, npc_separated, relationship_changes, mood, event_trigger, notes. Use defaults (false, 0, [], null) for missing values."},
+                    {"role": "system", "content": f"Extract game state changes from the RP response. Return ONLY valid JSON (no markdown, no explanation) with keys: location, location_moved, hp_change, items_gained, items_lost, items_transferred, npc_met, npc_separated, relationship_changes, mood, event_trigger, notes. Use defaults (false, 0, [], null) for missing values.{char_hint}"},
                     {"role": "user", "content": clean_text}
                 ],
                 temperature=0.1,
                 max_tokens=1024
             )
-            # Try direct parse first
-            result = result.strip()
-            try:
-                return json.loads(result)
-            except json.JSONDecodeError:
-                pass
-            # Try extracting JSON from markdown code block
-            json_match = re.search(r'```(?:json)?\s*\n?(.*?)```', result, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(1).strip())
-            # Try finding first { ... } block
-            brace_match = re.search(r'\{.*\}', result, re.DOTALL)
-            if brace_match:
-                return json.loads(brace_match.group(0))
-            logger.warning(f"[Sub-B] Flash returned unparseable: {result[:200]}")
-            return None
+            parsed = parse_llm_json(result)
+            if parsed is None:
+                logger.warning(f"[Sub-B] Flash returned unparseable: {result[:200]}")
+            return parsed
         except Exception as e:
             logger.error(f"[Sub-B] Flash extraction failed: {e}")
             return None
 
     async def _update_state_db(self, session_id: str, state_block: dict, turn_number: int):
         """Update SQLite tables from state block."""
-        # Location move
-        if state_block.get("location_moved"):
-            new_location = state_block.get("location", "")
-            if new_location:
-                await self.sqlite_db.create_location(session_id, new_location, turn_number)
-                await self.sqlite_db.update_character_location(session_id, "", new_location, turn_number)
+        # Ensure player character exists (idempotent)
+        await self.sqlite_db.ensure_player(session_id)
+
+        # Always sync player location if provided
+        location = state_block.get("location", "")
+        if location:
+            await self.sqlite_db.update_character_location(session_id, "", location, turn_number)
+            if state_block.get("location_moved"):
+                await self.sqlite_db.create_location(session_id, location, turn_number)
 
         # New NPCs met
-        for npc_name in state_block.get("npc_met", []):
+        for npc_name in (state_block.get("npc_met") or []):
             await self.sqlite_db.create_character(session_id, npc_name, is_player=False)
             await self.sqlite_db.create_relationship(session_id, "", npc_name, "met", 30)
 
         # Relationship changes
-        for change in state_block.get("relationship_changes", []):
+        for change in (state_block.get("relationship_changes") or []):
             if not isinstance(change, dict):
                 logger.debug(f"[Sub-B] Skipping non-dict relationship_change: {change!r}")
                 continue
             try:
                 await self.sqlite_db.update_relationship(
-                    session_id, change.get("from", ""), change.get("to", ""),
-                    change.get("type", ""), change.get("delta", 0)
+                    session_id, (change.get("from") or ""), (change.get("to") or ""),
+                    (change.get("type") or ""), (change.get("delta") or 0)
                 )
             except Exception as e:
                 logger.warning(f"[Sub-B] update_relationship failed: {e}")
 
         # Items gained
-        for item in state_block.get("items_gained", []):
+        for item in (state_block.get("items_gained") or []):
             current = await self.sqlite_db.get_world_state_value(session_id, "inventory") or "[]"
             inv = json.loads(current)
             if item not in inv:
@@ -145,7 +292,7 @@ class PostTurnExtractor:
             await self.sqlite_db.upsert_world_state(session_id, "inventory", json.dumps(inv, ensure_ascii=False))
 
         # Items lost
-        for item in state_block.get("items_lost", []):
+        for item in (state_block.get("items_lost") or []):
             current = await self.sqlite_db.get_world_state_value(session_id, "inventory") or "[]"
             inv = json.loads(current)
             if item in inv:
@@ -153,7 +300,7 @@ class PostTurnExtractor:
             await self.sqlite_db.upsert_world_state(session_id, "inventory", json.dumps(inv, ensure_ascii=False))
 
         # HP
-        hp_delta = state_block.get("hp_change", 0)
+        hp_delta = state_block.get("hp_change") or 0
         if hp_delta != 0:
             await self.sqlite_db.update_character_hp(session_id, hp_delta)
 
@@ -178,12 +325,12 @@ class PostTurnExtractor:
     def _record_episode(self, session_id, turn_number, user_input, response_text, state_block):
         """Record episode summary to ChromaDB with importance scoring and entity tagging."""
         summary = format_turn_narrative(turn_number, user_input, response_text, state_block)
-        location = state_block.get("location", "unknown")
+        location = (state_block.get("location") or "unknown")
         importance = self._calculate_importance(state_block)
         entities = self._extract_entities(state_block)
-        npcs = list(state_block.get("npc_met", [])) + list(state_block.get("npc_separated", []))
+        npcs = list(state_block.get("npc_met") or []) + list(state_block.get("npc_separated") or [])
         # Add relationship targets as NPCs too
-        for change in state_block.get("relationship_changes", []):
+        for change in (state_block.get("relationship_changes") or []):
             if not isinstance(change, dict):
                 continue
             for key in ("from", "to"):
@@ -207,7 +354,7 @@ class PostTurnExtractor:
         """Calculate episode importance score (0-100) from state changes."""
         score = 10  # base score for any turn
 
-        hp_change = abs(state_block.get("hp_change", 0))
+        hp_change = abs(state_block.get("hp_change") or 0)
         if hp_change > 0:
             score += min(30, hp_change * 3)  # up to 30 for combat/damage
 
@@ -240,22 +387,22 @@ class PostTurnExtractor:
         entities = []
         if state_block.get("location"):
             entities.append(state_block["location"])
-        for name in state_block.get("npc_met", []):
+        for name in (state_block.get("npc_met") or []):
             entities.append(name)
-        for name in state_block.get("npc_separated", []):
+        for name in (state_block.get("npc_separated") or []):
             entities.append(name)
-        for item in state_block.get("items_gained", []):
+        for item in (state_block.get("items_gained") or []):
             entities.append(item)
-        for item in state_block.get("items_lost", []):
+        for item in (state_block.get("items_lost") or []):
             entities.append(item)
-        for transfer in state_block.get("items_transferred", []):
+        for transfer in (state_block.get("items_transferred") or []):
             if not isinstance(transfer, dict):
                 continue
             if transfer.get("item"):
                 entities.append(transfer["item"])
             if transfer.get("to"):
                 entities.append(transfer["to"])
-        for change in state_block.get("relationship_changes", []):
+        for change in (state_block.get("relationship_changes") or []):
             if not isinstance(change, dict):
                 continue
             for key in ("from", "to"):
@@ -266,7 +413,7 @@ class PostTurnExtractor:
     @staticmethod
     def _classify_episode(state_block: dict) -> str:
         """Classify episode type for filtering."""
-        if abs(state_block.get("hp_change", 0)) > 0:
+        if abs(state_block.get("hp_change") or 0) > 0:
             return "combat"
         if state_block.get("event_trigger"):
             return "event"

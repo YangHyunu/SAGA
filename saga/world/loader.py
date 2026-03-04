@@ -60,7 +60,6 @@ class WorldLoader:
                     "layer": entry.get("layer", "A1"),
                     "tags": ",".join(entry.get("tags", [])),
                     "name": entry["name"],
-                    "kuzu_node_id": ""
                 }
             )
             logger.info(f"[WorldLoader] Loaded lorebook: {entry['name']} (layer={entry.get('layer')})")
@@ -74,7 +73,7 @@ class WorldLoader:
             self.vector_db.add_lorebook_entry(
                 entry_id=f"{session_id}_WORLD",
                 text=world_desc,
-                metadata={"session_id": session_id, "type": "world", "layer": "A1", "tags": "world,setting", "name": "WORLD", "kuzu_node_id": ""}
+                metadata={"session_id": session_id, "type": "world", "layer": "A1", "tags": "world,setting", "name": "WORLD"}
             )
 
         # Bootstrap .md cache

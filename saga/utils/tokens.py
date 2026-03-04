@@ -23,9 +23,3 @@ def count_messages_tokens(messages: list[dict]) -> int:
     total += 2  # reply priming
     return total
 
-def truncate_to_budget(text: str, max_tokens: int) -> str:
-    encoder = _get_encoder()
-    tokens = encoder.encode(text)
-    if len(tokens) <= max_tokens:
-        return text
-    return encoder.decode(tokens[:max_tokens])

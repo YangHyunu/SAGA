@@ -7,8 +7,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Regex for state block extraction (lenient: handles spaces, varied backticks)
+# Matches both closed (```state...```) and unclosed (```state... EOF) blocks
 STATE_BLOCK_PATTERN = re.compile(
-    r'`{2,3}\s*state\s*\n(.*?)`{2,3}',
+    r'`{2,3}\s*state\s*\n(.*?)(?:`{2,3}|$)',
     re.DOTALL
 )
 
@@ -65,11 +66,17 @@ def parse_state_block(response_text: str) -> dict | None:
 
 
 def _parse_list(value: str) -> list[str]:
-    """Parse [item1, item2] or item1, item2 format."""
+    """Parse [item1, item2] or item1, item2 format.
+
+    Handles parenthesized/bracketed commas correctly:
+    e.g. "Yui (유이, 18), Mina" -> ["Yui (유이, 18)", "Mina"]
+    """
     value = value.strip('[]')
     if not value or value.lower() in ('없음', 'none', '[]'):
         return []
-    return [item.strip().strip('"').strip("'") for item in value.split(',') if item.strip()]
+    # Split on commas NOT inside parentheses or brackets
+    items = re.split(r',\s*(?![^()\[\]]*[)\]])', value)
+    return [item.strip().strip('"').strip("'") for item in items if item.strip()]
 
 
 def _parse_transfer_list(value: str) -> list[dict]:
@@ -107,6 +114,47 @@ def strip_state_block(response_text: str) -> str:
     # Also remove the instruction header if present
     cleaned = re.sub(r'\[--- SAGA State Tracking ---\].*?```', '', cleaned, flags=re.DOTALL)
     return cleaned.strip()
+
+
+def parse_llm_json(text: str) -> dict | None:
+    """LLM 응답에서 JSON dict 추출. 3단계: 직접 파싱 → 코드블록 → 균형 중괄호 매칭."""
+    if not text:
+        return None
+    text = text.strip()
+    # 1) Direct parse
+    try:
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return result
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # 2) Code block (```json ... ``` or ``` ... ```)
+    match = re.search(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL)
+    if match:
+        try:
+            result = json.loads(match.group(1).strip())
+            if isinstance(result, dict):
+                return result
+        except (json.JSONDecodeError, ValueError):
+            pass
+    # 3) Balanced brace matching (outermost { ... })
+    start = text.find('{')
+    if start != -1:
+        depth = 0
+        for i, ch in enumerate(text[start:], start=start):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        result = json.loads(text[start:i + 1])
+                        if isinstance(result, dict):
+                            return result
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+    return None
 
 
 def format_turn_narrative(turn_number: int, user_input: str, response_text: str, state_block: dict) -> str:

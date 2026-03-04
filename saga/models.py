@@ -26,9 +26,17 @@ class ChatMessage(BaseModel):
     """A single message in a conversation turn."""
 
     role: str
-    content: str
+    content: Union[str, List[Dict[str, Any]]]
     name: Optional[str] = None
     cache_control: Optional[Dict[str, Any]] = None
+
+    def get_text_content(self) -> str:
+        """Extract plain text from content (handles multimodal arrays)."""
+        if isinstance(self.content, str):
+            return self.content
+        return "\n".join(
+            c.get("text", "") for c in self.content if c.get("type") == "text"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +47,8 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 
+    model_config = {"extra": "ignore"}
+
     model: str
     messages: List[ChatMessage]
     temperature: Optional[float] = None
@@ -48,6 +58,7 @@ class ChatCompletionRequest(BaseModel):
     frequency_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
     stop: Optional[Union[str, List[str]]] = None
+    user: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -109,14 +120,6 @@ class ChatCompletionChunk(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SessionInfo(BaseModel):
-    id: str
-    name: str
-    turn_count: int = 0
-    created_at: float = Field(default_factory=time.time)
-    updated_at: float = Field(default_factory=time.time)
-
-
 class StatusResponse(BaseModel):
     status: str = "ok"
     active_sessions: int = 0
@@ -146,16 +149,6 @@ class ItemTransfer(BaseModel):
 
     item: str
     to: str
-
-
-class CuratorResult(BaseModel):
-    """Result produced by the Curator after each curation run."""
-
-    contradictions: List[dict] = Field(default_factory=list)
-    events: List[dict] = Field(default_factory=list)
-    compress_story: bool = False
-    compressed_summary: str = ""
-    narrative_notes: str = ""
 
 
 class StateBlockData(BaseModel):

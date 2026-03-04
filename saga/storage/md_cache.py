@@ -14,7 +14,11 @@ class MdCache:
     # ------------------------------------------------------------------ #
 
     def get_session_dir(self, session_id: str) -> str:
-        return os.path.join(self.cache_dir, session_id)
+        base = os.path.realpath(self.cache_dir)
+        candidate = os.path.realpath(os.path.join(base, session_id))
+        if not candidate.startswith(base + os.sep) and candidate != base:
+            raise ValueError(f"Invalid session_id: path traversal detected")
+        return candidate
 
     # ------------------------------------------------------------------ #
     # Read
@@ -82,14 +86,22 @@ class MdCache:
 
         lines = [f"---\nturn: {turn}\n---\n"]
 
-        lines.append("## 현재 상태")
-        lines.append(f"- 위치: {location}")
-        lines.append(f"- HP: {hp}/{max_hp}")
-        lines.append(f"- 기분: {mood}")
-        lines.append("")
+        # Only render sections with meaningful (non-default) data
+        status_lines = []
+        if location not in ("알 수 없음", "unknown", ""):
+            status_lines.append(f"- 위치: {location}")
+        if hp != max_hp or (hp != 100 and hp != "?"):
+            status_lines.append(f"- HP: {hp}/{max_hp}")
+        if mood not in ("보통", "neutral", ""):
+            status_lines.append(f"- 기분: {mood}")
 
-        lines.append("## 주변 인물")
+        if status_lines:
+            lines.append("## 현재 상태")
+            lines.extend(status_lines)
+            lines.append("")
+
         if nearby_npcs:
+            lines.append("## 주변 인물")
             for npc in nearby_npcs:
                 if isinstance(npc, dict):
                     name = npc.get("name", "이름 없음")
@@ -98,12 +110,10 @@ class MdCache:
                     lines.append(f"- {name} (관계: {rel_type}, 친밀도: {strength})")
                 else:
                     lines.append(f"- {npc}")
-        else:
-            lines.append("- 없음")
-        lines.append("")
+            lines.append("")
 
-        lines.append("## 최근 이벤트")
         if recent_events:
+            lines.append("## 최근 이벤트")
             for event in recent_events:
                 if isinstance(event, dict):
                     t = event.get("turn", "?")
@@ -111,9 +121,7 @@ class MdCache:
                     lines.append(f"- Turn {t}: {desc}")
                 else:
                     lines.append(f"- {event}")
-        else:
-            lines.append("- 없음")
-        lines.append("")
+            lines.append("")
 
         full_content = "\n".join(lines)
         filepath = os.path.join(self.get_session_dir(session_id), LIVE_FILE)
@@ -124,6 +132,7 @@ class MdCache:
         characters: list,
         lore_entries: list,
         world_config: str = "",
+        narrative_summary: str = "",
     ) -> str:
         """Build stable_prefix.md content from DB data.
         Called by Curator or on session init.
@@ -131,9 +140,15 @@ class MdCache:
         """
         lines = []
 
-        lines.append("## 세계관")
-        lines.append(world_config.strip() if world_config else "")
-        lines.append("")
+        if world_config and world_config.strip():
+            lines.append("## 세계관")
+            lines.append(world_config.strip())
+            lines.append("")
+
+        if narrative_summary and narrative_summary.strip():
+            lines.append("## 서사 요약")
+            lines.append(narrative_summary.strip()[:500])  # 예산 잠식 방지
+            lines.append("")
 
         lines.append("## 등장인물")
         for char in characters:
