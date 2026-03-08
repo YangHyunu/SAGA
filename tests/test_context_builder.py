@@ -11,7 +11,7 @@ All tests use lightweight stubs — no real DB or LLM calls.
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
-from saga.agents.context_builder import ContextBuilder, STATE_BLOCK_INSTRUCTION
+from saga.agents.context_builder import ContextBuilder, EXTRACTION_INSTRUCTION
 
 
 # ─────────────────────────────────────────────────────────────
@@ -212,12 +212,12 @@ class TestAssembleDynamic:
     def test_includes_state_block_instruction_when_enabled(self):
         self.builder.config.state_instruction.enabled = True
         result = self._assemble()
-        assert STATE_BLOCK_INSTRUCTION in result
+        assert EXTRACTION_INSTRUCTION in result
 
     def test_excludes_state_block_instruction_when_disabled(self):
         self.builder.config.state_instruction.enabled = False
         result = self._assemble()
-        assert STATE_BLOCK_INSTRUCTION not in result
+        assert EXTRACTION_INSTRUCTION not in result
 
     def test_live_state_included_when_fits_budget(self):
         result = self._assemble(live_state="Current state: forest", budget=5000)

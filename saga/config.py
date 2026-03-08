@@ -48,7 +48,6 @@ class TokenBudgetConfig(BaseModel):
 class MdCacheConfig(BaseModel):
     enabled: bool = True
     cache_dir: str = "cache/sessions"
-    files: List[str] = Field(default_factory=lambda: ["state.md", "relations.md", "story.md", "lore.md"])
     atomic_write: bool = True
 
 

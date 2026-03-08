@@ -13,7 +13,7 @@ from saga.utils.tokens import count_tokens
 logger = logging.getLogger(__name__)
 
 # State tracking instruction appended to every turn
-STATE_BLOCK_INSTRUCTION = """[--- SAGA State Tracking ---]
+EXTRACTION_INSTRUCTION = """[--- SAGA State Tracking ---]
 응답 마지막에 아래 형식의 상태 블록을 추가해주세요:
 ```state
 location: 현재 위치
@@ -231,6 +231,6 @@ class ContextBuilder:
 
         # State tracking instruction (toggle via config)
         if self.config.state_instruction.enabled:
-            parts.append(STATE_BLOCK_INSTRUCTION)
+            parts.append(EXTRACTION_INSTRUCTION)
 
         return "\n\n".join(parts)

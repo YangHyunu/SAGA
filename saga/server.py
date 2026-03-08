@@ -40,8 +40,10 @@ from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.llm.client import LLMClient
+from functools import partial
 from saga.agents.context_builder import ContextBuilder
 from saga.agents.post_turn import PostTurnExtractor
+from saga.agents.extractors import regex_flash_extract
 from saga.agents.curator import CuratorRunner
 from saga.session import SessionManager
 from saga.utils.tokens import count_tokens, count_messages_tokens
@@ -205,7 +207,8 @@ async def lifespan(app: FastAPI):
 
     # Initialize agents
     context_builder = ContextBuilder(sqlite_db, vector_db, md_cache, config)
-    post_turn = PostTurnExtractor(sqlite_db, vector_db, md_cache, llm_client, config)
+    extract_fn = partial(regex_flash_extract, sqlite_db=sqlite_db, llm_client=llm_client, config=config)
+    post_turn = PostTurnExtractor(sqlite_db, vector_db, md_cache, llm_client, config, extract_fn=extract_fn)
     curator = CuratorRunner(sqlite_db, vector_db, md_cache, llm_client, config)
 
     if config.curator.enabled:

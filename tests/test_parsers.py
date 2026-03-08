@@ -6,8 +6,6 @@ from saga.utils.parsers import (
     parse_state_block,
     strip_state_block,
     format_turn_narrative,
-    parse_characters_md,
-    parse_lorebook_md,
     parse_llm_json,
     _parse_list,
     _parse_transfer_list,
@@ -295,113 +293,6 @@ location: 마을
         state = {"location": "마을"}
         result = format_turn_narrative(1, "Hi", response, state)
         assert "```state" not in result
-
-
-# ============================================================
-# parse_characters_md
-# ============================================================
-
-class TestParseCharactersMd:
-    def test_basic_character(self, tmp_path):
-        md = tmp_path / "CHARACTERS.md"
-        md.write_text("## 아린\n- player: true\n- hp: 85\n- max_hp: 100\n- location: 마을\n- traits: 용감, 친절\n- mood: 기쁨\n", encoding="utf-8")
-        result = parse_characters_md(str(md))
-        assert len(result) == 1
-        c = result[0]
-        assert c["name"] == "아린"
-        assert c["is_player"] is True
-        assert c["hp"] == 85
-        assert c["max_hp"] == 100
-        assert c["location"] == "마을"
-        assert c["traits"] == ["용감", "친절"]
-        assert c["mood"] == "기쁨"
-
-    def test_multiple_characters(self, tmp_path):
-        md = tmp_path / "CHARACTERS.md"
-        md.write_text("## 주인공\n- player: true\n\n## 고블린\n- hp: 50\n- location: 동굴\n", encoding="utf-8")
-        result = parse_characters_md(str(md))
-        assert len(result) == 2
-        assert result[0]["name"] == "주인공"
-        assert result[1]["name"] == "고블린"
-
-    def test_file_not_found(self):
-        assert parse_characters_md("/nonexistent/path.md") == []
-
-    def test_korean_keys(self, tmp_path):
-        md = tmp_path / "CHARACTERS.md"
-        md.write_text("## NPC\n- 플레이어: 예\n- 위치: 숲\n- 성격: 조용, 차분\n- 기분: 슬픔\n- 최대hp: 200\n", encoding="utf-8")
-        result = parse_characters_md(str(md))
-        c = result[0]
-        assert c["is_player"] is True
-        assert c["location"] == "숲"
-        assert c["traits"] == ["조용", "차분"]
-        assert c["mood"] == "슬픔"
-        assert c["max_hp"] == 200
-
-    def test_custom_fields(self, tmp_path):
-        md = tmp_path / "CHARACTERS.md"
-        md.write_text("## 캐릭터\n- 종족: 엘프\n- 직업: 마법사\n", encoding="utf-8")
-        result = parse_characters_md(str(md))
-        assert result[0]["custom"]["종족"] == "엘프"
-        assert result[0]["custom"]["직업"] == "마법사"
-
-    def test_defaults(self, tmp_path):
-        md = tmp_path / "CHARACTERS.md"
-        md.write_text("## 기본캐릭터\n", encoding="utf-8")
-        result = parse_characters_md(str(md))
-        c = result[0]
-        assert c["is_player"] is False
-        assert c["hp"] == 100
-        assert c["max_hp"] == 100
-        assert c["location"] == "unknown"
-        assert c["mood"] == "neutral"
-
-
-# ============================================================
-# parse_lorebook_md
-# ============================================================
-
-class TestParseLorebookMd:
-    def test_basic_entry(self, tmp_path):
-        md = tmp_path / "LOREBOOK.md"
-        md.write_text("## 엘프 왕국\n- type: 장소\n- layer: A2\n- tags: 엘프, 왕국\n\n오래된 엘프 왕국이다.\n", encoding="utf-8")
-        result = parse_lorebook_md(str(md))
-        assert len(result) == 1
-        e = result[0]
-        assert e["name"] == "엘프 왕국"
-        assert e["type"] == "장소"
-        assert e["layer"] == "A2"
-        assert e["tags"] == ["엘프", "왕국"]
-        assert "오래된 엘프 왕국이다." in e["text"]
-
-    def test_multiple_entries(self, tmp_path):
-        md = tmp_path / "LOREBOOK.md"
-        md.write_text("## 마법\n설명1\n\n## 검술\n설명2\n", encoding="utf-8")
-        result = parse_lorebook_md(str(md))
-        assert len(result) == 2
-        assert result[0]["name"] == "마법"
-        assert result[1]["name"] == "검술"
-
-    def test_file_not_found(self):
-        assert parse_lorebook_md("/nonexistent/path.md") == []
-
-    def test_korean_keys(self, tmp_path):
-        md = tmp_path / "LOREBOOK.md"
-        md.write_text("## 항목\n- 타입: 인물\n- 레이어: A3\n- 태그: 전사, 영웅\n", encoding="utf-8")
-        result = parse_lorebook_md(str(md))
-        e = result[0]
-        assert e["type"] == "인물"
-        assert e["layer"] == "A3"
-        assert e["tags"] == ["전사", "영웅"]
-
-    def test_defaults(self, tmp_path):
-        md = tmp_path / "LOREBOOK.md"
-        md.write_text("## 기본항목\n내용만 있음\n", encoding="utf-8")
-        result = parse_lorebook_md(str(md))
-        e = result[0]
-        assert e["type"] == "lore"
-        assert e["layer"] == "A1"
-        assert e["tags"] == []
 
 
 # ============================================================

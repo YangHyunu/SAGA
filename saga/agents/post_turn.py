@@ -7,11 +7,11 @@ import asyncio
 import logging
 import json
 import time
-from pathlib import Path
+from typing import Callable
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
-from saga.utils.parsers import parse_state_block, format_turn_narrative, parse_llm_json
+from saga.utils.parsers import format_turn_narrative
 from saga.llm.client import LLMClient
 logger = logging.getLogger(__name__)
 
@@ -25,12 +25,13 @@ class PostTurnExtractor:
     # Common Korean surnames for suffix-match validation
     _KO_SURNAMES = set("김이박최정강조윤장임한오서신권황안송류홍전배노하유남심")
 
-    def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client: LLMClient, config):
+    def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client: LLMClient, config, extract_fn: Callable = None):
         self.sqlite_db = sqlite_db
         self.vector_db = vector_db
         self.md_cache = md_cache
         self.llm_client = llm_client
         self.config = config
+        self.extract_fn = extract_fn
 
     @classmethod
     def _strip_suffix(cls, name: str) -> str:
@@ -125,32 +126,16 @@ class PostTurnExtractor:
         logger.info(f"[Sub-B] Lock acquired for turn {turn_number}")
 
         t_start = time.monotonic()
-        extraction_method = "failed"
-        flash_tokens_used = None
         state_block = None
         importance = 0
-        metrics_written = False
         try:
-            # 1. Parse state block
-            state_block = parse_state_block(response_text)
-
-            if state_block is not None:
-                extraction_method = "regex"
-            else:
-                # Regex failed → log tail for debugging, then try Flash
-                tail = response_text[-500:] if len(response_text) > 500 else response_text
-                logger.warning(f"[Sub-B] Regex parse failed for turn {turn_number}, trying Flash extraction. Response tail:\n{tail}")
-                state_block = await self._extract_with_flash(session_id, response_text)
-                if state_block is not None:
-                    extraction_method = "flash"
+            # 1. Extract state block via injected extract_fn
+            state_block = await self.extract_fn(response_text, session_id)
 
             if state_block is None:
-                # Flash also failed → skip this turn's state tracking
-                logger.warning(f"[Sub-B] Flash extraction also failed for turn {turn_number}, skipping")
+                # Both regex and Flash failed → skip this turn's state tracking
+                logger.warning(f"[Sub-B] Extraction failed for turn {turn_number}, skipping")
                 await self.sqlite_db.insert_turn_log(session_id, turn_number, None, user_input=user_input, assistant_output=response_text)
-                self._write_metrics(session_id, turn_number, extraction_method, None,
-                                    time.monotonic() - t_start, response_text, flash_tokens_used)
-                metrics_written = True
                 return
 
             # 1.5. Normalize NPC names against existing characters (in-place)
@@ -173,85 +158,14 @@ class PostTurnExtractor:
             # 6. Update live_state.md
             await self._update_md_cache(session_id, turn_number, state_block)
 
-            # 7. Write metrics JSON
-            self._write_metrics(session_id, turn_number, extraction_method, state_block,
-                                time.monotonic() - t_start, response_text, flash_tokens_used,
-                                importance=importance)
-            metrics_written = True
-
-            logger.info(f"[Sub-B] Turn {turn_number} post-processing complete (importance={importance}, method={extraction_method})")
+            logger.info(f"[Sub-B] Turn {turn_number} post-processing complete (importance={importance})")
 
         except Exception as e:
             logger.error(f"[Sub-B] Error processing turn {turn_number}: {e}", exc_info=True)
         finally:
             elapsed_ms = (time.monotonic() - t_start) * 1000
-            logger.info(f"[Sub-B] Releasing lock for turn {turn_number}")
-            # Write metrics on exception path (success/failure paths already wrote)
-            if not metrics_written:
-                try:
-                    self._write_metrics(session_id, turn_number, extraction_method,
-                                        state_block, time.monotonic() - t_start,
-                                        response_text, flash_tokens_used,
-                                        importance=importance)
-                except Exception as me:
-                    logger.error(f"[Sub-B] Failed to write metrics for turn {turn_number}: {me}")
+            logger.info(f"[Sub-B] Releasing lock for turn {turn_number}, elapsed={elapsed_ms:.0f}ms")
             _sub_b_lock.release()
-
-    def _write_metrics(self, session_id: str, turn_number: int, extraction_method: str,
-                       state_block: dict | None, elapsed: float, response_text: str,
-                       flash_tokens_used: int | None = None, importance: int = 0):
-        """Write per-turn metrics JSON for A/B analysis."""
-        from saga.utils.parsers import strip_state_block
-        clean_len = len(strip_state_block(response_text)) if response_text else 0
-        fields_extracted = len(state_block) if state_block else 0
-        metrics = {
-            "turn": turn_number,
-            "extraction_method": extraction_method,
-            "fields_extracted": fields_extracted,
-            "field_values": state_block or {},
-            "extraction_latency_ms": round(elapsed * 1000, 1),
-            "response_length": clean_len,
-            "state_block_present": extraction_method == "regex",
-            "importance_score": importance,
-            "flash_tokens_used": flash_tokens_used,
-        }
-        try:
-            metrics_dir = Path("logs/ab_metrics") / session_id
-            metrics_dir.mkdir(parents=True, exist_ok=True)
-            metrics_path = metrics_dir / f"turn_{turn_number}.json"
-            metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.debug(f"[Sub-B] Metrics written: {metrics_path}")
-        except Exception as e:
-            logger.warning(f"[Sub-B] Failed to write metrics: {e}")
-
-    async def _extract_with_flash(self, session_id: str, response_text: str) -> dict | None:
-        """Use Flash-tier LLM to extract state from unstructured response."""
-        try:
-            # Build existing character list for name consistency
-            existing_chars = await self.sqlite_db.get_session_characters(session_id)
-            char_names = [c["name"] for c in existing_chars if c.get("name")]
-            char_hint = ""
-            if char_names:
-                char_hint = f"\n\nIMPORTANT: These characters already exist in this session: {', '.join(char_names)}. When referring to the same character, use EXACTLY the same name form as listed above. Do not use nicknames, honorifics, or alternate spellings."
-
-            # Sanitize non-printable characters that can break HTTP requests
-            clean_text = ''.join(c if c.isprintable() or c in '\n\r' else ' ' for c in response_text)
-            result = await self.llm_client.call_llm(
-                model=self.config.models.extraction,
-                messages=[
-                    {"role": "system", "content": f"Extract game state changes from the RP response. Return ONLY valid JSON (no markdown, no explanation) with keys: location, location_moved, hp_change, items_gained, items_lost, items_transferred, npc_met, npc_separated, relationship_changes, mood, event_trigger, notes. Use defaults (false, 0, [], null) for missing values.{char_hint}"},
-                    {"role": "user", "content": clean_text}
-                ],
-                temperature=0.1,
-                max_tokens=1024
-            )
-            parsed = parse_llm_json(result)
-            if parsed is None:
-                logger.warning(f"[Sub-B] Flash returned unparseable: {result[:200]}")
-            return parsed
-        except Exception as e:
-            logger.error(f"[Sub-B] Flash extraction failed: {e}")
-            return None
 
     async def _update_state_db(self, session_id: str, state_block: dict, turn_number: int):
         """Update SQLite tables from state block."""

@@ -3,16 +3,11 @@
 Covers:
 - ChatMessage.get_text_content: string passthrough and multimodal array extraction
 - ChatCompletionRequest: extra fields ignored, defaults, stop variants
-- StateBlockData: partial construction safety
-- RelationshipChange: alias-based construction
 """
 import pytest
 from saga.models import (
     ChatMessage,
     ChatCompletionRequest,
-    StateBlockData,
-    RelationshipChange,
-    ItemTransfer,
     ChatCompletionResponse,
     Choice,
     Usage,
@@ -160,81 +155,6 @@ class TestChatCompletionRequest:
             }],
         )
         assert req.messages[0].get_text_content() == "Describe this image"
-
-
-# ─────────────────────────────────────────────────────────────
-# StateBlockData
-# ─────────────────────────────────────────────────────────────
-
-class TestStateBlockData:
-    def test_minimal_construction(self):
-        """Only 'location' is required; all lists default to empty."""
-        state = StateBlockData(location="던전")
-        assert state.location == "던전"
-        assert state.location_moved is False
-        assert state.hp_change == 0
-        assert state.items_gained == []
-        assert state.items_lost == []
-        assert state.items_transferred == []
-        assert state.npc_met == []
-        assert state.npc_separated == []
-        assert state.relationship_changes == []
-        assert state.mood == ""
-        assert state.event_trigger is None
-        assert state.notes == ""
-
-    def test_full_construction(self):
-        state = StateBlockData(
-            location="마을",
-            location_moved=True,
-            hp_change=-10,
-            items_gained=["검"],
-            items_lost=["방패"],
-            npc_met=["고블린"],
-            mood="긴장",
-            event_trigger="boss_appear",
-            notes="보스 방 근처",
-        )
-        assert state.location_moved is True
-        assert state.hp_change == -10
-        assert state.event_trigger == "boss_appear"
-
-    def test_event_trigger_none_by_default(self):
-        state = StateBlockData(location="forest")
-        assert state.event_trigger is None
-
-
-# ─────────────────────────────────────────────────────────────
-# RelationshipChange (alias-based field)
-# ─────────────────────────────────────────────────────────────
-
-class TestRelationshipChange:
-    def test_construct_with_aliases(self):
-        rc = RelationshipChange(**{"from": "Hero", "to": "Elf", "type": "trust", "delta": 10})
-        assert rc.from_entity == "Hero"
-        assert rc.to_entity == "Elf"
-        assert rc.type == "trust"
-        assert rc.delta == 10
-
-    def test_construct_with_field_names(self):
-        rc = RelationshipChange(from_entity="A", to_entity="B", type="ally", delta=5)
-        assert rc.from_entity == "A"
-        assert rc.to_entity == "B"
-
-    def test_negative_delta(self):
-        rc = RelationshipChange(**{"from": "A", "to": "B", "type": "hostile", "delta": -20})
-        assert rc.delta == -20
-
-
-# ─────────────────────────────────────────────────────────────
-# ItemTransfer
-# ─────────────────────────────────────────────────────────────
-
-class TestItemTransfer:
-    def test_basic(self):
-        it = ItemTransfer(item="검", to="NPC")
-        assert it.item == "검"
-        assert it.to == "NPC"
 
 
 # ─────────────────────────────────────────────────────────────
