@@ -56,6 +56,7 @@ class PromptCachingConfig(BaseModel):
     strategy: str = "md_prefix"
     stabilize_system: bool = True
     canonical_similarity_threshold: float = 0.30
+    cache_ttl: str = "1h"  # extended-cache-ttl: "5m" (default) or "1h"
 
 
 class CuratorConfig(BaseModel):
