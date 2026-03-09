@@ -458,3 +458,116 @@ class TestPrepareMessages:
         assert len(contents) == 2
         assert contents[0]["role"] == "user"
         assert contents[1]["role"] == "model"  # assistant -> model
+
+
+# ============================================================
+# Multimodal content handling (_prepare_* with image arrays)
+# ============================================================
+
+class TestMultimodalPrepare:
+    """Test that multimodal content arrays (images) are correctly converted per provider."""
+
+    _MULTIMODAL_USER_MSG = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe this image"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+        ],
+    }
+
+    _MULTIMODAL_URL_MSG = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What is this?"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+        ],
+    }
+
+    # --- Anthropic ---
+
+    def test_anthropic_base64_image_converted(self):
+        messages = [self._MULTIMODAL_USER_MSG]
+        _, non_system = LLMClient._prepare_anthropic_messages(messages)
+        content = non_system[0]["content"]
+        assert isinstance(content, list)
+        assert content[0] == {"type": "text", "text": "Describe this image"}
+        img = content[1]
+        assert img["type"] == "image"
+        assert img["source"]["type"] == "base64"
+        assert img["source"]["media_type"] == "image/png"
+        assert img["source"]["data"] == "iVBORw0KGgo="
+
+    def test_anthropic_url_image_converted(self):
+        messages = [self._MULTIMODAL_URL_MSG]
+        _, non_system = LLMClient._prepare_anthropic_messages(messages)
+        img = non_system[0]["content"][1]
+        assert img["type"] == "image"
+        assert img["source"]["type"] == "url"
+        assert img["source"]["url"] == "https://example.com/img.png"
+
+    def test_anthropic_multimodal_with_cache_control(self):
+        msg = {**self._MULTIMODAL_USER_MSG, "cache_control": {"type": "ephemeral"}}
+        _, non_system = LLMClient._prepare_anthropic_messages([msg])
+        content = non_system[0]["content"]
+        # cache_control should be on the last part
+        assert "cache_control" not in content[0]
+        assert content[-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_anthropic_plain_string_unchanged(self):
+        """Plain string content should still work as before."""
+        messages = [{"role": "user", "content": "Hello"}]
+        _, non_system = LLMClient._prepare_anthropic_messages(messages)
+        assert non_system[0]["content"] == "Hello"
+
+    # --- OpenAI ---
+
+    def test_openai_multimodal_passthrough(self):
+        """OpenAI natively supports content arrays — pass through as-is."""
+        messages = [self._MULTIMODAL_USER_MSG]
+        merged = LLMClient._prepare_openai_messages(messages)
+        user_msg = merged[0]
+        assert isinstance(user_msg["content"], list)
+        assert user_msg["content"][0]["type"] == "text"
+        assert user_msg["content"][1]["type"] == "image_url"
+
+    def test_openai_system_with_multimodal_user(self):
+        """System messages merged to text; multimodal user preserved."""
+        messages = [
+            {"role": "system", "content": "Be helpful"},
+            self._MULTIMODAL_USER_MSG,
+        ]
+        merged = LLMClient._prepare_openai_messages(messages)
+        assert merged[0]["role"] == "system"
+        assert isinstance(merged[0]["content"], str)
+        assert isinstance(merged[1]["content"], list)
+
+    # --- Google ---
+
+    def test_google_base64_image_converted(self):
+        messages = [self._MULTIMODAL_USER_MSG]
+        contents, _ = LLMClient._prepare_google_messages(messages)
+        parts = contents[0]["parts"]
+        assert parts[0] == {"text": "Describe this image"}
+        assert parts[1]["inline_data"]["mime_type"] == "image/png"
+        assert parts[1]["inline_data"]["data"] == "iVBORw0KGgo="
+
+    def test_google_plain_string_unchanged(self):
+        messages = [{"role": "user", "content": "Hello"}]
+        contents, _ = LLMClient._prepare_google_messages(messages)
+        assert contents[0]["parts"] == [{"text": "Hello"}]
+
+    # --- _to_text helper ---
+
+    def test_to_text_string(self):
+        assert LLMClient._to_text("Hello") == "Hello"
+
+    def test_to_text_array(self):
+        content = [
+            {"type": "text", "text": "Part A"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            {"type": "text", "text": "Part B"},
+        ]
+        assert LLMClient._to_text(content) == "Part A\nPart B"
+
+    def test_to_text_empty_array(self):
+        assert LLMClient._to_text([]) == ""

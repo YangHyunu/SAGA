@@ -12,24 +12,6 @@ from saga.utils.tokens import count_tokens
 
 logger = logging.getLogger(__name__)
 
-# State tracking instruction appended to every turn
-EXTRACTION_INSTRUCTION = """[--- SAGA State Tracking ---]
-응답 마지막에 아래 형식의 상태 블록을 추가해주세요:
-```state
-location: 현재 위치
-location_moved: 위치 변경 여부 (true/false)
-hp_change: HP 변화량 (없으면 0)
-items_gained: [획득 아이템]
-items_lost: [소실 아이템]
-items_transferred: [{item: 아이템명, to: 받는캐릭터}]
-npc_met: [새로 만난 NPC]
-npc_separated: [현재 위치에서 분리된 NPC]
-relationship_changes: [{from, to, type, delta}]
-mood: 현재 분위기
-event_trigger: 트리거된 이벤트 (없으면 null)
-notes: 다음 턴에 알아야 할 사항
-```
-이 블록은 시스템 내부용이며 유저에게는 보이지 않습니다."""
 
 
 class ContextBuilder:
@@ -228,9 +210,5 @@ class ContextBuilder:
                     parts.append(lore_header + "\n".join(lore_lines))
                 else:
                     remaining += header_tokens
-
-        # State tracking instruction (toggle via config)
-        if self.config.state_instruction.enabled:
-            parts.append(EXTRACTION_INSTRUCTION)
 
         return "\n\n".join(parts)

@@ -32,12 +32,14 @@ def _make_conversation(n_turns: int) -> list[dict]:
 # ============================================================
 
 class TestThreeBreakpointStructure:
+    _EXPECTED_CACHE_CTRL = {"type": "ephemeral", "ttl": "1h"}
+
     def test_bp1_on_system(self):
-        """BP1: system message gets cache_control."""
+        """BP1: system message gets cache_control with extended TTL."""
         msgs = _make_conversation(3)
         result = server_module._build_cacheable_messages(msgs, "", "")
         system_msg = result[0]
-        assert system_msg["cache_control"] == {"type": "ephemeral"}
+        assert system_msg["cache_control"] == self._EXPECTED_CACHE_CTRL
 
     def test_bp2_on_mid_assistant(self):
         """BP2: middle assistant gets cache_control when >=2 assistants."""
@@ -45,7 +47,7 @@ class TestThreeBreakpointStructure:
         result = server_module._build_cacheable_messages(msgs, "", "")
         assistant_indices = [i for i, m in enumerate(result) if m.get("role") == "assistant"]
         mid_idx = assistant_indices[len(assistant_indices) // 2]
-        assert result[mid_idx].get("cache_control") == {"type": "ephemeral"}
+        assert result[mid_idx].get("cache_control") == self._EXPECTED_CACHE_CTRL
 
     def test_bp3_on_last_assistant(self):
         """BP3: last assistant gets cache_control when >=2 assistants."""
@@ -53,7 +55,7 @@ class TestThreeBreakpointStructure:
         result = server_module._build_cacheable_messages(msgs, "", "")
         assistant_indices = [i for i, m in enumerate(result) if m.get("role") == "assistant"]
         last_idx = assistant_indices[-1]
-        assert result[last_idx].get("cache_control") == {"type": "ephemeral"}
+        assert result[last_idx].get("cache_control") == self._EXPECTED_CACHE_CTRL
 
     def test_exactly_3_breakpoints_with_long_convo(self):
         """With >=2 assistants, exactly 3 messages should have cache_control."""

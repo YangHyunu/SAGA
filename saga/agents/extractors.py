@@ -1,73 +1,56 @@
-"""Extraction strategies for Sub-B post-turn state parsing.
+"""Sub-B extraction: Flash 서사 요약.
 
-Provides regex_flash_extract as a callable injectable into PostTurnExtractor.
+프레젠테이션 S4에서 12필드 regex 추출은 '시행착오'로 분류.
+현재는 Flash 미니 서사 요약 (summary + npcs + scene_type + key_event)으로 전환.
+향후 scriptstate 수신 시 extract_fn 교체로 대응 (P3-a 참조).
 """
 import logging
-from saga.utils.parsers import parse_state_block, parse_llm_json
+from saga.utils.parsers import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
 
-async def regex_flash_extract(
+async def narrative_extract(
     assistant_text: str,
     session_id: str,
-    sqlite_db,
     llm_client,
     config,
 ) -> dict | None:
-    """Try regex extraction first; fall back to Flash LLM if regex fails.
-
-    Args:
-        assistant_text: Raw LLM response text to extract state from.
-        session_id: Current session ID for character name lookup.
-        sqlite_db: SQLiteDB instance.
-        llm_client: LLMClient instance.
-        config: SagaConfig with models.extraction field.
+    """Flash로 서사 요약 추출. 4필드 미니 요약.
 
     Returns:
-        dict of 12 extracted fields, or None if both methods fail.
+        dict with keys: summary, npcs_mentioned, scene_type, key_event
+        or None if extraction fails.
     """
-    # 1. Try regex via parse_state_block
-    state_block = parse_state_block(assistant_text)
-    if state_block is not None:
-        return state_block
-
-    # 2. Flash LLM fallback with character name hints
     try:
-        existing_chars = await sqlite_db.get_session_characters(session_id)
-        char_names = [c["name"] for c in existing_chars if c.get("name")]
-        char_hint = ""
-        if char_names:
-            char_hint = (
-                f"\n\nIMPORTANT: These characters already exist in this session: "
-                f"{', '.join(char_names)}. When referring to the same character, use EXACTLY "
-                f"the same name form as listed above. Do not use nicknames, honorifics, or alternate spellings."
-            )
-
-        clean_text = ''.join(c if c.isprintable() or c in '\n\r' else ' ' for c in assistant_text)
+        clean_text = ''.join(
+            c if c.isprintable() or c in '\n\r' else ' '
+            for c in assistant_text
+        )
         result = await llm_client.call_llm(
             model=config.models.extraction,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "Extract game state changes from the RP response. "
-                        "Return ONLY valid JSON (no markdown, no explanation) with keys: "
-                        "location, location_moved, hp_change, items_gained, items_lost, "
-                        "items_transferred, npc_met, npc_separated, relationship_changes, "
-                        "mood, event_trigger, notes. "
-                        f"Use defaults (false, 0, [], null) for missing values.{char_hint}"
+                        "이 RP 대화에서 일어난 서사적 사건을 요약하세요. "
+                        "JSON만 반환 (마크다운, 설명 금지):\n"
+                        '{"summary": "2-3문장 요약", '
+                        '"npcs_mentioned": ["등장/언급된 NPC 이름들"], '
+                        '"scene_type": "combat|dialogue|exploration|event", '
+                        '"key_event": "핵심 사건 한 줄 또는 null"}'
                     ),
                 },
                 {"role": "user", "content": clean_text},
             ],
             temperature=0.1,
             max_tokens=1024,
+            response_mime_type="application/json",
         )
         parsed = parse_llm_json(result)
         if parsed is None:
             logger.warning(f"[Extractor] Flash returned unparseable: {result[:200]}")
         return parsed
     except Exception as e:
-        logger.error(f"[Extractor] Flash extraction failed: {e}")
+        logger.error(f"[Extractor] Flash narrative extraction failed: {e}")
         return None

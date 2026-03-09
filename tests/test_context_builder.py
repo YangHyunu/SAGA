@@ -11,7 +11,7 @@ All tests use lightweight stubs — no real DB or LLM calls.
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
-from saga.agents.context_builder import ContextBuilder, EXTRACTION_INSTRUCTION
+from saga.agents.context_builder import ContextBuilder
 
 
 # ─────────────────────────────────────────────────────────────
@@ -209,16 +209,6 @@ class TestAssembleDynamic:
     def setup_method(self):
         self.builder = _make_builder()
 
-    def test_includes_state_block_instruction_when_enabled(self):
-        self.builder.config.state_instruction.enabled = True
-        result = self._assemble()
-        assert EXTRACTION_INSTRUCTION in result
-
-    def test_excludes_state_block_instruction_when_disabled(self):
-        self.builder.config.state_instruction.enabled = False
-        result = self._assemble()
-        assert EXTRACTION_INSTRUCTION not in result
-
     def test_live_state_included_when_fits_budget(self):
         result = self._assemble(live_state="Current state: forest", budget=5000)
         assert "Current state: forest" in result
@@ -255,7 +245,7 @@ class TestAssembleDynamic:
         assert "활성 로어" in result
         assert "마법의 역사" in result
 
-    def test_sections_in_order_live_episodes_lore_instruction(self):
+    def test_sections_in_order_live_episodes_lore(self):
         result = self._assemble(
             live_state="LIVE",
             episodes=[{"id": "ep1", "turn": 1, "summary": "Battle.", "importance": 60}],
@@ -265,13 +255,7 @@ class TestAssembleDynamic:
         live_pos = result.find("LIVE")
         ep_pos = result.find("에피소드 기억")
         lore_pos = result.find("활성 로어")
-        inst_pos = result.find("SAGA State Tracking")
-        assert live_pos < ep_pos < lore_pos < inst_pos
-
-    def test_empty_everything_still_has_instruction(self):
-        result = self._assemble()
-        assert result.strip() != ""
-        assert "SAGA State Tracking" in result
+        assert live_pos < ep_pos < lore_pos
 
     def _assemble(self, live_state="", episodes=None, active_lore=None, budget=1000, stable_prefix=""):
         return self.builder._assemble_dynamic(

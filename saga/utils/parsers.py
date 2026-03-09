@@ -154,6 +154,24 @@ def parse_llm_json(text: str) -> dict | None:
                     except (json.JSONDecodeError, ValueError):
                         pass
                     break
+        # 4) Truncated JSON recovery: try closing open strings/braces
+        fragment = text[start:]
+        for suffix in ('"}', '"}', '"}]}', '"}]}'  , '"]}', '"}'):
+            try:
+                result = json.loads(fragment + suffix)
+                if isinstance(result, dict):
+                    return result
+            except (json.JSONDecodeError, ValueError):
+                continue
+        # 5) Last resort: strip to last complete key-value, close braces
+        last_comma = fragment.rfind(',')
+        if last_comma > 0:
+            try:
+                result = json.loads(fragment[:last_comma] + '}')
+                if isinstance(result, dict):
+                    return result
+            except (json.JSONDecodeError, ValueError):
+                pass
     return None
 
 

@@ -43,7 +43,7 @@ from saga.llm.client import LLMClient
 from functools import partial
 from saga.agents.context_builder import ContextBuilder
 from saga.agents.post_turn import PostTurnExtractor
-from saga.agents.extractors import regex_flash_extract
+from saga.agents.extractors import narrative_extract
 from saga.agents.curator import CuratorRunner
 from saga.session import SessionManager
 from saga.utils.tokens import count_tokens, count_messages_tokens
@@ -207,7 +207,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize agents
     context_builder = ContextBuilder(sqlite_db, vector_db, md_cache, config)
-    extract_fn = partial(regex_flash_extract, sqlite_db=sqlite_db, llm_client=llm_client, config=config)
+    extract_fn = partial(narrative_extract, llm_client=llm_client, config=config)
     post_turn = PostTurnExtractor(sqlite_db, vector_db, md_cache, llm_client, config, extract_fn=extract_fn)
     curator = CuratorRunner(sqlite_db, vector_db, md_cache, llm_client, config)
 
@@ -355,8 +355,17 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     prefix_hash = hashlib.md5(prefix_content.encode()).hexdigest()[:8]
     logger.debug(f"[CacheDiag] msgs={msg_count} first_hash={first_msg_hash} prefix_hash={prefix_hash}")
 
+    # Extract non-text (image) parts before text-only conversion for internal processing.
+    # These will be restored after _build_cacheable_messages so the LLM receives images.
+    _multimodal_parts: dict[int, list] = {}
+    for i, m in enumerate(request.messages):
+        if m.role == "user" and isinstance(m.content, list):
+            non_text = [p for p in m.content if p.get("type") != "text"]
+            if non_text:
+                _multimodal_parts[i] = non_text
+
     t_ctx_start = time.time()
-    # Sub-A: Context Builder
+    # Sub-A: Context Builder (text-only for stabilizer / context_builder / token counting)
     messages_dicts = [{"role": m.role, "content": m.get_text_content()} for m in request.messages]
 
     # autoContinue detection BEFORE stabilize (stabilize replaces system content with canonical)
@@ -392,6 +401,15 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         context_result["dynamic_suffix"],
         lorebook_delta,
     )
+    # Restore multimodal content (images) that was stripped for internal processing
+    if _multimodal_parts:
+        for orig_idx, image_parts in _multimodal_parts.items():
+            if orig_idx < len(augmented_messages):
+                msg = augmented_messages[orig_idx]
+                text = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
+                msg["content"] = [{"type": "text", "text": text}] + image_parts
+        logger.info(f"[Trace] Multimodal: restored image parts for {len(_multimodal_parts)} message(s)")
+
     bp_count = sum(1 for m in augmented_messages if isinstance(m, dict) and m.get("cache_control"))
     logger.info(f"[Trace] Cacheable messages: {len(augmented_messages)} msgs, {bp_count} breakpoints")
 
@@ -480,7 +498,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         model=config.models.narration,
         messages=augmented_messages,
         temperature=request.temperature or 0.7,
-        max_tokens=request.max_tokens or 4096,
+        max_tokens=request.max_tokens or 8192,
         **gen_params,
     )
     t_llm_end = time.time()
@@ -570,7 +588,9 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         usage=Usage(
             prompt_tokens=messages_tokens,
             completion_tokens=count_tokens(clean_response),
-            total_tokens=messages_tokens + count_tokens(clean_response)
+            total_tokens=messages_tokens + count_tokens(clean_response),
+            cache_read_input_tokens=llm_client._last_cache_stats.get("cache_read", 0),
+            cache_creation_input_tokens=llm_client._last_cache_stats.get("cache_create", 0),
         )
     )
     return resp
@@ -597,7 +617,7 @@ async def _stream_response(session_id, session, augmented_messages, request, str
         model=config.models.narration,
         messages=augmented_messages,
         temperature=request.temperature or 0.7,
-        max_tokens=request.max_tokens or 4096,
+        max_tokens=request.max_tokens or 8192,
         **gen_params,
     ):
         full_response += chunk
@@ -794,10 +814,14 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
     is_claude = "claude" in config.models.narration.lower()
 
     if system_idx is not None and is_claude and config.prompt_caching.enabled:
+        # Cache control with optional extended TTL (requires extended-cache-ttl-2025-04-11 beta)
+        cache_ctrl = {"type": "ephemeral"}
+        if config.prompt_caching.cache_ttl:
+            cache_ctrl["ttl"] = config.prompt_caching.cache_ttl
 
         # BP1: system prompt (세션 내내 동일)
         messages[system_idx] = dict(messages[system_idx])
-        messages[system_idx]["cache_control"] = {"type": "ephemeral"}
+        messages[system_idx]["cache_control"] = cache_ctrl
 
         # 대화 히스토리에서 assistant 메시지 위치 찾기
         assistant_indices = [
@@ -808,18 +832,18 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
             # BP2: 중간 지점 assistant (긴 대화에서 앞부분 캐시)
             mid_idx = assistant_indices[len(assistant_indices) // 2]
             messages[mid_idx] = dict(messages[mid_idx])
-            messages[mid_idx]["cache_control"] = {"type": "ephemeral"}
+            messages[mid_idx]["cache_control"] = cache_ctrl
 
             # BP3: 마지막 assistant (직전 턴까지 캐시)
             last_idx = assistant_indices[-1]
             messages[last_idx] = dict(messages[last_idx])
-            messages[last_idx]["cache_control"] = {"type": "ephemeral"}
+            messages[last_idx]["cache_control"] = cache_ctrl
 
         elif len(assistant_indices) == 1:
             # 대화가 짧으면 BP2만
             last_idx = assistant_indices[0]
             messages[last_idx] = dict(messages[last_idx])
-            messages[last_idx]["cache_control"] = {"type": "ephemeral"}
+            messages[last_idx]["cache_control"] = cache_ctrl
 
         # 동적 컨텍스트: 마지막 user 메시지에 prepend로 삽입
         # ⚠️ system role로 삽입하면 _call_anthropic에서 system 배열로 호이스팅되어

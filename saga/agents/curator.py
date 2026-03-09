@@ -228,6 +228,7 @@ class CuratorRunner:
             ],
             temperature=0.4,
             max_tokens=512,
+            response_mime_type="application/json",
         )
 
         # Parse response
