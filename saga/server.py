@@ -804,9 +804,10 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
     BP1: system prompt (절대 안 변함 — SystemStabilizer가 보장)
     BP2: 대화 히스토리 중간 지점 assistant (이전 턴 내용은 안 변함)
     BP3: 대화 히스토리 마지막 assistant (직전 턴까지 안 변함)
-    Dynamic: md_prefix + lorebook_delta + dynamic_suffix → 마지막 user 메시지 직전에 삽입 (캐시 밖)
+    Dynamic: md_prefix + lorebook_delta + dynamic_suffix → 마지막 user 메시지에 prepend (캐시 밖)
 
-    핵심: 동적 컨텍스트를 BP 뒤에 배치해야 BP2/BP3 캐시가 유효함.
+    ⚠️ 슬라이딩 윈도우(메시지 앞에서 제거) 시 prefix가 바뀌어 캐시가 무효화됨.
+    메시지가 뒤에만 추가되는 일반 대화에서는 정상 작동.
     [시스템+BP1] → [대화...BP2...BP3] → [동적 컨텍스트] → [유저 입력]
     """
     messages = list(original_messages)

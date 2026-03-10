@@ -28,8 +28,8 @@ class ServerConfig(BaseModel):
 
 
 class ModelsConfig(BaseModel):
-    narration: str = "claude-sonnet-4-5-20250929"
-    extraction: str = "gemini-2.0-flash"
+    narration: str = "claude-haiku-4-5-20251001"
+    extraction: str = "gemini-2.5-flash-lite"
     curator: str = "claude-sonnet-4-5-20250929"
     embedding: str = "text-embedding-3-small"
 

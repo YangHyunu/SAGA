@@ -262,6 +262,81 @@ DUNGEON_FIRST_MES = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Scenario: 현대 던전 시뮬 (Modern Dungeon Sim)
+# ---------------------------------------------------------------------------
+
+MODERN_DUNGEON_SYSTEM_PROMPT = """Name: 현대 던전 시뮬
+
+Setting: Modern Korea where dungeons exist as regulated training grounds. Demons and humans coexist under strict rules — no killing inside dungeons. Defeated hunters are imprisoned and negotiated through the Association. Defeated Dungeon Masters lose a percentage of core mana.
+
+Genre: Dungeon Management, Urban Fantasy, Slice of Life
+
+{{user}} Objectives:
+- Raise the dungeon's rank
+- Contribute to the local community around the dungeon
+- Attract many raiders by creating specialized dungeon facilities
+
+{{user}} either works under the Abyss Company or opens their own dungeon to protect it.
+
+Key Organizations:
+- 헌터협회: Issues hunter licenses, handles all hunter matters. HQ in Gangnam, Seoul.
+- 심연 주식회사(Abyss Company): Demon corporation operating dungeons as franchises. Supplies monsters, management know-how, and support staff.
+- 던전 관리청(DMA): Government agency dispatching personnel to cooperate with demon dungeons and enforce regulations.
+- 글로벌 던전 솔루션: Budget competitor to Abyss Company. 20-50% cheaper but unreliable quality.
+
+Key NPCs:
+- 루비아(Rubia): 25F, 164cm, Abyss Inc. support staff. Succubus. Lazy, game-addicted, reluctant worker but secretly capable. Dispatched to {{user}}'s dungeon.
+- 최은지(Choi Eun-ji): 21F, 158cm, DMA cooperation officer. Pink hair, clumsy, inexperienced, easily deceived, naive.
+- 이오네(Ione): 23F, 154cm, A-Rank Dungeon Master. Runs a popular couples' dungeon.
+- 정재현(Jeong Jae-hyeon): 20M, 180cm, E-Rank hunter hero. Blond, persistent, always visits {{user}}'s dungeon.
+- 이지은(Lee Ji-eun): 20F, 155cm, E-Rank healer. Jae-hyeon's childhood friend.
+- 권세빈(Kwon Se-bin): 22F, 172cm, D-Rank hunter university student. Wary, Hanwha Eagles fan, metal bat.
+- 윤하늘(Yoon Ha-neul): 26F, 168cm, C-Rank hunter streamer. Energetic, uses drones for attacks and filming.
+
+Rules:
+- Hunters use conventional weapons (bows, swords, occasionally guns)
+- Low-rank hunters are mostly civilians with shoddy equipment
+- Reserve hunters from conscription system have very little motivation
+- 마왕24 convenience store staffed by cute 님프 employees (130-145cm, optimistic)
+
+Relationships:
+- 한결 doesn't like {{user}}
+- 이지은 likes 정재현
+- 정재현 likes 희원
+- 이오네 likes {{user}}"""
+
+MODERN_DUNGEON_LOREBOOK = """### 심연 주식회사 (Abyss Company)
+Demon corporation operating dungeons as franchises. Supplies high-quality monsters, management know-how, and assigns support staff like Rubia.
+
+### 던전 관리청 (DMA)
+Government agency for humans. Dispatches personnel to dungeons for cooperation and regulation enforcement. Aims to increase national defense by training hunters through dungeons.
+
+### 마왕24 편의점
+Abyss Company sends skilled 님프 employees to run convenience stores in dungeons. They are 130-145cm tall with optimistic personalities.
+
+### 헌터 등급 체계
+Hunters range from E-Rank (beginners, civilians) to S-Rank (elite). Low-rank hunters have shoddy equipment and clumsy combat. Reserve hunters from conscription have minimal motivation."""
+
+MODERN_DUNGEON_FIRST_MES = (
+    "새것 냄새가 진동했다.\n\n"
+    "갓 뽑아낸 공산품처럼 반질반질한 벽, 공기 중에 희미하게 떠도는 마력의 비린내, "
+    "그리고 그 모든 것을 감싸는 인공적인 정적. "
+    "심연 주식회사에서 제공하는 'D급 던전 스타터 패키지'가 설치된 공간은, "
+    "모험과 낭만보다는 잘 짜인 규격과 효율성의 냄새가 먼저 풍겼다.\n\n"
+    "바닥 한구석에는 아직 뜯지도 않은 '마왕24 편의점' 간판이 비닐에 싸인 채 놓여 있었다.\n\n"
+    "\"하아...\"\n"
+    "그 무채색의 공간 속에서, 유일하게 선명한 색을 가진 존재가 나른한 한숨을 내쉬었다.\n\n"
+    "루비아. 심연 주식회사 소속의 엘리트이자, 지금은 한낱 D급 던전의 지원 담당으로 좌천된 서큐버스.\n\n"
+    "그녀는 새로 발령받은 던전의 텅 빈 풍경을 지극히 따분하다는 붉은 눈으로 훑었다.\n\n"
+    "또각, 또각.\n"
+    "그때, 정적을 깨고 누군가의 발소리가 울렸다.\n\n"
+    "루비아는 소리가 나는 쪽으로 귀찮다는 듯 고개를 돌렸다. 던전의 새로운 주인일 터였다."
+)
+
+OPENER_MODERN_DUNGEON = "(던전 내부를 둘러보며) 여기가 내 던전인가... 루비아씨? 인사 좀 해주시죠."
+
+
 def _read_config_api_key(provider: str) -> str:
     """Read API key from config.yaml as fallback when env var is not set."""
     try:
@@ -277,6 +352,29 @@ def _read_config_api_key(provider: str) -> str:
     return ""
 
 
+def _resolve_api_key(provider: str) -> str:
+    """Resolve API key: env var first, then config.yaml fallback."""
+    env_map = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "google": "GOOGLE_API_KEY",
+    }
+    key = os.environ.get(env_map.get(provider, ""), "")
+    if not key:
+        key = _read_config_api_key(provider)
+    return key
+
+
+def _detect_provider(model: str) -> str:
+    """Detect LLM provider from model name."""
+    if model.startswith("claude"):
+        return "anthropic"
+    elif model.startswith("gemini"):
+        return "google"
+    else:
+        return "openai"
+
+
 async def generate_user_input(
     client: httpx.AsyncClient,
     conversation_history: list[dict],
@@ -285,7 +383,7 @@ async def generate_user_input(
     """Use LLM to generate the next user input based on conversation context.
 
     Calls LLM API directly (bypasses SAGA) to avoid session contamination.
-    The simulator's system prompt would otherwise pollute canonical_system_prompt.
+    Supports Anthropic, Google Gemini (OpenAI-compat endpoint), and OpenAI.
     """
     # Build condensed recent history (last 6 messages = 3 exchanges)
     recent_msgs: list[dict] = []
@@ -303,15 +401,15 @@ async def generate_user_input(
         "content": "위 대화에 이어서 유저의 다음 행동/대사를 생성하세요.",
     })
 
+    provider = _detect_provider(model)
+    api_key = _resolve_api_key(provider)
+    if not api_key:
+        print(f"    [sim] No API key for {provider}, using static fallback")
+        return "(주위를 둘러본다)"
+
     try:
-        if model.startswith("claude"):
+        if provider == "anthropic":
             # --- Anthropic Messages API ---
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-            if not api_key:
-                # Fallback: read from config.yaml
-                api_key = _read_config_api_key("anthropic")
-            if not api_key:
-                return "(주위를 둘러본다)"
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -331,13 +429,30 @@ async def generate_user_input(
             resp.raise_for_status()
             data = resp.json()
             generated = data["content"][0]["text"].strip()
+
+        elif provider == "google":
+            # --- Google Gemini via OpenAI-compatible endpoint ---
+            sim_messages = [{"role": "system", "content": USER_SIM_SYSTEM}] + recent_msgs
+            resp = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": sim_messages,
+                    "temperature": 0.9,
+                    "max_tokens": 200,
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            generated = data["choices"][0]["message"]["content"].strip()
+
         else:
-            # --- OpenAI-compatible API (GPT, Gemini via OpenAI compat, etc.) ---
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if not api_key:
-                api_key = _read_config_api_key("openai")
-            if not api_key:
-                return "(주위를 둘러본다)"
+            # --- OpenAI API ---
             sim_messages = [{"role": "system", "content": USER_SIM_SYSTEM}] + recent_msgs
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -361,7 +476,7 @@ async def generate_user_input(
         generated = re.sub(r'^(유저|User|플레이어)\s*[:：]\s*', '', generated)
         return generated if generated else "(주위를 둘러본다)"
     except Exception as e:
-        print(f"    [sim] LLM direct call failed: {e}")
+        print(f"    [sim] LLM direct call failed ({provider}/{model}): {e}")
         return f"(주위를 살펴보며) 그래서, 다음엔 뭘 하면 될까요?"
 
 
@@ -520,21 +635,30 @@ async def phase2_multi_turn(
     num_turns: int,
     model: str,
     sim_model: str,
+    context_window: int = 20,
 ) -> dict:
     """Run multi-turn RP via SSE streaming with dynamic user simulation.
 
     Turn 1 uses a hardcoded opener. Turns 2+ use an LLM to generate
     contextual user inputs based on the assistant's previous response.
+
+    context_window: max number of user/assistant message pairs to send.
+    Simulates RisuAI's context window sliding — older messages are dropped.
+    The full history is kept internally for the simulator and reporting.
     """
     system_content = char_data["system_prompt"]
     if char_data["lorebook_text"]:
         system_content += "\n\n" + char_data["lorebook_text"]
 
-    messages: list[dict] = [
-        {"role": "system", "content": system_content},
-    ]
+    system_msg = {"role": "system", "content": system_content}
+    first_mes = None
     if char_data.get("first_mes"):
-        messages.append({"role": "assistant", "content": char_data["first_mes"]})
+        first_mes = {"role": "assistant", "content": char_data["first_mes"]}
+
+    # Full history for simulator + reporting; sliced for SAGA requests
+    all_messages: list[dict] = []
+    if first_mes:
+        all_messages.append(first_mes)
 
     headers = {"Authorization": f"Bearer {api_key}"}
     turns: list[dict] = []
@@ -545,17 +669,29 @@ async def phase2_multi_turn(
             if i == 0:
                 prompt = opener
             else:
+                # Simulator sees full history for better context
+                sim_history = [system_msg] + all_messages
                 print(f"    [sim] Generating user input for turn {i+1}...")
                 prompt = await generate_user_input(
-                    client, messages, sim_model,
+                    client, sim_history, sim_model,
                 )
 
-            messages.append({"role": "user", "content": prompt})
+            all_messages.append({"role": "user", "content": prompt})
+
+            # --- Build sliced messages for SAGA (context window sliding) ---
+            # Keep system + first_mes + last N pairs of user/assistant
+            max_msgs = context_window * 2  # pairs → individual messages
+            recent = all_messages[-max_msgs:] if len(all_messages) > max_msgs else all_messages
+            send_messages = [system_msg]
+            if first_mes and len(all_messages) > max_msgs:
+                # Include first_mes even when sliding (RisuAI behavior)
+                send_messages.append(first_mes)
+            send_messages.extend(recent)
 
             # --- Send to SAGA (SSE streaming) ---
             body = {
                 "model": model,
-                "messages": messages,
+                "messages": send_messages,
                 "stream": True,
                 "temperature": 0.7,
                 "max_tokens": 8192,
@@ -564,6 +700,7 @@ async def phase2_multi_turn(
             result = await stream_chat_completion(client, saga_url, headers, body)
             assistant_text = result["content"]
 
+            msg_count = len(send_messages)
             turn_info = {
                 "turn": i + 1,
                 "user_input": prompt,
@@ -573,19 +710,21 @@ async def phase2_multi_turn(
                 "chunks": result["chunks"],
                 "error": result.get("error"),
                 "generated_input": i > 0,  # True if LLM-generated
+                "messages_sent": msg_count,
             }
             turns.append(turn_info)
 
             if result.get("error"):
                 print(f"  Turn {i+1}/{num_turns}: ERROR — {result['error'][:100]}")
-                messages.append({"role": "assistant", "content": assistant_text or "(error)"})
+                all_messages.append({"role": "assistant", "content": assistant_text or "(error)"})
             else:
-                messages.append({"role": "assistant", "content": assistant_text})
+                all_messages.append({"role": "assistant", "content": assistant_text})
                 input_preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 print(
                     f"  Turn {i+1}/{num_turns}: "
                     f"User=[{input_preview}] → {len(assistant_text)}ch "
                     f"{result['latency_ms']:.0f}ms {result['chunks']}chunks"
+                    f" [{msg_count}msgs]"
                 )
 
             # Wait for Sub-B async processing to complete
@@ -1283,14 +1422,15 @@ def print_report(
 async def main():
     parser = argparse.ArgumentParser(description="SAGA E2E Integration Test")
     parser.add_argument("--charx", type=str, help="Path to .charx character file")
-    parser.add_argument("--scenario", type=str, choices=["soyeon", "dungeon"], default="soyeon",
-                        help="Built-in scenario: soyeon (default) or dungeon")
+    parser.add_argument("--scenario", type=str, choices=["soyeon", "dungeon", "modern"], default="soyeon",
+                        help="Built-in scenario: soyeon (default), dungeon, or modern")
     parser.add_argument("--saga-url", default="http://localhost:8000", help="SAGA server URL")
     parser.add_argument("--api-key", default="saga-test-key-2026", help="Bearer API key")
     parser.add_argument("--turns", type=int, default=15, help="Number of RP turns")
     parser.add_argument("--letta-url", default="http://localhost:8283", help="Letta server URL")
     parser.add_argument("--model", default="claude-haiku-4-5-20251001", help="LLM model for RP narration")
-    parser.add_argument("--sim-model", default="claude-haiku-4-5-20251001", help="LLM model for user simulator")
+    parser.add_argument("--sim-model", default="gemini-2.5-flash-lite", help="LLM model for user simulator")
+    parser.add_argument("--context-window", type=int, default=20, help="Max turn pairs to send (simulates RisuAI sliding window)")
     parser.add_argument("--reset-db", action="store_true", help="Reset all data before running")
     parser.add_argument("--output-dir", default="tests/e2e_results", help="Output directory for results")
     parser.add_argument("--skip-letta", action="store_true", help="Skip Letta verification")
@@ -1314,6 +1454,15 @@ async def main():
             "first_mes": DUNGEON_FIRST_MES,
         }
         opener = OPENER_DUNGEON
+    elif args.scenario == "modern":
+        print("\n[1/4] Using built-in scenario: 현대 던전 시뮬")
+        char_data = {
+            "name": "현대 던전 시뮬",
+            "system_prompt": MODERN_DUNGEON_SYSTEM_PROMPT,
+            "lorebook_text": MODERN_DUNGEON_LOREBOOK,
+            "first_mes": MODERN_DUNGEON_FIRST_MES,
+        }
+        opener = OPENER_MODERN_DUNGEON
     else:
         print("\n[1/4] Using fallback character: 위지소연")
         char_data = {
@@ -1368,6 +1517,7 @@ async def main():
         args.turns,
         args.model,
         args.sim_model,
+        context_window=args.context_window,
     )
 
     # --- Phase 3 ---

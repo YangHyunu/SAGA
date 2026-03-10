@@ -64,6 +64,13 @@ class PostTurnExtractor:
                 user_input=user_input, assistant_output=response_text,
             )
 
+            # 5. live_state.md 갱신 (SQLite 캐릭터 상태 기반)
+            try:
+                player_ctx = await self.sqlite_db.query_player_context(session_id)
+                await self.md_cache.write_live(session_id, turn_number, {}, player_ctx)
+            except Exception as live_err:
+                logger.warning(f"[Sub-B] live_state.md write failed: {live_err}")
+
             logger.info(f"[Sub-B] Turn {turn_number} post-processing complete (importance={importance})")
 
         except Exception as e:

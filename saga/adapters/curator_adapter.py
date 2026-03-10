@@ -17,10 +17,23 @@ _BLOCK_INITIAL_VALUES: Dict[str, str] = {
 
 _SYSTEM_PROMPT = """당신은 RP 세션의 큐레이터입니다.
 N턴마다 호출되어 다음을 수행합니다:
-1. 서사 모순 탐지 (죽은 NPC 재등장, 위치 불일치 등)
+1. 서사 모순 탐지
 2. 장기 서사 흐름 정리 및 요약
 3. story.md가 너무 길면 압축 제안
 4. 이벤트 스케줄링 (복선 회수, 새 이벤트 제안)
+
+[모순 판단 기준]
+진짜 모순 (반드시 보고):
+- 죽었거나 퇴장한 NPC가 부활 설정 없이 재등장
+- 같은 시점에 캐릭터가 두 장소에 동시 존재
+- 파괴/소실된 아이템이 재사용됨
+- 확립된 사실이 근거 없이 뒤집힘
+
+정상 변화 (모순 아님, 보고하지 마세요):
+- 턴 경과에 따른 위치 이동
+- 캐릭터 감정/분위기 변화
+- 전투로 인한 HP 변동
+- 새로운 NPC 등장
 
 [Memory Block 업데이트 규칙]
 - narrative_summary: 매 큐레이션마다 전체 서사 요약을 최신 상태로 갱신하세요.
@@ -44,6 +57,7 @@ class LettaCuratorAdapter(CuratorAdapter):
         self.config = config
         self.client: Optional[Any] = None
         self._agents: Dict[str, Any] = {}  # session_id -> Letta Agent
+        self._used_sessions: set = set()  # sessions that completed at least one curation
         self._initialized = False
 
     def initialize(self):
@@ -99,6 +113,7 @@ class LettaCuratorAdapter(CuratorAdapter):
             memory_blocks=memory_blocks,
             system=_SYSTEM_PROMPT,
             include_base_tools=True,
+            message_buffer_autoclear=True,
         )
         self._agents[session_id] = agent
         logger.info(f"[Curator] Created new agent '{agent_name}' (id={agent.id}) with {len(memory_blocks)} memory block(s)")
@@ -233,7 +248,7 @@ class LettaCuratorAdapter(CuratorAdapter):
 
     def _build_prompt(self, session_id: str, context: dict) -> str:
         # Truncate individual sections to prevent context overflow
-        MAX_SECTION = 3000  # chars per section
+        MAX_SECTION = 1500  # chars per section (reduced from 3000 for token savings)
 
         graph_summary = (context.get('graph_summary', '없음') or '없음')[:MAX_SECTION]
         episodes_text = (context.get('episodes_text', '없음') or '없음')[:MAX_SECTION]

@@ -8,8 +8,8 @@ server:
 
 # === 모델 설정 ===
 models:
-  narration: "claude-sonnet-4-5-20250929"
-  extraction: "gemini-2.0-flash"
+  narration: "claude-haiku-4-5-20251001"
+  extraction: "gemini-2.5-flash-lite"
   curator: "claude-sonnet-4-5-20250929"
   embedding: "text-embedding-3-small"  # "local" → all-MiniLM-L6-v2
 

@@ -219,9 +219,9 @@ class CuratorRunner:
             '"lore_type": "character|location|item|event|world", "priority": 50}'
         )
 
-        # Call LLM
+        # Call LLM (use extraction model — e.g. Gemini Flash — for cost efficiency)
         response = await self.llm_client.call_llm(
-            model=self.config.models.curator,
+            model=self.config.models.extraction,
             messages=[
                 {"role": "system", "content": "당신은 RP 세계관 구축 전문가입니다. 에피소드와 관계 정보를 분석하여 일관성 있는 로어를 생성합니다. 반드시 JSON으로만 응답하세요."},
                 {"role": "user", "content": prompt},

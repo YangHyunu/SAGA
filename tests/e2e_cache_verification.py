@@ -247,6 +247,80 @@ DUNGEON_FIRST_MES = (
 
 OPENER_DUNGEON = "어둠 속에서 눈을 뜬다. 차가운 돌바닥 위에 누워 있다. 주위를 둘러본다."
 
+# ---------------------------------------------------------------------------
+# Modern Dungeon scenario (현대 던전 시뮬)
+# ---------------------------------------------------------------------------
+
+MODERN_DUNGEON_SYSTEM_PROMPT = """Name: 현대 던전 시뮬
+
+Setting: Modern Korea where dungeons exist as regulated training grounds. Demons and humans coexist under strict rules — no killing inside dungeons. Defeated hunters are imprisoned and negotiated through the Association. Defeated Dungeon Masters lose a percentage of core mana.
+
+Genre: Dungeon Management, Urban Fantasy, Slice of Life
+
+{{user}} Objectives:
+- Raise the dungeon's rank
+- Contribute to the local community around the dungeon
+- Attract many raiders by creating specialized dungeon facilities
+
+{{user}} either works under the Abyss Company or opens their own dungeon to protect it.
+
+Key Organizations:
+- 헌터협회: Issues hunter licenses, handles all hunter matters. HQ in Gangnam, Seoul.
+- 심연 주식회사(Abyss Company): Demon corporation operating dungeons as franchises. Supplies monsters, management know-how, and support staff.
+- 던전 관리청(DMA): Government agency dispatching personnel to cooperate with demon dungeons and enforce regulations.
+- 글로벌 던전 솔루션: Budget competitor to Abyss Company. 20-50% cheaper but unreliable quality.
+
+Key NPCs:
+- 루비아(Rubia): 25F, 164cm, Abyss Inc. support staff. Succubus. Lazy, game-addicted, reluctant worker but secretly capable. Dispatched to {{user}}'s dungeon.
+- 최은지(Choi Eun-ji): 21F, 158cm, DMA cooperation officer. Pink hair, clumsy, inexperienced, easily deceived, naive.
+- 이오네(Ione): 23F, 154cm, A-Rank Dungeon Master. Runs a popular couples' dungeon.
+- 정재현(Jeong Jae-hyeon): 20M, 180cm, E-Rank hunter hero. Blond, persistent, always visits {{user}}'s dungeon.
+- 이지은(Lee Ji-eun): 20F, 155cm, E-Rank healer. Jae-hyeon's childhood friend.
+- 권세빈(Kwon Se-bin): 22F, 172cm, D-Rank hunter university student. Wary, Hanwha Eagles fan, metal bat.
+- 윤하늘(Yoon Ha-neul): 26F, 168cm, C-Rank hunter streamer. Energetic, uses drones for attacks and filming.
+
+Rules:
+- Hunters use conventional weapons (bows, swords, occasionally guns)
+- Low-rank hunters are mostly civilians with shoddy equipment
+- Reserve hunters from conscription system have very little motivation
+- 마왕24 convenience store staffed by cute 님프 employees (130-145cm, optimistic)
+
+Relationships:
+- 한결 doesn't like {{user}}
+- 이지은 likes 정재현
+- 정재현 likes 희원
+- 이오네 likes {{user}}"""
+
+MODERN_DUNGEON_LOREBOOK = """### 심연 주식회사 (Abyss Company)
+Demon corporation operating dungeons as franchises. Supplies high-quality monsters, management know-how, and assigns support staff like Rubia.
+
+### 던전 관리청 (DMA)
+Government agency for humans. Dispatches personnel to dungeons for cooperation and regulation enforcement. Aims to increase national defense by training hunters through dungeons.
+
+### 마왕24 편의점
+Abyss Company sends skilled 님프 employees to run convenience stores in dungeons. They are 130-145cm tall with optimistic personalities.
+
+### 헌터 등급 체계
+Hunters range from E-Rank (beginners, civilians) to S-Rank (elite). Low-rank hunters have shoddy equipment and clumsy combat. Reserve hunters from conscription have minimal motivation."""
+
+MODERN_DUNGEON_FIRST_MES = (
+    "새것 냄새가 진동했다.\n\n"
+    "갓 뽑아낸 공산품처럼 반질반질한 벽, 공기 중에 희미하게 떠도는 마력의 비린내, "
+    "그리고 그 모든 것을 감싸는 인공적인 정적. "
+    "심연 주식회사에서 제공하는 'D급 던전 스타터 패키지'가 설치된 공간은, "
+    "모험과 낭만보다는 잘 짜인 규격과 효율성의 냄새가 먼저 풍겼다.\n\n"
+    "바닥 한구석에는 아직 뜯지도 않은 '마왕24 편의점' 간판이 비닐에 싸인 채 놓여 있었다.\n\n"
+    "\"하아...\"\n"
+    "그 무채색의 공간 속에서, 유일하게 선명한 색을 가진 존재가 나른한 한숨을 내쉬었다.\n\n"
+    "루비아. 심연 주식회사 소속의 엘리트이자, 지금은 한낱 D급 던전의 지원 담당으로 좌천된 서큐버스.\n\n"
+    "그녀는 새로 발령받은 던전의 텅 빈 풍경을 지극히 따분하다는 붉은 눈으로 훑었다.\n\n"
+    "또각, 또각.\n"
+    "그때, 정적을 깨고 누군가의 발소리가 울렸다.\n\n"
+    "루비아는 소리가 나는 쪽으로 귀찮다는 듯 고개를 돌렸다. 던전의 새로운 주인일 터였다."
+)
+
+OPENER_MODERN_DUNGEON = "(던전 내부를 둘러보며) 여기가 내 던전인가... 루비아씨? 인사 좀 해주시죠."
+
 OPENER_GENERIC = "(주위를 둘러보며) 여기가 어디죠? 처음 보는 곳이네요."
 
 USER_SIM_SYSTEM = """당신은 한국어 텍스트 RP의 숙련된 유저를 시뮬레이션합니다.
@@ -330,35 +404,78 @@ def _read_config_api_key(provider: str) -> str:
     return ""
 
 
+def _resolve_api_key(provider: str) -> str:
+    """Resolve API key: env var first, then config.yaml fallback."""
+    env_map = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "google": "GOOGLE_API_KEY",
+    }
+    key = os.environ.get(env_map.get(provider, ""), "")
+    if not key:
+        key = _read_config_api_key(provider)
+    return key
+
+
+def _detect_provider(model: str) -> str:
+    """Detect LLM provider from model name."""
+    if model.startswith("claude"):
+        return "anthropic"
+    elif model.startswith("gemini"):
+        return "google"
+    else:
+        return "openai"
+
+
 async def generate_user_input(client: httpx.AsyncClient, messages: list[dict], model: str) -> str:
-    """Use LLM to generate contextual user input (direct API, bypasses SAGA)."""
-    recent = [m for m in messages[-6:] if m["role"] != "system"]
-    if not recent or recent[-1]["role"] != "assistant":
-        recent.append({"role": "assistant", "content": "(대기 중)"})
-    recent.append({"role": "user", "content": "위 대화에 이어서 유저의 다음 행동/대사를 생성하세요."})
+    """Use LLM to generate contextual user input (direct API, bypasses SAGA).
+
+    Supports Anthropic, Google Gemini (OpenAI-compat endpoint), and OpenAI.
+    """
+    recent_msgs: list[dict] = []
+    for msg in messages[-6:]:
+        if msg["role"] == "system":
+            continue
+        recent_msgs.append({"role": msg["role"], "content": msg["content"][:1000]})
+
+    if not recent_msgs or recent_msgs[-1]["role"] != "assistant":
+        recent_msgs.append({"role": "assistant", "content": "(대기 중)"})
+    recent_msgs.append({"role": "user", "content": "위 대화에 이어서 유저의 다음 행동/대사를 생성하세요."})
+
+    provider = _detect_provider(model)
+    api_key = _resolve_api_key(provider)
+    if not api_key:
+        print(f"    [sim] No API key for {provider}, using static fallback")
+        return "(주위를 둘러본다)"
 
     try:
-        if model.startswith("claude"):
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "") or _read_config_api_key("anthropic")
-            if not api_key:
-                return "(주위를 둘러본다)"
+        if provider == "anthropic":
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": model, "system": USER_SIM_SYSTEM, "messages": recent, "temperature": 0.9, "max_tokens": 200},
+                json={"model": model, "system": USER_SIM_SYSTEM, "messages": recent_msgs, "temperature": 0.9, "max_tokens": 200},
                 timeout=60,
             )
             resp.raise_for_status()
             generated = resp.json()["content"][0]["text"].strip()
+
+        elif provider == "google":
+            sim_messages = [{"role": "system", "content": USER_SIM_SYSTEM}] + recent_msgs
+            resp = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": sim_messages, "temperature": 0.9, "max_tokens": 200},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            generated = resp.json()["choices"][0]["message"]["content"].strip()
+
         else:
-            api_key = os.environ.get("OPENAI_API_KEY", "") or _read_config_api_key("openai")
-            if not api_key:
-                return "(주위를 둘러본다)"
-            sim_msgs = [{"role": "system", "content": USER_SIM_SYSTEM}] + recent
+            sim_messages = [{"role": "system", "content": USER_SIM_SYSTEM}] + recent_msgs
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": model, "messages": sim_msgs, "temperature": 0.9, "max_tokens": 200},
+                json={"model": model, "messages": sim_messages, "temperature": 0.9, "max_tokens": 200},
                 timeout=60,
             )
             resp.raise_for_status()
@@ -367,7 +484,7 @@ async def generate_user_input(client: httpx.AsyncClient, messages: list[dict], m
         generated = re.sub(r'^(유저|User|플레이어)\s*[:：]\s*', '', generated)
         return generated if generated else "(주위를 둘러본다)"
     except Exception as e:
-        print(f"    [sim] Error: {e}")
+        print(f"    [sim] LLM direct call failed ({provider}/{model}): {e}")
         return "(주위를 살펴보며) 계속 이야기해줘."
 
 
@@ -381,12 +498,15 @@ AI 캐릭터의 응답을 평가하여 JSON으로 점수를 매겨주세요.
 평가 기준 (각 1~5점):
 1. character_consistency: 캐릭터 설정 유지 (말투, 성격, 행동 패턴)
 2. narrative_quality: 묘사 품질 (생동감, 오감 묘사, 감정 표현)
-3. context_coherence: 이전 대화 맥락 반영 (기억, 연속성, 모순 없음)
-4. immersion: 몰입감 (RP 컨벤션 준수, 메타 발언 없음, 자연스러움)
-5. creativity: 창의성 (반복 회피, 새로운 전개, 흥미로운 디테일)
+3. context_coherence: 이전 대화 맥락 반영 (단기 기억, 연속성, 모순 없음)
+4. memory_recall: 장기 기억력 (10턴 이전 사건/인물/장소를 적절히 참조하거나 일관성 유지. "과거 핵심 이벤트"가 제공되면 그 내용과의 일관성을 평가)
+5. immersion: 몰입감 (RP 컨벤션 준수, 메타 발언 없음, 자연스러움)
+6. creativity: 창의성 (반복 회피, 새로운 전개, 흥미로운 디테일)
+
+참고: "과거 핵심 이벤트"가 제공되지 않은 초반 턴에서는 memory_recall을 3 (보통)으로 평가하세요.
 
 반드시 아래 JSON 형식만 출력하세요. 다른 텍스트 없이:
-{"character_consistency": N, "narrative_quality": N, "context_coherence": N, "immersion": N, "creativity": N, "comment": "한줄 코멘트"}"""
+{"character_consistency": N, "narrative_quality": N, "context_coherence": N, "memory_recall": N, "immersion": N, "creativity": N, "comment": "한줄 코멘트"}"""
 
 
 async def judge_response(
@@ -395,9 +515,14 @@ async def judge_response(
     recent_messages: list[dict],
     assistant_response: str,
     model: str,
+    past_events: list[str] | None = None,
 ) -> dict | None:
-    """Evaluate response quality using LLM-as-a-Judge. Returns scores or None on failure."""
-    # Build judge input: char description + recent context + response to evaluate
+    """Evaluate response quality using LLM-as-a-Judge. Returns scores or None on failure.
+
+    past_events: list of "Turn N: <event summary>" strings from earlier turns,
+        used to evaluate long-term memory recall.
+    """
+    # Build judge input: char description + past events + recent context + response
     context_msgs = []
     for m in recent_messages[-6:]:
         if m["role"] == "system":
@@ -405,18 +530,30 @@ async def judge_response(
         context_msgs.append(f"[{m['role']}]: {m['content'][:300]}")
     context_str = "\n".join(context_msgs)
 
+    # Past events section (for memory_recall evaluation)
+    past_events_section = ""
+    if past_events:
+        past_events_section = (
+            f"## 과거 핵심 이벤트 (장기 기억 평가용)\n"
+            + "\n".join(past_events[-10:])  # Last 10 key events
+            + "\n\n"
+        )
+
     judge_input = (
         f"## 캐릭터 설정 (요약)\n{char_description[:500]}\n\n"
+        f"{past_events_section}"
         f"## 최근 대화 맥락\n{context_str}\n\n"
         f"## 평가 대상 응답\n{assistant_response[:1500]}\n\n"
         f"위 응답을 평가하고 JSON으로만 출력하세요."
     )
 
     try:
-        if model.startswith("claude"):
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "") or _read_config_api_key("anthropic")
-            if not api_key:
-                return None
+        provider = _detect_provider(model)
+        api_key = _resolve_api_key(provider)
+        if not api_key:
+            return None
+
+        if provider == "anthropic":
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
@@ -429,10 +566,25 @@ async def judge_response(
             )
             resp.raise_for_status()
             raw = resp.json()["content"][0]["text"].strip()
+
+        elif provider == "google":
+            resp = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": JUDGE_SYSTEM},
+                        {"role": "user", "content": judge_input},
+                    ],
+                    "temperature": 0, "max_tokens": 200,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+
         else:
-            api_key = os.environ.get("OPENAI_API_KEY", "") or _read_config_api_key("openai")
-            if not api_key:
-                return None
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -455,7 +607,7 @@ async def judge_response(
         scores = json.loads(raw)
 
         # Validate
-        required = ["character_consistency", "narrative_quality", "context_coherence", "immersion", "creativity"]
+        required = ["character_consistency", "narrative_quality", "context_coherence", "memory_recall", "immersion", "creativity"]
         for key in required:
             if key not in scores or not isinstance(scores[key], (int, float)):
                 return None
@@ -515,19 +667,31 @@ async def phase2_multi_turn(
     saga_url: str, api_key: str, char_data: dict, opener: str,
     num_turns: int, model: str, sim_model: str,
     judge_every: int = 10,
+    context_window: int = 20,
 ) -> dict:
-    """Run multi-turn RP, tracking cache stats and response quality per turn."""
+    """Run multi-turn RP, tracking cache stats and response quality per turn.
+
+    context_window: max number of user/assistant message pairs to send.
+        Simulates RisuAI sliding window behavior to prevent context overflow.
+    """
     system_content = char_data["system_prompt"]
     if char_data.get("lorebook_text"):
         system_content += "\n\n" + char_data["lorebook_text"]
 
-    messages = [{"role": "system", "content": system_content}]
+    system_msg = {"role": "system", "content": system_content}
+    first_mes = None
     if char_data.get("first_mes"):
-        messages.append({"role": "assistant", "content": char_data["first_mes"]})
+        first_mes = {"role": "assistant", "content": char_data["first_mes"]}
+
+    # all_messages: full history (excluding system), used for simulator context
+    all_messages: list[dict] = []
+    if first_mes:
+        all_messages.append(first_mes)
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     turns = []
     judge_results = []
+    key_events: list[str] = []  # "Turn N: <event summary>" for memory_recall evaluation
 
     async with httpx.AsyncClient() as client:
         for i in range(num_turns):
@@ -535,14 +699,24 @@ async def phase2_multi_turn(
             if i == 0:
                 user_input = opener
             else:
-                user_input = await generate_user_input(client, messages, sim_model)
+                sim_history = [system_msg] + all_messages
+                user_input = await generate_user_input(client, sim_history, sim_model)
 
-            messages.append({"role": "user", "content": user_input})
+            all_messages.append({"role": "user", "content": user_input})
+
+            # Sliding window: keep system + first_mes + last N pairs
+            max_msgs = context_window * 2  # pairs → individual messages
+            recent = all_messages[-max_msgs:] if len(all_messages) > max_msgs else all_messages
+            send_messages = [system_msg]
+            if first_mes and len(all_messages) > max_msgs:
+                # Include first_mes even when sliding (RisuAI behavior)
+                send_messages.append(first_mes)
+            send_messages.extend(recent)
 
             # Send to SAGA (non-streaming for cache stats in response)
             body = {
                 "model": model,
-                "messages": messages,
+                "messages": send_messages,
                 "temperature": 0.7,
                 "max_tokens": 4096,
                 "stream": False,
@@ -564,7 +738,7 @@ async def phase2_multi_turn(
                         "latency_ms": latency, "cache_read": 0, "cache_create": 0,
                     }
                     turns.append(turn_info)
-                    messages.append({"role": "assistant", "content": "(error)"})
+                    all_messages.append({"role": "assistant", "content": "(error)"})
                     print(f"  Turn {i+1:3d}/{num_turns}: ERROR {resp.status_code}")
                     continue
 
@@ -585,13 +759,17 @@ async def phase2_multi_turn(
                     or i == num_turns - 1
                 )
                 if is_judge_turn and assistant_text and len(assistant_text) > 50:
+                    # Only pass past_events for turns beyond 10 (enough history to judge memory)
+                    past_for_judge = key_events if i >= 10 else None
                     judge_score = await judge_response(
                         client, char_data["system_prompt"][:500],
-                        messages, assistant_text, sim_model,
+                        all_messages, assistant_text, sim_model,
+                        past_events=past_for_judge,
                     )
                     if judge_score:
                         judge_results.append({"turn": i + 1, **judge_score})
 
+                msg_count = len(send_messages)
                 turn_info = {
                     "turn": i + 1,
                     "user_input": user_input[:100],
@@ -604,9 +782,17 @@ async def phase2_multi_turn(
                     "reasonable_length": reasonable_length,
                     "judge": judge_score,
                     "error": None,
+                    "msg_count": msg_count,
                 }
                 turns.append(turn_info)
-                messages.append({"role": "assistant", "content": assistant_text})
+                all_messages.append({"role": "assistant", "content": assistant_text})
+
+                # Extract key event summary for memory_recall evaluation
+                # Take first meaningful sentence (skip short/error responses)
+                if reasonable_length and len(assistant_text) > 100:
+                    # First 150 chars as event summary
+                    event_summary = assistant_text[:150].replace("\n", " ").strip()
+                    key_events.append(f"Turn {i+1}: {event_summary}")
 
                 # Print progress
                 cache_indicator = ""
@@ -624,13 +810,14 @@ async def phase2_multi_turn(
                 print(
                     f"  Turn {i+1:3d}/{num_turns}: "
                     f"{len(assistant_text):5d}ch {latency:7.0f}ms"
+                    f" [{msg_count}msgs]"
                     f"{cache_indicator}{quality_flag}{judge_flag}"
                 )
 
             except Exception as e:
                 latency = (time.time() - t_start) * 1000
                 turns.append({"turn": i + 1, "error": str(e), "latency_ms": latency, "cache_read": 0, "cache_create": 0})
-                messages.append({"role": "assistant", "content": "(error)"})
+                all_messages.append({"role": "assistant", "content": "(error)"})
                 print(f"  Turn {i+1:3d}/{num_turns}: EXCEPTION {str(e)[:80]}")
 
             # Small delay for Sub-B processing
@@ -641,7 +828,7 @@ async def phase2_multi_turn(
         "turns": turns,
         "total_turns": len(turns),
         "successful_turns": sum(1 for t in turns if not t.get("error")),
-        "final_messages": messages,
+        "final_messages": [system_msg] + all_messages,
         "judge_results": judge_results,
     }
 
@@ -1149,14 +1336,14 @@ def save_results(phase1, phase2, cache_analysis, ttl_result, summary, output_dir
     if judge_results:
         lines.extend([
             "## Judge Evaluations\n",
-            "| Turn | Avg | Character | Narrative | Context | Immersion | Creativity | Comment |",
-            "|------|-----|-----------|-----------|---------|-----------|------------|---------|",
+            "| Turn | Avg | Character | Narrative | Context | Memory | Immersion | Creativity | Comment |",
+            "|------|-----|-----------|-----------|---------|--------|-----------|------------|---------|",
         ])
         for j in judge_results:
             lines.append(
                 f"| {j.get('turn', '?')} | {j.get('avg_score', 0):.1f} | "
                 f"{j.get('character_consistency', 0)} | {j.get('narrative_quality', 0)} | "
-                f"{j.get('context_coherence', 0)} | {j.get('immersion', 0)} | "
+                f"{j.get('context_coherence', 0)} | {j.get('memory_recall', 0)} | {j.get('immersion', 0)} | "
                 f"{j.get('creativity', 0)} | {j.get('comment', '')} |"
             )
         lines.append("")
@@ -1173,16 +1360,18 @@ def save_results(phase1, phase2, cache_analysis, ttl_result, summary, output_dir
 async def main():
     parser = argparse.ArgumentParser(description="SAGA E2E Cache Verification")
     parser.add_argument("--charx", type=str, help="Path to .charx character file")
-    parser.add_argument("--scenario", type=str, choices=["yui", "soyeon", "dungeon"], default="yui",
-                        help="Built-in scenario: yui (default), soyeon, or dungeon")
+    parser.add_argument("--scenario", type=str, choices=["yui", "soyeon", "dungeon", "modern"], default="yui",
+                        help="Built-in scenario: yui (default), soyeon, dungeon, or modern")
     parser.add_argument("--saga-url", default="http://localhost:8000")
     parser.add_argument("--api-key", default="saga-test-key-2026")
     parser.add_argument("--model", default="claude-haiku-4-5-20251001", help="Narration model")
-    parser.add_argument("--sim-model", default="claude-haiku-4-5-20251001", help="User simulator model")
+    parser.add_argument("--sim-model", default="gemini-2.5-flash-lite", help="User simulator model")
     parser.add_argument("--turns", type=int, default=100, help="Number of RP turns (default: 100)")
     parser.add_argument("--ttl-test", action="store_true", help="Run 6-min TTL verification")
     parser.add_argument("--ttl-wait", type=int, default=370, help="TTL wait seconds (default: 370)")
     parser.add_argument("--judge-every", type=int, default=10, help="Run LLM judge every N turns (default: 10)")
+    parser.add_argument("--context-window", type=int, default=20,
+                        help="Max message pairs to send (sliding window, default: 20)")
     parser.add_argument("--output-dir", default="tests/e2e_cache_results", help="Output directory")
     args = parser.parse_args()
 
@@ -1212,6 +1401,16 @@ async def main():
         }
         char_name = "아크리쉬"
         opener = OPENER_DUNGEON
+    elif args.scenario == "modern":
+        print(f"\n[1/4] Using built-in scenario: 현대 던전 시뮬")
+        char_data = {
+            "name": "현대 던전 시뮬",
+            "system_prompt": MODERN_DUNGEON_SYSTEM_PROMPT,
+            "lorebook_text": MODERN_DUNGEON_LOREBOOK,
+            "first_mes": MODERN_DUNGEON_FIRST_MES,
+        }
+        char_name = "현대던전"
+        opener = OPENER_MODERN_DUNGEON
     else:
         print(f"\n[1/4] Using built-in character: 유이 (Yui)")
         char_data = {
@@ -1231,6 +1430,7 @@ async def main():
     print(f"  Model    : {args.model}")
     print(f"  Sim model: {args.sim_model}")
     print(f"  Turns    : {args.turns}")
+    print(f"  Context  : {args.context_window} pairs (sliding window)")
     print(f"  TTL test : {'YES' if args.ttl_test else 'NO (--ttl-test)'}")
 
     # Reset
@@ -1257,6 +1457,7 @@ async def main():
         args.saga_url, args.api_key, char_data, opener,
         args.turns, args.model, args.sim_model,
         judge_every=args.judge_every,
+        context_window=args.context_window,
     )
 
     # Phase 3
