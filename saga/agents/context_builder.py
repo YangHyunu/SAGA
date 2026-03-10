@@ -179,7 +179,7 @@ class ContextBuilder:
                 remaining -= header_tokens
                 for ep in episodes[:10]:
                     marker = "[!]" if ep.get("importance", 0) >= 50 else "[R]"
-                    line = f"{marker} Turn {ep.get('turn', '?')}: {ep.get('summary', '')[:200]}\n"
+                    line = f"{marker} Turn {ep.get('turn', '?')}: {ep.get('summary', '')[:500]}\n"
                     line_tokens = count_tokens(line)
                     if line_tokens <= remaining:
                         episode_lines.append(line)
@@ -199,7 +199,7 @@ class ContextBuilder:
                 lore_lines = []
                 remaining -= header_tokens
                 for entry in active_lore[:5]:
-                    entry = entry[:400]  # 단일 로어 엔트리가 전체 예산 잠식 방지
+                    entry = entry[:800]  # 단일 로어 엔트리가 전체 예산 잠식 방지
                     entry_tokens = count_tokens(entry + "\n")
                     if entry_tokens <= remaining:
                         lore_lines.append(entry)
