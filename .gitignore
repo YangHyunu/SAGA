@@ -33,10 +33,21 @@ package-lock.json
 tests/ab_results/
 tests/e2e_results/
 
-# Benchmark results
+# Benchmark results & traces
 tests/bench_*_results.json
-tests/bench_report.json
-tests/bench_report.txt
+tests/bench_report*.json
+tests/bench_report*.txt
+tests/bench_trace*.json
+tests/eval_report.txt
+tests/e2e_cache_results/
+
+# Personal notes (not project docs)
+시행착오.md
+캐싱.md
+
+# Portfolio HTML (managed externally)
+index.html
+RESEARCH.html
 
 # OS
 .DS_Store
