@@ -1,11 +1,11 @@
-# SAGA RP Agent Proxy v3.0
+# SAGA — Stateful Context Engine for RP
 
-## Stateful Agent Architecture — Stateful RAG 기반 Context Engineering 프록시
+## 3-Agent 비동기 파이프라인 + Stateful RAG 기반 Context Engineering
 
 ---
 
-> **한 줄 요약:** 매 턴 1회 LLM 호출만으로 장기 RP 세션의 상태 일관성을 유지하는 OpenAI-compatible 프록시.
-> SQLite + 벡터 DB + .md 캐시를 조합하여, 프론트엔드 수정 없이 동적 컨텍스트를 자동 주입한다.
+> **한 줄 요약:** 매 턴 1회 LLM 호출만으로 장기 RP 세션의 상태 일관성을 유지하는 Stateful Context Engine.
+> SQLite + ChromaDB + .md 캐시를 조합하여, 프론트엔드 수정 없이 동적 컨텍스트를 자동 주입하는 OpenAI-compatible 서버.
 
 ---
 
@@ -907,6 +907,8 @@ tests/
   e2e_cache_verification.py # E2E 캐시 검증 (캐시 적중률, 레이턴시, LLM Judge, TTL)
   eval_llm_judge.py        # LLM-as-a-Judge 평가 스크립트 (8 시나리오)
   bench_prompt_caching.py  # 프롬프트 캐싱 벤치마크 (3-BP vs 자동 vs no-cache)
+  bench_cache_stability.py # 캐시 안정성 벤치마크
+  e2e_llm_client.py        # LLM 클라이언트 E2E 테스트
 ```
 
 ---
