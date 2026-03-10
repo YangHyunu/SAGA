@@ -30,7 +30,7 @@ Usage:
   # All options:
   python3 tests/e2e_cache_verification.py \\
     --saga-url http://localhost:8000 \\
-    --api-key saga-test-key-2026 \\
+    --api-key saga-test-key \\
     --model claude-haiku-4-5-20251001 \\
     --sim-model claude-haiku-4-5-20251001 \\
     --turns 100 --ttl-test
@@ -1363,7 +1363,7 @@ async def main():
     parser.add_argument("--scenario", type=str, choices=["yui", "soyeon", "dungeon", "modern"], default="yui",
                         help="Built-in scenario: yui (default), soyeon, dungeon, or modern")
     parser.add_argument("--saga-url", default="http://localhost:8000")
-    parser.add_argument("--api-key", default="saga-test-key-2026")
+    parser.add_argument("--api-key", default="saga-test-key")
     parser.add_argument("--model", default="claude-haiku-4-5-20251001", help="Narration model")
     parser.add_argument("--sim-model", default="gemini-2.5-flash-lite", help="User simulator model")
     parser.add_argument("--turns", type=int, default=100, help="Number of RP turns (default: 100)")

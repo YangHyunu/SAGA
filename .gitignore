@@ -41,13 +41,23 @@ tests/bench_trace*.json
 tests/eval_report.txt
 tests/e2e_cache_results/
 
-# Personal notes (not project docs)
+# Personal notes & research (not project docs)
 시행착오.md
 캐싱.md
+단순화.md
+RESEARCH.md
 
-# Portfolio HTML (managed externally)
-index.html
-RESEARCH.html
+# Portfolio / presentation files
+*.html
+!docker-compose.letta.yaml
+*.pptx
+SAGA_Portfolio*
+portfolio*
+pportfolio*
+양현우_*
+
+# Plugins (WIP, not tracked)
+plugins/
 
 # OS
 .DS_Store

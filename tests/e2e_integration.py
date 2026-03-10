@@ -15,7 +15,7 @@ Usage:
   python3 tests/e2e_integration.py \\
     --charx /path/to/char.charx \\
     --saga-url http://localhost:8000 \\
-    --api-key saga-test-key-2026 \\
+    --api-key saga-test-key \\
     --turns 10 \\
     --letta-url http://localhost:8283
 """
@@ -1425,7 +1425,7 @@ async def main():
     parser.add_argument("--scenario", type=str, choices=["soyeon", "dungeon", "modern"], default="soyeon",
                         help="Built-in scenario: soyeon (default), dungeon, or modern")
     parser.add_argument("--saga-url", default="http://localhost:8000", help="SAGA server URL")
-    parser.add_argument("--api-key", default="saga-test-key-2026", help="Bearer API key")
+    parser.add_argument("--api-key", default="saga-test-key", help="Bearer API key")
     parser.add_argument("--turns", type=int, default=15, help="Number of RP turns")
     parser.add_argument("--letta-url", default="http://localhost:8283", help="Letta server URL")
     parser.add_argument("--model", default="claude-haiku-4-5-20251001", help="LLM model for RP narration")
