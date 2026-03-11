@@ -30,7 +30,7 @@ class PostTurnExtractor:
         self.config = config
         self.extract_fn = extract_fn
 
-    async def extract_and_update(self, session_id: str, response_text: str, turn_number: int, user_input: str = ""):
+    async def extract_and_update(self, session_id: str, response_text: str, turn_number: int, user_input: str = "", scriptstate: dict | None = None):
         """Main entry point. Called as asyncio.create_task after response is sent."""
         logger.info(f"[Sub-B] ▶ Task started for turn {turn_number}, session={session_id}")
 
@@ -64,10 +64,20 @@ class PostTurnExtractor:
                 user_input=user_input, assistant_output=response_text,
             )
 
-            # 5. live_state.md 갱신 (SQLite 캐릭터 상태 기반)
+            # 5. live_state.md 갱신 (scriptstate 우선 → SQLite 폴백)
             try:
                 player_ctx = await self.sqlite_db.query_player_context(session_id)
-                await self.md_cache.write_live(session_id, turn_number, {}, player_ctx)
+                # scriptstate가 없으면 world_state KV에서 마지막 저장분 로드
+                ss = scriptstate
+                if not ss:
+                    raw = await self.sqlite_db.get_world_state_value(session_id, "scriptstate")
+                    if raw:
+                        import json
+                        try:
+                            ss = json.loads(raw)
+                        except (json.JSONDecodeError, ValueError):
+                            ss = None
+                await self.md_cache.write_live(session_id, turn_number, {}, player_ctx, scriptstate=ss)
             except Exception as live_err:
                 logger.warning(f"[Sub-B] live_state.md write failed: {live_err}")
 

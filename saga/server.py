@@ -256,7 +256,7 @@ app.add_middleware(
     ],
     allow_credentials=False,  # SAGA uses Bearer tokens, not cookies
     allow_methods=["POST", "GET", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "x-saga-session-id"],
+    allow_headers=["Authorization", "Content-Type", "x-saga-session-id", "x-saga-scriptstate"],
 )
 
 
@@ -340,6 +340,12 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     session = await session_mgr.get_or_create_session(session_id)
     session_id = session["id"]
     logger.info(f"[Trace] Session: {session_id} (via {session_src})")
+
+    # ── Scriptstate: RisuAI plugin passes game variables via sentinel or header ──
+    scriptstate = getattr(request, '_saga_scriptstate', None) or _extract_scriptstate(raw_request)
+    if scriptstate:
+        await sqlite_db.upsert_world_state(session_id, "scriptstate", json.dumps(scriptstate, ensure_ascii=False))
+        logger.info(f"[Trace] Scriptstate: {len(scriptstate)} vars received ({list(scriptstate.keys())[:5]})")
 
     # Token counting
     messages_tokens = count_messages_tokens([{"role": m.role, "content": m.get_text_content()} for m in request.messages])
@@ -462,7 +468,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
                 turn_number = await sqlite_db.increment_turn(session_id)
                 logger.info(f"[Trace] ━━━ DONE turn={turn_number} (stream) ━━━")
 
-                task_b = asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input))
+                task_b = asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input, scriptstate=scriptstate))
                 _background_tasks.add(task_b)
                 task_b.add_done_callback(_background_tasks.discard)
                 task_b.add_done_callback(_log_task_exception)
@@ -552,7 +558,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     logger.info(f"[Trace] ━━━ DONE turn={turn_number} total={( time.time() - t_start)*1000:.0f}ms ━━━")
 
     # Sub-B: async post-turn processing
-    task_b = asyncio.create_task(post_turn.extract_and_update(session_id, llm_response, turn_number, last_user_input))
+    task_b = asyncio.create_task(post_turn.extract_and_update(session_id, llm_response, turn_number, last_user_input, scriptstate=scriptstate))
     _background_tasks.add(task_b)
     task_b.add_done_callback(_background_tasks.discard)
     task_b.add_done_callback(_log_task_exception)
@@ -725,6 +731,7 @@ def _partial_state_marker(text: str) -> int:
 
 _SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 _SAGA_META_PREFIX = "@@SAGA:"
+_SAGA_STATE_PREFIX = "@@SAGA_STATE:"
 
 
 def _is_anthropic_model(model: str | None) -> bool:
@@ -744,11 +751,29 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
     if request.messages and request.messages[0].role == "system":
         text = request.messages[0].get_text_content()
         if text.startswith(_SAGA_META_PREFIX):
+            lines = text.split("\n")
+            # Line 0: @@SAGA:sid=abc&grp=0
+            meta_line = lines[0]
             meta = dict(
                 kv.split("=", 1)
-                for kv in text[len(_SAGA_META_PREFIX):].split("&")
+                for kv in meta_line[len(_SAGA_META_PREFIX):].split("&")
                 if "=" in kv
             )
+            # Line 1+: @@SAGA_STATE:{...} (optional scriptstate)
+            for line in lines[1:]:
+                if line.startswith(_SAGA_STATE_PREFIX):
+                    try:
+                        raw_state = json.loads(line[len(_SAGA_STATE_PREFIX):])
+                        if isinstance(raw_state, dict):
+                            # Store on request object for later retrieval
+                            request._saga_scriptstate = {
+                                (k.lstrip("$") if isinstance(k, str) else str(k)): v
+                                for k, v in raw_state.items()
+                            }
+                            logger.info(f"[Session] Plugin scriptstate: {len(request._saga_scriptstate)} vars")
+                    except (json.JSONDecodeError, ValueError) as e:
+                        logger.warning(f"[Session] Invalid scriptstate in sentinel: {e}")
+                    break
             sid = meta.get("sid", "").strip()
             if sid and _SESSION_ID_RE.match(sid):
                 request.messages.pop(0)  # strip sentinel before LLM forwarding
@@ -782,6 +807,32 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
             logger.debug(f"[Session] Hash result: {sid}")
             return sid
     return None
+
+
+def _extract_scriptstate(raw_request: Request) -> dict | None:
+    """Extract scriptstate from x-saga-scriptstate header (JSON-encoded dict).
+
+    RisuAI plugin sends: x-saga-scriptstate: {"$hp":"85","$location":"dungeon"}
+    The '$' prefix is stripped — RisuAI internally prefixes scriptstate keys with '$'.
+    Returns None if header is absent or invalid.
+    """
+    raw = raw_request.headers.get("x-saga-scriptstate", "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            logger.warning(f"[Scriptstate] Expected dict, got {type(data).__name__}")
+            return None
+        # Strip '$' prefix from keys (RisuAI internal convention)
+        cleaned = {}
+        for k, v in data.items():
+            key = k.lstrip("$") if isinstance(k, str) else str(k)
+            cleaned[key] = v
+        return cleaned if cleaned else None
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(f"[Scriptstate] Invalid JSON in header: {e}")
+        return None
 
 
 def _extract_gen_params(request: ChatCompletionRequest) -> dict:

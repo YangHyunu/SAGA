@@ -1,6 +1,8 @@
-"""Unit tests for PostTurnExtractor static methods — narrative-based logic."""
+"""Unit tests for PostTurnExtractor static methods + MdCache write_live with scriptstate."""
+import os
 import pytest
 from saga.agents.post_turn import PostTurnExtractor
+from saga.storage.md_cache import MdCache
 
 
 # ============================================================
@@ -58,3 +60,88 @@ class TestCalculateImportance:
         }
         # 10 + 35 + 30 + 10 = 85
         assert PostTurnExtractor._calculate_importance(narrative) == 85
+
+
+# ============================================================
+# MdCache.write_live with scriptstate
+# ============================================================
+
+class TestWriteLiveScriptstate:
+    @pytest.fixture(autouse=True)
+    def setup_md_cache(self, tmp_path):
+        self.md_cache = MdCache(cache_dir=str(tmp_path))
+        self.session_id = "test-session"
+        os.makedirs(self.md_cache.get_session_dir(self.session_id), exist_ok=True)
+
+    def _read_live(self):
+        filepath = os.path.join(
+            self.md_cache.get_session_dir(self.session_id), "live_state.md"
+        )
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read()
+
+    async def test_scriptstate_overrides_player_context(self):
+        await (
+            self.md_cache.write_live(
+                self.session_id, 5,
+                {},
+                {"location": "town", "hp": 100, "max_hp": 100, "mood": "neutral"},
+                scriptstate={"location": "dungeon", "hp": "85", "max_hp": "100", "mood": "angry"},
+            )
+        )
+        content = self._read_live()
+        assert "dungeon" in content
+        assert "85" in content
+        assert "angry" in content
+        assert "town" not in content
+
+    async def test_custom_vars_rendered(self):
+        await (
+            self.md_cache.write_live(
+                self.session_id, 3, {}, {},
+                scriptstate={"gold": "500", "quest_stage": "3", "reputation": "friendly"},
+            )
+        )
+        content = self._read_live()
+        assert "캐릭터 변수" in content
+        assert "gold: 500" in content
+        assert "quest_stage: 3" in content
+        assert "reputation: friendly" in content
+
+    async def test_handled_keys_not_in_custom_vars(self):
+        """Keys like hp, location, mood should NOT duplicate in custom vars section."""
+        await (
+            self.md_cache.write_live(
+                self.session_id, 2, {}, {},
+                scriptstate={"hp": "50", "max_hp": "100", "location": "forest", "mood": "calm", "gold": "200"},
+            )
+        )
+        content = self._read_live()
+        # gold should be in custom vars
+        assert "gold: 200" in content
+        # hp should be in status, not duplicated in custom vars
+        assert content.count("hp") == 1 or "HP: 50/100" in content
+
+    async def test_none_scriptstate_uses_player_context(self):
+        await (
+            self.md_cache.write_live(
+                self.session_id, 1, {}, {"location": "castle"},
+                scriptstate=None,
+            )
+        )
+        content = self._read_live()
+        assert "castle" in content
+        assert "캐릭터 변수" not in content
+
+    async def test_empty_values_filtered_from_custom_vars(self):
+        await (
+            self.md_cache.write_live(
+                self.session_id, 1, {}, {},
+                scriptstate={"gold": "500", "empty_var": "", "zero_var": "0", "null_var": None},
+            )
+        )
+        content = self._read_live()
+        assert "gold: 500" in content
+        assert "empty_var" not in content
+        assert "zero_var" not in content
+        assert "null_var" not in content
