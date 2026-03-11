@@ -353,16 +353,6 @@ class SQLiteDB:
     def _char_id(self, session_id: str, name: str) -> str:
         return hashlib.md5(f"{session_id}:{name}".encode()).hexdigest()[:12]
 
-    async def ensure_player(self, session_id: str, name: str = ""):
-        """Create player character if not exists. Safe to call every turn."""
-        char_id = self._char_id(session_id, name)
-        async with self._db.execute(
-            "SELECT id FROM characters WHERE id = ?", (char_id,)
-        ) as cursor:
-            if await cursor.fetchone() is None:
-                logger.info(f"[DB] ensure_player: creating player char for session={session_id} name={name!r}")
-                await self.create_character(session_id, name, is_player=True)
-
     async def create_character(
         self,
         session_id: str,
@@ -404,45 +394,6 @@ class SQLiteDB:
                 return None
             return dict(row)
 
-    async def update_character_location(
-        self, session_id: str, name: str, location: str, turn: int
-    ):
-        char_id = self._char_id(session_id, name)
-        now = datetime.utcnow().isoformat()
-        await self._db.execute(
-            """
-            UPDATE characters SET location = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (location, now, char_id),
-        )
-        await self._db.commit()
-
-    async def update_character_hp(self, session_id: str, hp_delta: int):
-        """Update the player character's HP by delta."""
-        now = datetime.utcnow().isoformat()
-        await self._db.execute(
-            """
-            UPDATE characters
-            SET hp = MAX(0, MIN(max_hp, hp + ?)), updated_at = ?
-            WHERE session_id = ? AND is_player = TRUE
-            """,
-            (hp_delta, now, session_id),
-        )
-        await self._db.commit()
-
-    async def update_character_mood(self, session_id: str, mood: str):
-        """Update the player character's mood."""
-        now = datetime.utcnow().isoformat()
-        await self._db.execute(
-            """
-            UPDATE characters SET mood = ?, updated_at = ?
-            WHERE session_id = ? AND is_player = TRUE
-            """,
-            (mood, now, session_id),
-        )
-        await self._db.commit()
-
     async def get_session_characters(self, session_id: str) -> list[dict]:
         async with self._db.execute(
             "SELECT * FROM characters WHERE session_id = ? ORDER BY is_player DESC, name ASC",
@@ -454,50 +405,6 @@ class SQLiteDB:
     # ------------------------------------------------------------------ #
     # Relationships
     # ------------------------------------------------------------------ #
-
-    async def create_relationship(
-        self,
-        session_id: str,
-        from_name: str,
-        to_name: str,
-        rel_type: str = "met",
-        strength: int = 30,
-    ):
-        now = datetime.utcnow().isoformat()
-        await self._db.execute(
-            """
-            INSERT INTO relationships (session_id, from_name, to_name, rel_type, strength, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, from_name, to_name) DO UPDATE SET
-                rel_type = excluded.rel_type,
-                strength = excluded.strength,
-                updated_at = excluded.updated_at
-            """,
-            (session_id, from_name, to_name, rel_type, strength, now),
-        )
-        await self._db.commit()
-
-    async def update_relationship(
-        self,
-        session_id: str,
-        from_name: str,
-        to_name: str,
-        rel_type: str,
-        delta: int = 0,
-    ):
-        now = datetime.utcnow().isoformat()
-        await self._db.execute(
-            """
-            INSERT INTO relationships (session_id, from_name, to_name, rel_type, strength, updated_at)
-            VALUES (?, ?, ?, ?, 30 + ?, ?)
-            ON CONFLICT(session_id, from_name, to_name) DO UPDATE SET
-                rel_type = excluded.rel_type,
-                strength = MAX(-100, MIN(100, strength + ?)),
-                updated_at = excluded.updated_at
-            """,
-            (session_id, from_name, to_name, rel_type, delta, now, delta),
-        )
-        await self._db.commit()
 
     async def get_relationships(
         self, session_id: str, character_name: str | None = None
@@ -524,21 +431,6 @@ class SQLiteDB:
     # Locations
     # ------------------------------------------------------------------ #
 
-    def _loc_id(self, session_id: str, name: str) -> str:
-        return hashlib.md5(f"{session_id}:loc:{name}".encode()).hexdigest()[:12]
-
-    async def create_location(self, session_id: str, name: str, turn: int = 0):
-        loc_id = self._loc_id(session_id, name)
-        now = datetime.utcnow().isoformat()
-        await self._db.execute(
-            """
-            INSERT OR IGNORE INTO locations (id, session_id, name, first_visit_turn, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (loc_id, session_id, name, turn, now),
-        )
-        await self._db.commit()
-
     async def get_locations(self, session_id: str) -> list[dict]:
         async with self._db.execute(
             "SELECT * FROM locations WHERE session_id = ? ORDER BY first_visit_turn ASC",
@@ -550,38 +442,6 @@ class SQLiteDB:
     # ------------------------------------------------------------------ #
     # Events
     # ------------------------------------------------------------------ #
-
-    def _event_id(self, session_id: str, name: str) -> str:
-        return hashlib.md5(f"{session_id}:evt:{name}".encode()).hexdigest()[:12]
-
-    async def create_event(
-        self,
-        session_id: str,
-        name: str,
-        event_type: str = "",
-        description: str = "",
-        turn: int = 0,
-        importance: int = 10,
-        entities: list | None = None,
-    ):
-        event_id = self._event_id(session_id, name)
-        entities_json = json.dumps(entities or [], ensure_ascii=False)
-        now = datetime.utcnow().isoformat()
-        await self._db.execute(
-            """
-            INSERT INTO events
-                (id, session_id, name, event_type, description, turn, importance, entities, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                event_type = excluded.event_type,
-                description = excluded.description,
-                turn = excluded.turn,
-                importance = excluded.importance,
-                entities = excluded.entities
-            """,
-            (event_id, session_id, name, event_type, description, turn, importance, entities_json, now),
-        )
-        await self._db.commit()
 
     async def get_recent_events(self, session_id: str, limit: int = 5) -> list[dict]:
         async with self._db.execute(
