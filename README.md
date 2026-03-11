@@ -14,7 +14,7 @@
 | **LOCOMO** (ACL 2024) | 304 QA, 2개 대화 | Judge 2.02/5 | **3.12/5** (+54%) | multi-hop 4.71/5 |
 | **LongMemEval** (ICLR 2025) | 499 QA, 인스턴스당 ~53세션 | 21.2% | **63.5%** (+42.3%p) | truncation vs retrieval 비교 |
 
-동일 모델(gemini-2.5-flash), 동일 조건 A/B 비교. 모델을 바꾼 게 아니라 컨텍스트 구성 전략만 다르다.
+동일 모델(gemini-2.5-flash), 동일 조건 A/B 비교. Baseline은 최근 대화를 그대로 잘라 넣고(truncation), SAGA는 벡터 검색으로 질문과 관련된 대화만 골라 넣는다(retrieval). 모델을 바꾼 게 아니라 **컨텍스트에 어떤 정보를 넣느냐**만 다르다.
 
 ---
 
