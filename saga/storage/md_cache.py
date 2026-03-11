@@ -68,14 +68,19 @@ class MdCache:
         turn: int,
         state_block: dict,
         player_context: dict,
+        scriptstate: dict | None = None,
     ):
         """Build and write live_state.md from current game state.
         Called every turn by Post-Turn.
 
-        state_block keys used: location, hp, max_hp, mood, nearby_npcs, recent_events
-        player_context keys used: (merged on top of state_block if present)
+        Data priority: scriptstate (RisuAI client vars) > state_block/player_context (SAGA internal).
+        scriptstate keys are flexible — whatever the card creator defined (hp, location, mood, etc.).
         """
         merged = {**state_block, **player_context}
+
+        # Scriptstate override: RisuAI variables take priority
+        if scriptstate:
+            merged.update(scriptstate)
 
         location = merged.get("location", "알 수 없음")
         hp = merged.get("hp", "?")
@@ -99,6 +104,16 @@ class MdCache:
             lines.append("## 현재 상태")
             lines.extend(status_lines)
             lines.append("")
+
+        # Scriptstate: render custom variables not already handled above
+        if scriptstate:
+            _handled = {"location", "hp", "max_hp", "mood", "nearby_npcs", "recent_events"}
+            custom_vars = {k: v for k, v in scriptstate.items() if k not in _handled and v not in (None, "", "0", 0)}
+            if custom_vars:
+                lines.append("## 캐릭터 변수")
+                for k, v in custom_vars.items():
+                    lines.append(f"- {k}: {v}")
+                lines.append("")
 
         if nearby_npcs:
             lines.append("## 주변 인물")

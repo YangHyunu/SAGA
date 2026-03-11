@@ -6,8 +6,6 @@ import logging
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
-from saga.world.loader import WorldLoader
-
 logger = logging.getLogger(__name__)
 
 
@@ -17,7 +15,6 @@ class SessionManager:
         self.vector_db = vector_db
         self.md_cache = md_cache
         self.config = config
-        self.world_loader = WorldLoader(sqlite_db, vector_db, md_cache)
 
     async def get_or_create_session(self, session_id: str | None = None) -> dict:
         """Get existing session or create new one."""
@@ -29,12 +26,6 @@ class SessionManager:
         # Create new session
         new_id = session_id or str(uuid.uuid4())[:8]
         session = await self.sqlite_db.create_session(new_id, name=f"Session {new_id}")
-
-        # Load default world
-        world_dir = os.path.join("data", "worlds", self.config.session.default_world)
-        if os.path.exists(world_dir):
-            await self.world_loader.load_world(new_id, world_dir)
-
         logger.info(f"[Session] Created new session: {new_id}")
         return session
 
@@ -69,8 +60,4 @@ class SessionManager:
             except Exception as e:
                 logger.warning(f"[Session] Letta cleanup failed for {session_id}: {e}")
 
-        # Re-bootstrap
-        world_dir = os.path.join("data", "worlds", self.config.session.default_world)
-        if os.path.exists(world_dir):
-            await self.world_loader.load_world(session_id, world_dir)
         logger.info(f"[Session] Reset session: {session_id}")

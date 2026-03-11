@@ -300,7 +300,7 @@ class TestStreamingStateFilter:
             mock_cfg.curator.enabled = False
 
             collected = ""
-            async for sse_line in _stream_response("test-sess", {}, [], mock_request, "hi"):
+            async for sse_line in _stream_response("test-sess", {}, [], mock_request, {"full_response": ""}):
                 if sse_line.startswith("data: ") and sse_line.strip() not in ("data: [DONE]",):
                     try:
                         data = json.loads(sse_line[6:])

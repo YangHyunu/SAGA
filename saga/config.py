@@ -28,8 +28,8 @@ class ServerConfig(BaseModel):
 
 
 class ModelsConfig(BaseModel):
-    narration: str = "claude-sonnet-4-5-20250929"
-    extraction: str = "gemini-2.0-flash"
+    narration: str = "claude-haiku-4-5-20251001"
+    extraction: str = "gemini-2.5-flash-lite"
     curator: str = "claude-sonnet-4-5-20250929"
     embedding: str = "text-embedding-3-small"
 
@@ -48,7 +48,6 @@ class TokenBudgetConfig(BaseModel):
 class MdCacheConfig(BaseModel):
     enabled: bool = True
     cache_dir: str = "cache/sessions"
-    files: List[str] = Field(default_factory=lambda: ["state.md", "relations.md", "story.md", "lore.md"])
     atomic_write: bool = True
 
 
@@ -57,6 +56,7 @@ class PromptCachingConfig(BaseModel):
     strategy: str = "md_prefix"
     stabilize_system: bool = True
     canonical_similarity_threshold: float = 0.30
+    cache_ttl: str = "1h"  # extended-cache-ttl: "5m" (default) or "1h"
 
 
 class CuratorConfig(BaseModel):

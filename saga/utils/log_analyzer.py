@@ -10,8 +10,7 @@ import re
 import sys
 import json
 import argparse
-from collections import Counter, defaultdict
-from datetime import datetime
+from collections import Counter
 from pathlib import Path
 
 # ──────────────────────────────────────────────

@@ -40,8 +40,10 @@ from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.llm.client import LLMClient
+from functools import partial
 from saga.agents.context_builder import ContextBuilder
 from saga.agents.post_turn import PostTurnExtractor
+from saga.agents.extractors import narrative_extract
 from saga.agents.curator import CuratorRunner
 from saga.session import SessionManager
 from saga.utils.tokens import count_tokens, count_messages_tokens
@@ -205,7 +207,8 @@ async def lifespan(app: FastAPI):
 
     # Initialize agents
     context_builder = ContextBuilder(sqlite_db, vector_db, md_cache, config)
-    post_turn = PostTurnExtractor(sqlite_db, vector_db, md_cache, llm_client, config)
+    extract_fn = partial(narrative_extract, llm_client=llm_client, config=config)
+    post_turn = PostTurnExtractor(sqlite_db, vector_db, md_cache, llm_client, config, extract_fn=extract_fn)
     curator = CuratorRunner(sqlite_db, vector_db, md_cache, llm_client, config)
 
     if config.curator.enabled:
@@ -253,7 +256,7 @@ app.add_middleware(
     ],
     allow_credentials=False,  # SAGA uses Bearer tokens, not cookies
     allow_methods=["POST", "GET", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "x-saga-session-id"],
+    allow_headers=["Authorization", "Content-Type", "x-saga-session-id", "x-saga-scriptstate"],
 )
 
 
@@ -338,6 +341,12 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     session_id = session["id"]
     logger.info(f"[Trace] Session: {session_id} (via {session_src})")
 
+    # ── Scriptstate: RisuAI plugin passes game variables via sentinel or header ──
+    scriptstate = getattr(request, '_saga_scriptstate', None) or _extract_scriptstate(raw_request)
+    if scriptstate:
+        await sqlite_db.upsert_world_state(session_id, "scriptstate", json.dumps(scriptstate, ensure_ascii=False))
+        logger.info(f"[Trace] Scriptstate: {len(scriptstate)} vars received ({list(scriptstate.keys())[:5]})")
+
     # Token counting
     messages_tokens = count_messages_tokens([{"role": m.role, "content": m.get_text_content()} for m in request.messages])
     remaining_budget = config.token_budget.total_context_max - messages_tokens
@@ -352,8 +361,17 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     prefix_hash = hashlib.md5(prefix_content.encode()).hexdigest()[:8]
     logger.debug(f"[CacheDiag] msgs={msg_count} first_hash={first_msg_hash} prefix_hash={prefix_hash}")
 
+    # Extract non-text (image) parts before text-only conversion for internal processing.
+    # These will be restored after _build_cacheable_messages so the LLM receives images.
+    _multimodal_parts: dict[int, list] = {}
+    for i, m in enumerate(request.messages):
+        if m.role == "user" and isinstance(m.content, list):
+            non_text = [p for p in m.content if p.get("type") != "text"]
+            if non_text:
+                _multimodal_parts[i] = non_text
+
     t_ctx_start = time.time()
-    # Sub-A: Context Builder
+    # Sub-A: Context Builder (text-only for stabilizer / context_builder / token counting)
     messages_dicts = [{"role": m.role, "content": m.get_text_content()} for m in request.messages]
 
     # autoContinue detection BEFORE stabilize (stabilize replaces system content with canonical)
@@ -389,6 +407,15 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         context_result["dynamic_suffix"],
         lorebook_delta,
     )
+    # Restore multimodal content (images) that was stripped for internal processing
+    if _multimodal_parts:
+        for orig_idx, image_parts in _multimodal_parts.items():
+            if orig_idx < len(augmented_messages):
+                msg = augmented_messages[orig_idx]
+                text = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
+                msg["content"] = [{"type": "text", "text": text}] + image_parts
+        logger.info(f"[Trace] Multimodal: restored image parts for {len(_multimodal_parts)} message(s)")
+
     bp_count = sum(1 for m in augmented_messages if isinstance(m, dict) and m.get("cache_control"))
     logger.info(f"[Trace] Cacheable messages: {len(augmented_messages)} msgs, {bp_count} breakpoints")
 
@@ -441,7 +468,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
                 turn_number = await sqlite_db.increment_turn(session_id)
                 logger.info(f"[Trace] ━━━ DONE turn={turn_number} (stream) ━━━")
 
-                task_b = asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input))
+                task_b = asyncio.create_task(post_turn.extract_and_update(session_id, full_response, turn_number, last_user_input, scriptstate=scriptstate))
                 _background_tasks.add(task_b)
                 task_b.add_done_callback(_background_tasks.discard)
                 task_b.add_done_callback(_log_task_exception)
@@ -477,7 +504,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         model=config.models.narration,
         messages=augmented_messages,
         temperature=request.temperature or 0.7,
-        max_tokens=request.max_tokens or 4096,
+        max_tokens=request.max_tokens or 8192,
         **gen_params,
     )
     t_llm_end = time.time()
@@ -531,7 +558,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     logger.info(f"[Trace] ━━━ DONE turn={turn_number} total={( time.time() - t_start)*1000:.0f}ms ━━━")
 
     # Sub-B: async post-turn processing
-    task_b = asyncio.create_task(post_turn.extract_and_update(session_id, llm_response, turn_number, last_user_input))
+    task_b = asyncio.create_task(post_turn.extract_and_update(session_id, llm_response, turn_number, last_user_input, scriptstate=scriptstate))
     _background_tasks.add(task_b)
     task_b.add_done_callback(_background_tasks.discard)
     task_b.add_done_callback(_log_task_exception)
@@ -567,7 +594,9 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         usage=Usage(
             prompt_tokens=messages_tokens,
             completion_tokens=count_tokens(clean_response),
-            total_tokens=messages_tokens + count_tokens(clean_response)
+            total_tokens=messages_tokens + count_tokens(clean_response),
+            cache_read_input_tokens=llm_client._last_cache_stats.get("cache_read", 0),
+            cache_creation_input_tokens=llm_client._last_cache_stats.get("cache_create", 0),
         )
     )
     return resp
@@ -594,7 +623,7 @@ async def _stream_response(session_id, session, augmented_messages, request, str
         model=config.models.narration,
         messages=augmented_messages,
         temperature=request.temperature or 0.7,
-        max_tokens=request.max_tokens or 4096,
+        max_tokens=request.max_tokens or 8192,
         **gen_params,
     ):
         full_response += chunk
@@ -702,6 +731,7 @@ def _partial_state_marker(text: str) -> int:
 
 _SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 _SAGA_META_PREFIX = "@@SAGA:"
+_SAGA_STATE_PREFIX = "@@SAGA_STATE:"
 
 
 def _is_anthropic_model(model: str | None) -> bool:
@@ -721,11 +751,29 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
     if request.messages and request.messages[0].role == "system":
         text = request.messages[0].get_text_content()
         if text.startswith(_SAGA_META_PREFIX):
+            lines = text.split("\n")
+            # Line 0: @@SAGA:sid=abc&grp=0
+            meta_line = lines[0]
             meta = dict(
                 kv.split("=", 1)
-                for kv in text[len(_SAGA_META_PREFIX):].split("&")
+                for kv in meta_line[len(_SAGA_META_PREFIX):].split("&")
                 if "=" in kv
             )
+            # Line 1+: @@SAGA_STATE:{...} (optional scriptstate)
+            for line in lines[1:]:
+                if line.startswith(_SAGA_STATE_PREFIX):
+                    try:
+                        raw_state = json.loads(line[len(_SAGA_STATE_PREFIX):])
+                        if isinstance(raw_state, dict):
+                            # Store on request object for later retrieval
+                            request._saga_scriptstate = {
+                                (k.lstrip("$") if isinstance(k, str) else str(k)): v
+                                for k, v in raw_state.items()
+                            }
+                            logger.info(f"[Session] Plugin scriptstate: {len(request._saga_scriptstate)} vars")
+                    except (json.JSONDecodeError, ValueError) as e:
+                        logger.warning(f"[Session] Invalid scriptstate in sentinel: {e}")
+                    break
             sid = meta.get("sid", "").strip()
             if sid and _SESSION_ID_RE.match(sid):
                 request.messages.pop(0)  # strip sentinel before LLM forwarding
@@ -761,6 +809,32 @@ def _extract_session_id(request: ChatCompletionRequest, raw_request: Request) ->
     return None
 
 
+def _extract_scriptstate(raw_request: Request) -> dict | None:
+    """Extract scriptstate from x-saga-scriptstate header (JSON-encoded dict).
+
+    RisuAI plugin sends: x-saga-scriptstate: {"$hp":"85","$location":"dungeon"}
+    The '$' prefix is stripped — RisuAI internally prefixes scriptstate keys with '$'.
+    Returns None if header is absent or invalid.
+    """
+    raw = raw_request.headers.get("x-saga-scriptstate", "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            logger.warning(f"[Scriptstate] Expected dict, got {type(data).__name__}")
+            return None
+        # Strip '$' prefix from keys (RisuAI internal convention)
+        cleaned = {}
+        for k, v in data.items():
+            key = k.lstrip("$") if isinstance(k, str) else str(k)
+            cleaned[key] = v
+        return cleaned if cleaned else None
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(f"[Scriptstate] Invalid JSON in header: {e}")
+        return None
+
+
 def _extract_gen_params(request: ChatCompletionRequest) -> dict:
     """Extract optional generation parameters from the request for LLM forwarding."""
     params = {}
@@ -781,9 +855,10 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
     BP1: system prompt (절대 안 변함 — SystemStabilizer가 보장)
     BP2: 대화 히스토리 중간 지점 assistant (이전 턴 내용은 안 변함)
     BP3: 대화 히스토리 마지막 assistant (직전 턴까지 안 변함)
-    Dynamic: md_prefix + lorebook_delta + dynamic_suffix → 마지막 user 메시지 직전에 삽입 (캐시 밖)
+    Dynamic: md_prefix + lorebook_delta + dynamic_suffix → 마지막 user 메시지에 prepend (캐시 밖)
 
-    핵심: 동적 컨텍스트를 BP 뒤에 배치해야 BP2/BP3 캐시가 유효함.
+    ⚠️ 슬라이딩 윈도우(메시지 앞에서 제거) 시 prefix가 바뀌어 캐시가 무효화됨.
+    메시지가 뒤에만 추가되는 일반 대화에서는 정상 작동.
     [시스템+BP1] → [대화...BP2...BP3] → [동적 컨텍스트] → [유저 입력]
     """
     messages = list(original_messages)
@@ -791,10 +866,14 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
     is_claude = "claude" in config.models.narration.lower()
 
     if system_idx is not None and is_claude and config.prompt_caching.enabled:
+        # Cache control with optional extended TTL (requires extended-cache-ttl-2025-04-11 beta)
+        cache_ctrl = {"type": "ephemeral"}
+        if config.prompt_caching.cache_ttl:
+            cache_ctrl["ttl"] = config.prompt_caching.cache_ttl
 
         # BP1: system prompt (세션 내내 동일)
         messages[system_idx] = dict(messages[system_idx])
-        messages[system_idx]["cache_control"] = {"type": "ephemeral"}
+        messages[system_idx]["cache_control"] = cache_ctrl
 
         # 대화 히스토리에서 assistant 메시지 위치 찾기
         assistant_indices = [
@@ -805,18 +884,18 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
             # BP2: 중간 지점 assistant (긴 대화에서 앞부분 캐시)
             mid_idx = assistant_indices[len(assistant_indices) // 2]
             messages[mid_idx] = dict(messages[mid_idx])
-            messages[mid_idx]["cache_control"] = {"type": "ephemeral"}
+            messages[mid_idx]["cache_control"] = cache_ctrl
 
             # BP3: 마지막 assistant (직전 턴까지 캐시)
             last_idx = assistant_indices[-1]
             messages[last_idx] = dict(messages[last_idx])
-            messages[last_idx]["cache_control"] = {"type": "ephemeral"}
+            messages[last_idx]["cache_control"] = cache_ctrl
 
         elif len(assistant_indices) == 1:
             # 대화가 짧으면 BP2만
             last_idx = assistant_indices[0]
             messages[last_idx] = dict(messages[last_idx])
-            messages[last_idx]["cache_control"] = {"type": "ephemeral"}
+            messages[last_idx]["cache_control"] = cache_ctrl
 
         # 동적 컨텍스트: 마지막 user 메시지에 prepend로 삽입
         # ⚠️ system role로 삽입하면 _call_anthropic에서 system 배열로 호이스팅되어

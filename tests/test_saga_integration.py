@@ -87,48 +87,20 @@ async def test_session_apis():
             report("세션 API", False, str(e))
 
 
-async def test_state_block_parsing():
-    """4. State block 파싱 테스트 (로컬, 서버 불필요)"""
-    from saga.utils.parsers import parse_state_block, strip_state_block
+async def test_state_block_stripping():
+    """4. State block strip 테스트 (로컬, 서버 불필요)"""
+    from saga.utils.parsers import strip_state_block
 
-    # 정상 케이스
     test1 = """나레이션 텍스트입니다.
 
 ```state
 location: 어둠의 숲
 location_moved: true
 hp_change: -10
-items_gained: [마법 검]
-items_lost: []
-npc_met: [에르겐]
 mood: tense
-event_trigger: null
-notes: 첫 번째 전투
 ```"""
-    parsed = parse_state_block(test1)
-    report("State 정상 파싱", parsed is not None and parsed.get("location") == "어둠의 숲")
-    report("State HP 추출", parsed is not None and parsed.get("hp_change") == -10)
-    report("State NPC 추출", parsed is not None and "에르겐" in parsed.get("npc_met", []))
-
-    # Strip 테스트
     stripped = strip_state_block(test1)
     report("State block 제거", "```state" not in stripped and "나레이션" in stripped)
-
-    # 백틱 2개 케이스
-    test2 = """텍스트
-
-``state
-location: 마을
-location_moved: false
-mood: calm
-``"""
-    parsed2 = parse_state_block(test2)
-    report("백틱 2개 파싱", parsed2 is not None and parsed2.get("location") == "마을")
-
-    # state block 없는 케이스
-    test3 = "일반 텍스트만 있는 응답"
-    parsed3 = parse_state_block(test3)
-    report("State 없는 응답", parsed3 is None)
 
 
 async def test_context_builder_timing():
