@@ -33,6 +33,10 @@ package-lock.json
 tests/ab_results/
 tests/e2e_results/
 
+# Benchmark data & results
+benchmarks/data/
+benchmarks/results/
+
 # Benchmark results & traces
 tests/bench_*_results.json
 tests/bench_report*.json
