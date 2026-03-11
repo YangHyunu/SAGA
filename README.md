@@ -16,6 +16,12 @@
 
 동일 모델(gemini-2.5-flash), 동일 조건 A/B 비교. Baseline은 최근 대화를 그대로 잘라 넣고(truncation), SAGA는 벡터 검색으로 질문과 관련된 대화만 골라 넣는다(retrieval). 모델을 바꾼 게 아니라 **컨텍스트에 어떤 정보를 넣느냐**만 다르다.
 
+SAGA 쪽이 유리한 구조적 이유:
+- **관련성 기반 선별**: 최근 N개를 무조건 넣는 대신, 벡터 유사도로 실제 필요한 대화를 골라냄
+- **Context Builder의 RRF 랭킹**: Recent + Important + Similar 3-stage 검색 결과를 Reciprocal Rank Fusion으로 통합 정렬하고, 토큰 예산 내에서 우선순위 패킹
+- **Sub-B 서사 요약**: 대화 원문이 아니라 Flash LLM이 요약한 에피소드를 저장하므로, 검색 품질이 raw text 대비 높음
+- **.md 캐시 구조**: stable_prefix.md(세계관/캐릭터)와 live_state.md(현재 상태)로 컨텍스트를 구조화하여 LLM이 참조하기 쉬운 형태로 제공
+
 ---
 
 ## 목차
