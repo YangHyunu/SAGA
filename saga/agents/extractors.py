@@ -36,7 +36,7 @@ async def narrative_extract(
                         "이 RP 대화에서 일어난 서사적 사건을 요약하세요. "
                         "JSON만 반환 (마크다운, 설명 금지):\n"
                         '{"summary": "2-3문장 요약", '
-                        '"npcs_mentioned": ["등장/언급된 NPC 이름들"], '
+                        '"npcs_mentioned": ["등장/언급된 NPC 이름 — 원문 그대로 표기, 번역 금지"], '
                         '"scene_type": "combat|dialogue|exploration|event", '
                         '"key_event": "핵심 사건 한 줄 또는 null"}'
                     ),

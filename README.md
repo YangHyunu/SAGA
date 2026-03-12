@@ -263,6 +263,35 @@ Letta Memory Block(`narrative_summary`, `curation_decisions`, `contradiction_log
 
 Letta의 자기편집 패턴을 비동기 후처리에서만 쓰는 게 핵심이다. 메인 응답 경로에서는 Letta를 호출하지 않으므로 Step Loop 지연이 없다.
 
+Curator 실행 로그 예시 (요트 살인 미스터리 시나리오, Turn 10):
+
+```
+[Curator] Memory Block updates: 4 succeeded, 0 failed
+[Curator] Contradiction fix: {
+  type: character_identity, severity: medium,
+  description: "Turn 5 '이름 모를 남성'이 요트 침대에서 칼 맞고 사망
+    → Turn 6-7에서 같은 시신이 MacNamara로 확인됨
+    → 그러나 NPC 목록에 둘 다 HP:100/100으로 살아있음",
+  resolution: "NPC 그래프에서 '이름 모를 남성'을 삭제하거나
+    MacNamara의 HP를 0으로 변경 권장"
+}
+[Curator] Contradiction fix: {
+  type: character_duplication, severity: low,
+  description: "Johnson(영문)과 존슨(한글)이 별도 NPC로 등록됨",
+  resolution: "동일 인물이므로 하나로 통합 권장 (Johnson으로 통일)"
+}
+[Curator] Contradiction fix: {
+  type: timeline_confusion, severity: medium,
+  description: "Turn 9에서 화자가 'Mac을 Camels 침대에서 살해'했다고 언급
+    vs Turn 7에서 Johnson이 '이미 죽은 MacNamara 발견'
+    → Mac과 MacNamara가 동일인이라면 시간순서 모순",
+  resolution: "Mac ≠ MacNamara로 별도 인물로 처리하거나,
+    Turn 9가 과거 회상임을 명시해야 함"
+}
+```
+
+한 번의 Curator 실행에서 캐릭터 동일성(`이름 모를 남성 = MacNamara`), 영/한 중복 등록(`Johnson = 존슨`), 타임라인 모순(살해 시점 불일치)을 동시에 탐지한다. 이런 판단은 이전 큐레이션 이력을 참조해야 일관되므로 Memory Block을 가진 에이전트가 필요한 부분이다.
+
 ---
 
 ## 스토리지 설계
