@@ -1,0 +1,22 @@
+[
+  {
+    "example_id": "flawed_fictions_0",
+    "instance_index": 0,
+    "has_error": false,
+    "num_paragraphs": 21,
+    "story_len": 2677,
+    "baseline_raw": "",
+    "baseline_predicted": null,
+    "baseline_correct": false
+  },
+  {
+    "example_id": "flawed_fictions_1",
+    "instance_index": 1,
+    "has_error": false,
+    "num_paragraphs": 10,
+    "story_len": 3488,
+    "baseline_raw": "",
+    "baseline_predicted": null,
+    "baseline_correct": false
+  }
+]
