@@ -63,6 +63,68 @@ class TestCalculateImportance:
 
 
 # ============================================================
+# _normalize_npc_name (entity deduplication)
+# ============================================================
+
+class TestNormalizeNpcName:
+    """Layer 1: normalization for deduplication."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        # English articles
+        ("The Raccoon", "raccoon"),
+        ("the raccoon", "raccoon"),
+        ("A Knight", "knight"),
+        ("An Elf", "elf"),
+        # Case normalization
+        ("Raccoon", "raccoon"),
+        ("RACCOON", "raccoon"),
+        # Japanese honorifics
+        ("raccoon-san", "raccoon"),
+        ("Yuki-sama", "yuki"),
+        # Korean particles
+        ("라쿤이", "라쿤"),
+        ("라쿤을", "라쿤"),
+        ("라쿤의", "라쿤"),
+        ("라쿤에게", "라쿤"),
+        # Parenthetical
+        ("라쿤(Raccoon)", "라쿤"),
+        ("김소연(金素妍)", "김소연"),
+        # Already clean
+        ("Johnson", "johnson"),
+        ("존슨 대장", "존슨 대장"),
+    ])
+    def test_normalization(self, raw, expected):
+        assert PostTurnExtractor._normalize_npc_name(raw) == expected
+
+
+# ============================================================
+# _is_valid_npc_name (NPC filtering)
+# ============================================================
+
+class TestIsValidNpcName:
+    """Filter unnamed extras, keep real NPC names."""
+
+    # --- Should be rejected ---
+    @pytest.mark.parametrize("name", [
+        "마을 여인", "병사 1", "거리 상인", "경비", "숲 노인",
+        "동굴 병사", "술집 농부", "시장 여자", "성 기사",
+        "NPC #3", "병사A", "A",  # too short / numbered
+        "", "   ",  # empty / whitespace
+        "a" * 31,  # too long
+    ])
+    def test_rejects_extras(self, name):
+        assert not PostTurnExtractor._is_valid_npc_name(name)
+
+    # --- Should be accepted ---
+    @pytest.mark.parametrize("name", [
+        "존슨 대장", "엘리자베스", "Johnson", "김소연",
+        "The Black Knight", "아리아", "세라핀 공작",
+    ])
+    def test_accepts_real_names(self, name):
+        assert PostTurnExtractor._is_valid_npc_name(name)
+
+
+# ============================================================
 # MdCache.write_live with scriptstate
 # ============================================================
 
