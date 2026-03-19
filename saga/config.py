@@ -30,7 +30,7 @@ class ServerConfig(BaseModel):
 class ModelsConfig(BaseModel):
     narration: str = "claude-haiku-4-5-20251001"
     extraction: str = "gemini-2.5-flash-lite"
-    curator: str = "claude-sonnet-4-5-20250929"
+    curator: str = "claude-haiku-4-5-20251001"
     embedding: str = "text-embedding-3-small"
 
 
@@ -67,7 +67,7 @@ class CuratorConfig(BaseModel):
     )
     compress_story_after_turns: int = 50
     letta_base_url: str = "http://localhost:8283"
-    letta_model: str = "anthropic/claude-sonnet-4-5-20250929"
+    letta_model: str = "anthropic/claude-haiku-4-5-20251001"
     letta_embedding: str = "openai/text-embedding-3-small"
 
 

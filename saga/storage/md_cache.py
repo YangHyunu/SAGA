@@ -162,7 +162,7 @@ class MdCache:
 
         if narrative_summary and narrative_summary.strip():
             lines.append("## 서사 요약")
-            lines.append(narrative_summary.strip()[:500])  # 예산 잠식 방지
+            lines.append(narrative_summary.strip()[:1000])  # 매 Curator run마다 덮어쓰기되므로 누적 안됨
             lines.append("")
 
         lines.append("## 등장인물")

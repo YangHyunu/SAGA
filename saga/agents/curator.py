@@ -33,6 +33,7 @@ class CuratorRunner:
         self.fallback_adapter = DirectLLMCuratorAdapter(llm_client, config)
         self._use_letta = False
         self._lore_tasks: set = set()  # GC protection for deferred lore tasks
+        self.lore_defer_delay: float = 10.0  # seconds; set to 0 for benchmark mode
 
     def initialize(self):
         """Connect Letta client only. Agent creation is lazy (per session on first run)."""
@@ -100,7 +101,7 @@ class CuratorRunner:
     def _schedule_deferred_lore(self, session_id: str, turn_number: int):
         """Schedule lore generation as a deferred task with delay to avoid LLM API contention."""
         async def _deferred():
-            await asyncio.sleep(10)  # Wait for narration requests to finish
+            await asyncio.sleep(self.lore_defer_delay)
             logger.info(f"[Curator] Deferred lore generation starting for turn {turn_number}")
             await self._auto_generate_lore(session_id, turn_number)
 
@@ -219,23 +220,23 @@ class CuratorRunner:
             '"lore_type": "character|location|item|event|world", "priority": 50}'
         )
 
-        # Call LLM (use extraction model — e.g. Gemini Flash — for cost efficiency)
+        # Call LLM (use curator model for reliable structured output)
         response = await self.llm_client.call_llm(
-            model=self.config.models.extraction,
+            model=self.config.models.curator,
             messages=[
                 {"role": "system", "content": "당신은 RP 세계관 구축 전문가입니다. 에피소드와 관계 정보를 분석하여 일관성 있는 로어를 생성합니다. 반드시 JSON으로만 응답하세요."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.4,
-            max_tokens=512,
+            max_tokens=1024,
             response_mime_type="application/json",
         )
 
         # Parse response
         lore_data = parse_llm_json(response)
 
-        if not lore_data or not lore_data.get("content"):
-            logger.warning(f"[Curator] Could not parse lore for {entity_name}: {response[:200]}")
+        if not lore_data or not lore_data.get("content") or len(lore_data.get("content", "")) < 20:
+            logger.warning(f"[Curator] Could not parse lore for {entity_name} (too short or empty): {response[:200]}")
             return
 
         content = lore_data["content"]
