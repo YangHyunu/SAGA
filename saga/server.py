@@ -129,6 +129,7 @@ session_mgr: SessionManager = None
 system_stabilizer: SystemStabilizer = None
 window_recovery: WindowRecovery = None
 cost_tracker: CostTracker = None
+message_compressor = None  # MessageCompressor (lazy import)
 
 # Keep strong references to fire-and-forget tasks so GC doesn't collect them
 # (asyncio event loop only holds weak references to tasks)
@@ -181,7 +182,7 @@ async def _cache_warming_loop():
 async def lifespan(app: FastAPI):
     """Initialize all components on startup, cleanup on shutdown."""
     global config, sqlite_db, vector_db, md_cache, llm_client
-    global context_builder, post_turn, curator, session_mgr, system_stabilizer, window_recovery, cost_tracker
+    global context_builder, post_turn, curator, session_mgr, system_stabilizer, window_recovery, cost_tracker, message_compressor
 
     # Load config
     config_path = os.environ.get("SAGA_CONFIG", "config.yaml")
@@ -219,10 +220,13 @@ async def lifespan(app: FastAPI):
     if config.curator.enabled:
         curator.initialize()
 
-    # Initialize window recovery & cost tracker
+    # Initialize window recovery, cost tracker & message compressor
     window_recovery = WindowRecovery(sqlite_db, vector_db, config)
     cost_tracker = CostTracker(sqlite_db)
     await cost_tracker.initialize()
+
+    from saga.message_compressor import MessageCompressor
+    message_compressor = MessageCompressor(sqlite_db, config)
 
     # Initialize session manager
     session_mgr = SessionManager(sqlite_db, vector_db, md_cache, config)
@@ -397,17 +401,32 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     )
     messages_dicts = stabilized_messages
 
-    # Window Recovery: detect sliding window shift and inject summary block
+    # Proactive message compression: replace old turns with immutable summary chunks
+    if config.prompt_caching.compress_enabled:
+        messages_dicts, compress_shift = await message_compressor.compress(session_id, messages_dicts)
+        if compress_shift > 0:
+            # Fix multimodal part indices after compression
+            _multimodal_parts = {
+                max(0, k - compress_shift): v
+                for k, v in _multimodal_parts.items()
+                if k >= compress_shift
+            }
+            logger.info(f"[Trace] MessageCompressor: {compress_shift} messages replaced with summary chunks")
+
+    # Window Recovery: detect sliding window shift and prepare summary for dynamic context
+    # ⚠️ Summary is NOT injected into messages (which would break cache prefix).
+    # Instead it's passed to _build_cacheable_messages → prepended to last user message.
+    window_summary = ""
     shift_info = await window_recovery.detect_shift(session_id, messages_dicts)
     if shift_info["shifted"]:
         summary_block = await window_recovery.build_summary_block(session_id, shift_info)
-        messages_dicts = window_recovery.inject_summary(messages_dicts, summary_block)
-        logger.info(f"[Trace] WindowRecovery: shift detected, summary injected (lost ~{shift_info['estimated_lost_turns']} turns)")
+        if summary_block:
+            window_summary = summary_block
+        logger.info(f"[Trace] WindowRecovery: shift detected, summary prepared (lost ~{shift_info['estimated_lost_turns']} turns)")
     else:
-        # Even if no shift, check for existing summary block to re-inject
         existing_summary = await window_recovery._get_existing_summary(session_id)
         if existing_summary:
-            messages_dicts = window_recovery.inject_summary(messages_dicts, existing_summary)
+            window_summary = existing_summary
 
     context_result = await context_builder.build_context(session_id, messages_dicts, dynamic_budget)
     t_ctx_end = time.time()
@@ -429,6 +448,7 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         context_result["md_prefix"],
         context_result["dynamic_suffix"],
         lorebook_delta,
+        window_summary,
     )
     # Restore multimodal content (images) that was stripped for internal processing
     if _multimodal_parts:
@@ -888,7 +908,7 @@ def _extract_gen_params(request: ChatCompletionRequest) -> dict:
     return params
 
 
-def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lorebook_delta=""):
+def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lorebook_delta="", window_summary=""):
     """Build messages with 3-breakpoint prompt caching structure.
 
     BP1: system prompt (절대 안 변함 — SystemStabilizer가 보장)
@@ -920,8 +940,18 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
         ]
 
         if len(assistant_indices) >= 2:
-            # BP2: 중간 지점 assistant (긴 대화에서 앞부분 캐시)
-            mid_idx = assistant_indices[len(assistant_indices) // 2]
+            # BP2: summary chunk가 있으면 마지막 chunk assistant (immutable → 캐시 안정)
+            #       없으면 기존 중간 지점 assistant
+            from saga.message_compressor import _CHUNK_USER_PREFIX
+            summary_asst_indices = [
+                idx for idx in assistant_indices
+                if idx > 0 and messages[idx - 1].get("role") == "user"
+                and str(messages[idx - 1].get("content", "")).startswith(_CHUNK_USER_PREFIX)
+            ]
+            if summary_asst_indices:
+                mid_idx = summary_asst_indices[-1]
+            else:
+                mid_idx = assistant_indices[len(assistant_indices) // 2]
             messages[mid_idx] = dict(messages[mid_idx])
             messages[mid_idx]["cache_control"] = cache_ctrl
 
@@ -941,6 +971,8 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
         # BP1~BP3 사이 prefix가 매 턴 바뀌므로 캐시가 무효화됨
         # → user 메시지에 prepend하면 모든 BP 뒤에 위치하므로 캐시 유지
         context_block = ""
+        if window_summary:
+            context_block += f"[--- Lost Turn Summary ---]\n{window_summary}\n\n"
         if md_prefix:
             context_block += f"[--- SAGA Context Cache ---]\n{md_prefix}\n\n"
         if lorebook_delta:

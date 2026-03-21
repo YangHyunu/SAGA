@@ -129,6 +129,18 @@ class WindowRecovery:
         if from_turn > to_turn:
             return await self._get_existing_summary(session_id)
 
+        # Skip turns already covered by MessageCompressor immutable chunks
+        compressed_through = await self.sqlite_db.get_world_state_value(
+            session_id, "compressed_through_turn"
+        )
+        if compressed_through:
+            compressed_through = int(compressed_through)
+            if to_turn <= compressed_through:
+                # Entire lost range is already compressed — skip
+                return await self._get_existing_summary(session_id)
+            if from_turn <= compressed_through:
+                from_turn = compressed_through + 1
+
         # Get episode summaries for lost turns from turn_log
         turn_logs = await self.sqlite_db.get_turn_logs(session_id, from_turn, to_turn)
 
