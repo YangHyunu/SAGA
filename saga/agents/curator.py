@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import time
+from langsmith import traceable
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
@@ -49,6 +50,7 @@ class CuratorRunner:
                 logger.warning(f"[Curator] Letta init failed, using fallback: {e}")
                 self._use_letta = False
 
+    @traceable(name="pipeline.curator")
     async def run(self, session_id: str, turn_number: int):
         """Run curator. Called every N turns asynchronously."""
         context = None
