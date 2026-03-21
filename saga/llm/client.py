@@ -8,6 +8,7 @@ from typing import AsyncIterator
 
 import anthropic
 import openai
+from langsmith import traceable
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ class LLMClient:
         if self._openai and hasattr(self._openai, "close"):
             await self._openai.close()
 
+    @traceable(name="llm.call", run_type="llm")
     async def call_llm(self, model: str, messages: list[dict], temperature: float = 0.7, max_tokens: int = 8192, **kwargs) -> str:
         """Call LLM API and return text response. Auto-detects provider from model name."""
         provider = self._detect_provider(model)

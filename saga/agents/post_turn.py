@@ -12,6 +12,8 @@ import re
 import time
 from typing import Callable
 
+from langsmith import traceable
+
 try:
     from rapidfuzz import fuzz as _fuzz
 except ImportError:
@@ -36,6 +38,7 @@ class PostTurnExtractor:
         self.config = config
         self.extract_fn = extract_fn
 
+    @traceable(name="pipeline.sub_b")
     async def extract_and_update(self, session_id: str, response_text: str, turn_number: int, user_input: str = "", scriptstate: dict | None = None):
         """Main entry point. Called as asyncio.create_task after response is sent."""
         logger.info(f"[Sub-B] ▶ Task started for turn {turn_number}, session={session_id}")

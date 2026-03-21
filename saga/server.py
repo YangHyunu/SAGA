@@ -8,6 +8,7 @@ import time
 import logging
 import os
 from collections import OrderedDict
+from langsmith import traceable
 
 # Logging setup: structured format + file handler
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
@@ -317,6 +318,7 @@ async def chat_completions(
         logger.error(f"[SAGA] Chat error: {e}", exc_info=True)
         return JSONResponse(status_code=502, content={"error": "upstream_error", "message": "LLM backend request failed"})
 
+@traceable(name="saga.handle_chat")
 async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     t_start = time.time()
     mode = "stream" if request.stream else "sync"
