@@ -51,6 +51,7 @@ from saga.utils.tokens import count_tokens, count_messages_tokens
 from saga.utils.parsers import strip_state_block
 from saga.system_stabilizer import SystemStabilizer
 from saga.window_recovery import WindowRecovery
+from saga.cost_tracker import CostTracker, UsageRecord
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -127,6 +128,7 @@ curator: CuratorRunner = None
 session_mgr: SessionManager = None
 system_stabilizer: SystemStabilizer = None
 window_recovery: WindowRecovery = None
+cost_tracker: CostTracker = None
 
 # Keep strong references to fire-and-forget tasks so GC doesn't collect them
 # (asyncio event loop only holds weak references to tasks)
@@ -179,7 +181,7 @@ async def _cache_warming_loop():
 async def lifespan(app: FastAPI):
     """Initialize all components on startup, cleanup on shutdown."""
     global config, sqlite_db, vector_db, md_cache, llm_client
-    global context_builder, post_turn, curator, session_mgr, system_stabilizer, window_recovery
+    global context_builder, post_turn, curator, session_mgr, system_stabilizer, window_recovery, cost_tracker
 
     # Load config
     config_path = os.environ.get("SAGA_CONFIG", "config.yaml")
@@ -217,8 +219,10 @@ async def lifespan(app: FastAPI):
     if config.curator.enabled:
         curator.initialize()
 
-    # Initialize window recovery
+    # Initialize window recovery & cost tracker
     window_recovery = WindowRecovery(sqlite_db, vector_db, config)
+    cost_tracker = CostTracker(sqlite_db)
+    await cost_tracker.initialize()
 
     # Initialize session manager
     session_mgr = SessionManager(sqlite_db, vector_db, md_cache, config)
@@ -529,6 +533,14 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     t_llm_end = time.time()
     logger.info(f"[Trace] LLM done: {(t_llm_end - t_llm_start)*1000:.0f}ms | response={len(llm_response)}ch")
 
+    # Record cost
+    usage = llm_client._last_usage
+    await cost_tracker.record(UsageRecord(
+        model=usage["model"], input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"], cache_read_tokens=usage["cache_read"],
+        cache_create_tokens=usage["cache_create"], session_id=session_id, call_type="main",
+    ))
+
     # Strip state block for user
     clean_response = strip_state_block(llm_response)
     has_state = len(clean_response) < len(llm_response)
@@ -710,6 +722,14 @@ async def _stream_response(session_id, session, augmented_messages, request, str
     # Final chunk
     yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
     yield "data: [DONE]\n\n"
+
+    # Record cost for stream call
+    usage = llm_client._last_usage
+    await cost_tracker.record(UsageRecord(
+        model=usage["model"], input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"], cache_read_tokens=usage["cache_read"],
+        cache_create_tokens=usage["cache_create"], session_id=session_id, call_type="main_stream",
+    ))
 
     # Store full_response for BackgroundTask (post-stream processing runs there)
     stream_total_ms = (time.time() - t_stream_start) * 1000
@@ -967,6 +987,18 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
 async def health_check():
     """Health check endpoint — no auth required."""
     return {"status": "ok"}
+
+
+@app.get("/api/cost", dependencies=[Depends(_verify_bearer)])
+async def get_cost_global():
+    """Global cost summary across all sessions."""
+    return await cost_tracker.get_global_summary()
+
+
+@app.get("/api/cost/{session_id}", dependencies=[Depends(_verify_bearer)])
+async def get_cost_session(session_id: str):
+    """Cost summary for a specific session."""
+    return await cost_tracker.get_session_summary(session_id)
 
 
 @app.get("/api/status", dependencies=[Depends(_verify_bearer)])
