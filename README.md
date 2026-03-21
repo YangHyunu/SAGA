@@ -403,6 +403,38 @@ E2E 50턴 검증 결과 (Claude Haiku 4.5, 위지소연 시나리오):
 | 평균 레이턴시 | 6.1초 (50턴 내내 flat) |
 | 1h TTL 생존 | 6분 대기 후 캐시 생존 확인 |
 
+컨텍스트가 쌓여도 레이턴시가 선형으로 늘어나지 않는 게 핵심이다.
+
+### 슬라이딩 윈도우 캐시 복구
+
+RisuAI가 컨텍스트 초과로 앞쪽 메시지를 잘라내면 캐시 breakpoint가 깨진다. SAGA의 `WindowRecovery`가 이를 자동 복구한다:
+
+1. **감지**: 이전 턴의 첫 non-system 메시지 hash와 비교하여 윈도우 이동 감지
+2. **요약 조회**: 잘려나간 턴의 에피소드 요약을 ChromaDB/turn_log에서 가져옴 (Sub-B가 매 턴 저장해둔 것)
+3. **주입**: 요약 블록을 system 메시지 뒤에 삽입 → 새 BP2 구성 → 캐시 안정화
+
+요약 블록은 한번 만들면 고정이므로 이후 턴에서 계속 cache hit. 윈도우가 다시 밀리면 기존 요약에 누적 병합.
+
+### 실시간 비용 추적
+
+매 LLM 호출마다 토큰 사용량과 비용을 SQLite에 기록한다. 모델별 단가 테이블(Anthropic/Google/OpenAI)을 기반으로 캐시 할인을 적용한 실비용과 절감액을 산출한다. `/api/cost` 엔드포인트로 세션별/전체 집계를 조회할 수 있다.
+
+### Observability (LangSmith 트레이싱)
+
+`@traceable` 데코레이터로 전체 파이프라인의 각 단계를 LangSmith에 트레이싱한다:
+
+```
+saga.handle_chat (루트)
+├── pipeline.stabilizer      # System 안정화
+├── pipeline.window_detect   # 윈도우 이동 감지
+├── pipeline.sub_a           # 컨텍스트 조립
+├── llm.call                 # 메인 LLM 호출
+├── pipeline.sub_b           # Flash 서사 요약 (비동기)
+└── pipeline.curator         # N턴마다 큐레이션 (비동기)
+```
+
+`LANGSMITH_TRACING=true` + `LANGSMITH_API_KEY` 환경변수로 활성화. LLM SDK 래핑(`wrap_anthropic`, `wrap_openai`)으로 API 호출 상세도 자동 추적된다:
+
 컨텍스트가 쌓여도 레이턴시가 선형으로 늘어나지 않는 게 핵심이다:
 
 ```
@@ -827,6 +859,8 @@ POST /v1/chat/completions
 | `/api/sessions/reset-latest` | POST | 가장 최근 세션 초기화 |
 | `/api/memory/search` | GET | 벡터 메모리 검색 (`q`, `session`, `collection` 파라미터) |
 | `/api/graph/query` | GET | 상태 데이터 조회 (캐릭터/관계/이벤트) |
+| `/api/cost` | GET | 전체 비용 집계 (토큰 사용량, 비용, 캐시 절감액, 모델별 breakdown) |
+| `/api/cost/{session_id}` | GET | 세션별 비용 집계 |
 | `/api/reset-all` | POST | 전체 초기화 (SQLite + ChromaDB + 캐시 + Letta) |
 
 ---
@@ -842,8 +876,10 @@ saga/
   models.py                # 요청/응답 Pydantic 모델
   session.py               # 세션 관리자
   system_stabilizer.py     # canonical system 저장 -> Lorebook delta 분리
+  window_recovery.py       # 슬라이딩 윈도우 캐시 복구 (감지 → 요약 → BP 재구성)
+  cost_tracker.py          # 비용 추적 (모델별 단가, 캐시 절감 수치화, SQLite 기록)
   llm/
-    client.py              # 멀티 프로바이더 LLM 클라이언트 (Anthropic/Google/OpenAI)
+    client.py              # 멀티 프로바이더 LLM 클라이언트 (Anthropic/Google/OpenAI) + LangSmith 트레이싱
   agents/
     context_builder.py     # Sub-A: 동적 컨텍스트 조립 + RRF 에피소드 선택
     post_turn.py           # Sub-B: Flash 서사 요약 + ChromaDB 에피소드 기록 + live_state.md 갱신
@@ -884,6 +920,8 @@ tests/
   test_llm_client.py
   test_models.py
   test_parsers.py
+  test_window_recovery.py  # 슬라이딩 윈도우 캐시 복구 테스트
+  test_cost_tracker.py     # 비용 추적 테스트
   e2e_integration.py       # E2E 통합 테스트 (charx 파싱, 멀티턴 RP, 파이프라인 검증)
   e2e_cache_verification.py # E2E 캐시 검증 (캐시 적중률, 레이턴시, LLM Judge, TTL)
   bench_prompt_caching.py  # 프롬프트 캐싱 벤치마크 (3-BP vs 자동 vs no-cache)
