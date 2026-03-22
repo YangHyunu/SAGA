@@ -50,7 +50,7 @@ from saga.session import SessionManager
 from saga.utils.tokens import count_tokens, count_messages_tokens
 from saga.utils.parsers import strip_state_block
 from saga.system_stabilizer import SystemStabilizer
-from saga.window_recovery import WindowRecovery
+from saga.window_recovery import WindowRecovery, _KEY_SUMMARY_THROUGH_TURN
 from saga.cost_tracker import CostTracker, UsageRecord
 logger = logging.getLogger(__name__)
 
@@ -424,8 +424,12 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
             window_summary = summary_block
         logger.info(f"[Trace] WindowRecovery: shift detected, summary prepared (lost ~{shift_info['estimated_lost_turns']} turns)")
     else:
+        # Only re-inject existing summary if it hasn't been injected yet for this turn range.
+        # Prevents the same summary block from bloating context every single turn.
         existing_summary = await window_recovery._get_existing_summary(session_id)
-        if existing_summary:
+        last_injected = await sqlite_db.get_world_state_value(session_id, "window_summary_injected_turn")
+        summary_through = await sqlite_db.get_world_state_value(session_id, _KEY_SUMMARY_THROUGH_TURN)
+        if existing_summary and (last_injected != summary_through):
             window_summary = existing_summary
 
     context_result = await context_builder.build_context(session_id, messages_dicts, dynamic_budget)
@@ -450,6 +454,11 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         lorebook_delta,
         window_summary,
     )
+    # Mark summary as injected so it's not re-injected on subsequent turns
+    if window_summary:
+        summary_through = await sqlite_db.get_world_state_value(session_id, _KEY_SUMMARY_THROUGH_TURN)
+        if summary_through:
+            await sqlite_db.upsert_world_state(session_id, "window_summary_injected_turn", summary_through)
     # Restore multimodal content (images) that was stripped for internal processing
     if _multimodal_parts:
         for orig_idx, image_parts in _multimodal_parts.items():

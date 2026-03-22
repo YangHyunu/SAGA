@@ -238,7 +238,7 @@ Claude를 쓸 때는 세 섹션을 모두 마지막 user 메시지에 prepend한
    ▼
 3. ChromaDB 에피소드 기록 (importance >= 40은 Important 검색 대상)
    ▼
-4. NPC 레지스트리 갱신 (SQLite characters 테이블)
+4. NPC 레지스트리 갱신 (SQLite characters 테이블, 3-Layer 이름 해소: 정규화 → fuzzy → cross-script romanization)
    ▼
 5. SQLite 턴 로그 기록
    ▼
@@ -418,18 +418,19 @@ RisuAI가 컨텍스트 초과로 앞쪽 메시지를 잘라내면 Anthropic pref
 
 **1. MessageCompressor (선제 압축)**
 
-토큰이 임계값(기본 70%)을 초과하면 RisuAI가 자르기 전에 SAGA가 먼저 오래된 턴을 **immutable summary chunk**로 치환한다:
+토큰이 임계값(기본 35%)을 초과하면 RisuAI가 자르기 전에 SAGA가 먼저 오래된 턴을 **immutable summary chunk**로 치환한다:
 
 ```
 원본: [system] [turn1] [turn2] ... [turn35]         (45K tokens)
-압축: [system] [chunk: turns 1-10] [turn11] ... [turn35]  (25K tokens)
-                ↑ immutable, BP2 고정
+압축: [system] [chunk: turns 1-8] [chunk: turns 9-16] [turn17] ... [turn35]
+                ↑ immutable, BP2 고정   ↑ 균등한 작은 chunk
 ```
 
 - 각 chunk는 `[user + assistant]` 메시지 쌍으로, Sub-B의 Flash 요약을 재활용 (추가 LLM 호출 없음)
 - chunk는 한번 만들면 **절대 수정하지 않음** → prefix 안정 → BP2 캐시 항상 히트
 - 추가 압축 필요 시 새 chunk를 append (기존 chunk 불변)
 - BP2를 마지막 chunk의 assistant에 고정하여 캐시 안정성 보장
+- chunk 크기 제한: 최소 3턴, **최대 8턴** (`max_compress_turns`) — 균등한 작은 chunk로 요약 품질 유지
 
 **2. WindowRecovery (후속 보완)**
 
@@ -438,6 +439,7 @@ MessageCompressor에도 불구하고 RisuAI가 메시지를 잘라내면 WindowR
 1. **감지**: 첫 non-system 메시지 hash 비교로 윈도우 이동 감지
 2. **요약 조회**: 잘려나간 턴의 요약을 turn_log/ChromaDB에서 가져옴
 3. **동적 전달**: 요약을 마지막 user 메시지에 prepend (캐시 prefix 밖)
+4. **1회 주입**: 요약은 shift 감지 직후 한 번만 inject하고, 이후 턴에서는 재주입하지 않음 (`window_summary_injected_turn` 마커로 추적)
 
 이미 MessageCompressor가 압축한 범위는 건너뛰어 중복을 방지한다.
 
@@ -828,6 +830,10 @@ prompt_caching:
   stabilize_system: true              # Lorebook 동적삽입 대응
   canonical_similarity_threshold: 0.30
   cache_ttl: "1h"                     # "5m" 또는 "1h"
+  compress_enabled: true
+  compress_threshold_ratio: 0.35      # total_context_max * ratio 초과 시 압축
+  min_compress_turns: 3               # 최소 압축 단위 (턴)
+  max_compress_turns: 8               # chunk 당 최대 턴 수
 
 curator:
   interval: 10                  # N턴마다 큐레이터 실행
@@ -992,6 +998,8 @@ tests/
 | Anthropic Prompt Caching | stable_prefix.md 캐싱 |
 | FastAPI | 프록시 서버 프레임워크 |
 | tiktoken | 토큰 카운팅 |
+| rapidfuzz | NPC 이름 fuzzy matching (Layer 2) |
+| unidecode | 한/영 크로스 스크립트 NPC 매칭 (Layer 3) |
 
 ### 호환 클라이언트
 

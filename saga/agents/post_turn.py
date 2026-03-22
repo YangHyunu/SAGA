@@ -18,6 +18,10 @@ try:
     from rapidfuzz import fuzz as _fuzz
 except ImportError:
     _fuzz = None
+try:
+    from unidecode import unidecode as _unidecode
+except ImportError:
+    _unidecode = None
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
@@ -138,6 +142,7 @@ class PostTurnExtractor:
     _PAREN = re.compile(r"\s*\([^)]*\)\s*$")
 
     _FUZZY_THRESHOLD = 88
+    _CROSS_SCRIPT_THRESHOLD = 72  # lower threshold for romanized cross-script (한↔영)
 
     @staticmethod
     def _is_valid_npc_name(name: str) -> bool:
@@ -194,6 +199,23 @@ class PostTurnExtractor:
                 logger.info(
                     f"[Sub-B] NPC fuzzy match: {raw_name!r} → {best_name!r} "
                     f"(score={best_score:.0f})"
+                )
+                return best_name
+
+        # Layer 3: cross-script romanized match (한/영 dedup)
+        # "루비아" → unidecode → "lubia" ≈ "rubia" via fuzzy
+        if _fuzz is not None and _unidecode is not None:
+            romanized_input = _unidecode(normalized).lower().strip()
+            best_score, best_name = 0, None
+            for char in existing:
+                romanized_existing = _unidecode(self._normalize_npc_name(char["name"])).lower().strip()
+                score = _fuzz.token_set_ratio(romanized_input, romanized_existing)
+                if score > best_score:
+                    best_score, best_name = score, char["name"]
+            if best_score >= self._CROSS_SCRIPT_THRESHOLD and best_name:
+                logger.info(
+                    f"[Sub-B] NPC cross-script match: {raw_name!r} → {best_name!r} "
+                    f"(romanized score={best_score:.0f})"
                 )
                 return best_name
 

@@ -247,7 +247,8 @@ class MessageCompressor:
         # Don't compress all messages — keep at least 5 turns of real conversation
         min_remaining_turns = 5
         max_compressible = max(0, (len(non_system) - start_idx) // 2 - min_remaining_turns)
-        turns = min(turns, max_compressible)
+        max_per_chunk = getattr(self.config.prompt_caching, "max_compress_turns", 8)
+        turns = min(turns, max_compressible, max_per_chunk)
 
         return turns
 
