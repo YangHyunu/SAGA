@@ -8,6 +8,7 @@ import time
 import logging
 import os
 from collections import OrderedDict
+from langsmith import traceable
 
 # Logging setup: structured format + file handler
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s | %(message)s"
@@ -49,6 +50,8 @@ from saga.session import SessionManager
 from saga.utils.tokens import count_tokens, count_messages_tokens
 from saga.utils.parsers import strip_state_block
 from saga.system_stabilizer import SystemStabilizer
+from saga.window_recovery import WindowRecovery, _KEY_SUMMARY_THROUGH_TURN
+from saga.cost_tracker import CostTracker, UsageRecord
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -124,6 +127,9 @@ post_turn: PostTurnExtractor = None
 curator: CuratorRunner = None
 session_mgr: SessionManager = None
 system_stabilizer: SystemStabilizer = None
+window_recovery: WindowRecovery = None
+cost_tracker: CostTracker = None
+message_compressor = None  # MessageCompressor (lazy import)
 
 # Keep strong references to fire-and-forget tasks so GC doesn't collect them
 # (asyncio event loop only holds weak references to tasks)
@@ -176,7 +182,7 @@ async def _cache_warming_loop():
 async def lifespan(app: FastAPI):
     """Initialize all components on startup, cleanup on shutdown."""
     global config, sqlite_db, vector_db, md_cache, llm_client
-    global context_builder, post_turn, curator, session_mgr, system_stabilizer
+    global context_builder, post_turn, curator, session_mgr, system_stabilizer, window_recovery, cost_tracker, message_compressor
 
     # Load config
     config_path = os.environ.get("SAGA_CONFIG", "config.yaml")
@@ -213,6 +219,14 @@ async def lifespan(app: FastAPI):
 
     if config.curator.enabled:
         curator.initialize()
+
+    # Initialize window recovery, cost tracker & message compressor
+    window_recovery = WindowRecovery(sqlite_db, vector_db, config)
+    cost_tracker = CostTracker(sqlite_db)
+    await cost_tracker.initialize()
+
+    from saga.message_compressor import MessageCompressor
+    message_compressor = MessageCompressor(sqlite_db, config)
 
     # Initialize session manager
     session_mgr = SessionManager(sqlite_db, vector_db, md_cache, config)
@@ -317,6 +331,7 @@ async def chat_completions(
         logger.error(f"[SAGA] Chat error: {e}", exc_info=True)
         return JSONResponse(status_code=502, content={"error": "upstream_error", "message": "LLM backend request failed"})
 
+@traceable(name="saga.handle_chat")
 async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     t_start = time.time()
     mode = "stream" if request.stream else "sync"
@@ -386,6 +401,37 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     )
     messages_dicts = stabilized_messages
 
+    # Proactive message compression: replace old turns with immutable summary chunks
+    if config.prompt_caching.compress_enabled:
+        messages_dicts, compress_shift = await message_compressor.compress(session_id, messages_dicts)
+        if compress_shift > 0:
+            # Fix multimodal part indices after compression
+            _multimodal_parts = {
+                max(0, k - compress_shift): v
+                for k, v in _multimodal_parts.items()
+                if k >= compress_shift
+            }
+            logger.info(f"[Trace] MessageCompressor: {compress_shift} messages replaced with summary chunks")
+
+    # Window Recovery: detect sliding window shift and prepare summary for dynamic context
+    # ⚠️ Summary is NOT injected into messages (which would break cache prefix).
+    # Instead it's passed to _build_cacheable_messages → prepended to last user message.
+    window_summary = ""
+    shift_info = await window_recovery.detect_shift(session_id, messages_dicts)
+    if shift_info["shifted"]:
+        summary_block = await window_recovery.build_summary_block(session_id, shift_info)
+        if summary_block:
+            window_summary = summary_block
+        logger.info(f"[Trace] WindowRecovery: shift detected, summary prepared (lost ~{shift_info['estimated_lost_turns']} turns)")
+    else:
+        # Only re-inject existing summary if it hasn't been injected yet for this turn range.
+        # Prevents the same summary block from bloating context every single turn.
+        existing_summary = await window_recovery._get_existing_summary(session_id)
+        last_injected = await sqlite_db.get_world_state_value(session_id, "window_summary_injected_turn")
+        summary_through = await sqlite_db.get_world_state_value(session_id, _KEY_SUMMARY_THROUGH_TURN)
+        if existing_summary and (last_injected != summary_through):
+            window_summary = existing_summary
+
     context_result = await context_builder.build_context(session_id, messages_dicts, dynamic_budget)
     t_ctx_end = time.time()
 
@@ -406,7 +452,13 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
         context_result["md_prefix"],
         context_result["dynamic_suffix"],
         lorebook_delta,
+        window_summary,
     )
+    # Mark summary as injected so it's not re-injected on subsequent turns
+    if window_summary:
+        summary_through = await sqlite_db.get_world_state_value(session_id, _KEY_SUMMARY_THROUGH_TURN)
+        if summary_through:
+            await sqlite_db.upsert_world_state(session_id, "window_summary_injected_turn", summary_through)
     # Restore multimodal content (images) that was stripped for internal processing
     if _multimodal_parts:
         for orig_idx, image_parts in _multimodal_parts.items():
@@ -509,6 +561,14 @@ async def _handle_chat(request: ChatCompletionRequest, raw_request: Request):
     )
     t_llm_end = time.time()
     logger.info(f"[Trace] LLM done: {(t_llm_end - t_llm_start)*1000:.0f}ms | response={len(llm_response)}ch")
+
+    # Record cost
+    usage = llm_client._last_usage
+    await cost_tracker.record(UsageRecord(
+        model=usage["model"], input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"], cache_read_tokens=usage["cache_read"],
+        cache_create_tokens=usage["cache_create"], session_id=session_id, call_type="main",
+    ))
 
     # Strip state block for user
     clean_response = strip_state_block(llm_response)
@@ -692,6 +752,14 @@ async def _stream_response(session_id, session, augmented_messages, request, str
     yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
     yield "data: [DONE]\n\n"
 
+    # Record cost for stream call
+    usage = llm_client._last_usage
+    await cost_tracker.record(UsageRecord(
+        model=usage["model"], input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"], cache_read_tokens=usage["cache_read"],
+        cache_create_tokens=usage["cache_create"], session_id=session_id, call_type="main_stream",
+    ))
+
     # Store full_response for BackgroundTask (post-stream processing runs there)
     stream_total_ms = (time.time() - t_stream_start) * 1000
     logger.info(
@@ -849,7 +917,7 @@ def _extract_gen_params(request: ChatCompletionRequest) -> dict:
     return params
 
 
-def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lorebook_delta=""):
+def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lorebook_delta="", window_summary=""):
     """Build messages with 3-breakpoint prompt caching structure.
 
     BP1: system prompt (절대 안 변함 — SystemStabilizer가 보장)
@@ -881,8 +949,18 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
         ]
 
         if len(assistant_indices) >= 2:
-            # BP2: 중간 지점 assistant (긴 대화에서 앞부분 캐시)
-            mid_idx = assistant_indices[len(assistant_indices) // 2]
+            # BP2: summary chunk가 있으면 마지막 chunk assistant (immutable → 캐시 안정)
+            #       없으면 기존 중간 지점 assistant
+            from saga.message_compressor import _CHUNK_USER_PREFIX
+            summary_asst_indices = [
+                idx for idx in assistant_indices
+                if idx > 0 and messages[idx - 1].get("role") == "user"
+                and str(messages[idx - 1].get("content", "")).startswith(_CHUNK_USER_PREFIX)
+            ]
+            if summary_asst_indices:
+                mid_idx = summary_asst_indices[-1]
+            else:
+                mid_idx = assistant_indices[len(assistant_indices) // 2]
             messages[mid_idx] = dict(messages[mid_idx])
             messages[mid_idx]["cache_control"] = cache_ctrl
 
@@ -902,6 +980,8 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
         # BP1~BP3 사이 prefix가 매 턴 바뀌므로 캐시가 무효화됨
         # → user 메시지에 prepend하면 모든 BP 뒤에 위치하므로 캐시 유지
         context_block = ""
+        if window_summary:
+            context_block += f"[--- Lost Turn Summary ---]\n{window_summary}\n\n"
         if md_prefix:
             context_block += f"[--- SAGA Context Cache ---]\n{md_prefix}\n\n"
         if lorebook_delta:
@@ -948,6 +1028,18 @@ def _build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lore
 async def health_check():
     """Health check endpoint — no auth required."""
     return {"status": "ok"}
+
+
+@app.get("/api/cost", dependencies=[Depends(_verify_bearer)])
+async def get_cost_global():
+    """Global cost summary across all sessions."""
+    return await cost_tracker.get_global_summary()
+
+
+@app.get("/api/cost/{session_id}", dependencies=[Depends(_verify_bearer)])
+async def get_cost_session(session_id: str):
+    """Cost summary for a specific session."""
+    return await cost_tracker.get_session_summary(session_id)
 
 
 @app.get("/api/status", dependencies=[Depends(_verify_bearer)])

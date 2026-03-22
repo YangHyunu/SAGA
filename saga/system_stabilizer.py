@@ -16,6 +16,8 @@ import logging
 import re
 from collections import Counter
 
+from langsmith import traceable
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +28,7 @@ class SystemStabilizer:
         self.db = sqlite_db
         self.config = config
 
+    @traceable(name="pipeline.stabilizer")
     async def stabilize(
         self, session_id: str, messages: list[dict]
     ) -> tuple[list[dict], str]:

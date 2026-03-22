@@ -8,6 +8,7 @@ from typing import AsyncIterator
 
 import anthropic
 import openai
+from langsmith import traceable
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class LLMClient:
         self._openai = oai_client
         self._google = google_client
         self._last_cache_stats = {"cache_read": 0, "cache_create": 0}
+        self._last_usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0}
 
     async def close(self):
         if self._anthropic and hasattr(self._anthropic, "close"):
@@ -75,6 +77,7 @@ class LLMClient:
         if self._openai and hasattr(self._openai, "close"):
             await self._openai.close()
 
+    @traceable(name="llm.call", run_type="llm")
     async def call_llm(self, model: str, messages: list[dict], temperature: float = 0.7, max_tokens: int = 8192, **kwargs) -> str:
         """Call LLM API and return text response. Auto-detects provider from model name."""
         provider = self._detect_provider(model)
@@ -271,6 +274,11 @@ class LLMClient:
         cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
         cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
         self._last_cache_stats = {"cache_read": cache_read, "cache_create": cache_create}
+        self._last_usage = {
+            "model": model, "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read": cache_read, "cache_create": cache_create,
+        }
         if cache_read or cache_create:
             logger.info(
                 f"[Cache] input={usage.input_tokens} cache_read={cache_read} "
@@ -309,6 +317,11 @@ class LLMClient:
         cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
         cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
         self._last_cache_stats = {"cache_read": cache_read, "cache_create": cache_create}
+        self._last_usage = {
+            "model": model, "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read": cache_read, "cache_create": cache_create,
+        }
         if cache_read or cache_create:
             logger.info(
                 f"[Cache] input={usage.input_tokens} cache_read={cache_read} "
@@ -353,6 +366,15 @@ class LLMClient:
                     contents=contents,
                     config=config_obj,
                 )
+                # Track usage for Google
+                usage_meta = getattr(response, "usage_metadata", None)
+                if usage_meta:
+                    self._last_usage = {
+                        "model": model,
+                        "input_tokens": getattr(usage_meta, "prompt_token_count", 0) or 0,
+                        "output_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
+                        "cache_read": 0, "cache_create": 0,
+                    }
                 return response.text or ""
             except Exception as e:
                 if "429" in str(e) and attempt < 3:
@@ -393,6 +415,16 @@ class LLMClient:
             create_kwargs["stop"] = kwargs["stop"]
 
         response = await self._openai.chat.completions.create(**create_kwargs)
+
+        # Track usage for OpenAI
+        if response.usage:
+            self._last_usage = {
+                "model": model,
+                "input_tokens": response.usage.prompt_tokens or 0,
+                "output_tokens": response.usage.completion_tokens or 0,
+                "cache_read": getattr(response.usage, "prompt_tokens_details", None) and getattr(response.usage.prompt_tokens_details, "cached_tokens", 0) or 0,
+                "cache_create": 0,
+            }
 
         choices = response.choices
         return choices[0].message.content if choices else ""

@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+from langsmith import traceable
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
@@ -21,6 +22,7 @@ class ContextBuilder:
         self.md_cache = md_cache
         self.config = config
 
+    @traceable(name="pipeline.sub_a")
     async def build_context(self, session_id: str, messages: list[dict], token_budget: int) -> dict:
         """Main entry point. Returns {"md_prefix": str, "dynamic_suffix": str}"""
         last_user_msg = self._get_last_user_message(messages)
