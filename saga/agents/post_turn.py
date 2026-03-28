@@ -1,12 +1,10 @@
 """Sub-B: Post-Turn — 매 턴 비동기, Flash 서사 요약, 유저 안 기다림.
 
-프레젠테이션 S8: "scriptstate 스냅샷 저장 + Flash 서사 요약,
-ChromaDB episode 임베딩, turn_log 기록"
-
 Flash 서사 요약 → ChromaDB 에피소드 저장 → turn_log 기록
 asyncio.Lock으로 빠른 연속 입력 방지
 """
 import asyncio
+import json
 import logging
 import re
 import time
@@ -14,14 +12,6 @@ from typing import Callable
 
 from langsmith import traceable
 
-try:
-    from rapidfuzz import fuzz as _fuzz
-except ImportError:
-    _fuzz = None
-try:
-    from unidecode import unidecode as _unidecode
-except ImportError:
-    _unidecode = None
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
@@ -69,8 +59,15 @@ class PostTurnExtractor:
             # 3. NPC 레지스트리 업데이트 (Flash의 npcs_mentioned 기반, 필터링 + 정규화)
             for npc in (narrative.get("npcs_mentioned") or []):
                 if npc and self._is_valid_npc_name(npc):
-                    resolved = await self._resolve_npc_name(session_id, npc)
+                    base_name, alias = self._extract_alias(npc)
+                    resolved = await self._resolve_npc_name(session_id, base_name)
                     await self.sqlite_db.create_character(session_id, resolved, is_player=False)
+                    # alias가 있으면 등록 (괄호에서 추출된 것)
+                    if alias:
+                        await self.sqlite_db.add_character_alias(session_id, resolved, alias)
+                        # base_name 자체도 alias로 등록 (역방향 검색용)
+                        if base_name != resolved:
+                            await self.sqlite_db.add_character_alias(session_id, resolved, base_name)
 
             # 4. turn_log 기록
             await self.sqlite_db.insert_turn_log(
@@ -123,26 +120,27 @@ class PostTurnExtractor:
         if importance >= 50:
             logger.info(f"[Sub-B] High-importance episode (turn {turn_number}, score={importance}, type={scene_type})")
 
-    # Patterns that indicate unnamed extras, not real NPC names
+    # Unnamed extras / generic descriptions
     _EXTRA_PATTERN = re.compile(
         r"^(마을|숲|동굴|거리|성|궁|술집|시장)?\s*"
         r"(사람|여인|남자|여자|병사|기사|상인|농부|노인|아이|소녀|소년|시민|주민|행인|경비|하인|종자|시녀|광부|어부|사제|수녀)\s*\d*$"
     )
-    _NUMBERED_PATTERN = re.compile(r"^.{1,4}\s*[#\dA-D]+$")  # "병사 1", "NPC #3"
+    _NUMBERED_PATTERN = re.compile(r"^.{1,4}\s*[#\dA-D]+$")
 
-    # Korean particle suffixes for normalization
-    _KO_PARTICLE = re.compile(
-        r"(이|가|을|를|의|에게|에서|한테|으로|로|와|과|은|는|도|만|까지|부터|보다|처럼|아|야)$"
+    # Parenthetical alias: "루비아(Rubia)" → base="루비아", alias="Rubia"
+    _PAREN = re.compile(r"\s*\(([^)]*)\)\s*$")
+
+    _NPC_DEDUP_PROMPT = (
+        "Given a NEW name and a list of EXISTING character names, "
+        "determine if the NEW name refers to the same character as any EXISTING name. "
+        "Consider: translations (한국어↔English), alternate spellings, nicknames, "
+        "honorifics, and phonetic similarities.\n"
+        "If it matches, respond with ONLY the existing name. "
+        "If no match, respond with ONLY 'NONE'.\n\n"
+        "EXISTING: {existing_names}\n"
+        "NEW: {new_name}\n"
+        "Answer:"
     )
-    # English articles
-    _EN_ARTICLE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
-    # Japanese honorific suffixes
-    _JP_HONORIFIC = re.compile(r"[-\s]?(san|kun|chan|sama|dono|sensei)$", re.IGNORECASE)
-    # Parenthetical annotations: "라쿤(Raccoon)" → "라쿤"
-    _PAREN = re.compile(r"\s*\([^)]*\)\s*$")
-
-    _FUZZY_THRESHOLD = 88
-    _CROSS_SCRIPT_THRESHOLD = 72  # lower threshold for romanized cross-script (한↔영)
 
     @staticmethod
     def _is_valid_npc_name(name: str) -> bool:
@@ -157,69 +155,107 @@ class PostTurnExtractor:
         return True
 
     @staticmethod
-    def _normalize_npc_name(name: str) -> str:
-        """Normalize NPC name for deduplication (Mem0-style).
+    def _extract_alias(name: str) -> tuple[str, str | None]:
+        """Extract base name and alias from parenthetical notation.
 
-        Strips articles, particles, honorifics, parentheticals, then lowercases.
-        Used as lookup key; original display name is preserved in DB.
+        "루비아(Rubia)" → ("루비아", "Rubia")
+        "루비아"        → ("루비아", None)
         """
-        s = name.strip()
-        s = PostTurnExtractor._PAREN.sub("", s)
-        s = PostTurnExtractor._EN_ARTICLE.sub("", s)
-        s = PostTurnExtractor._JP_HONORIFIC.sub("", s)
-        s = s.strip().lower()
-        s = PostTurnExtractor._KO_PARTICLE.sub("", s)
-        return s.strip()
+        m = PostTurnExtractor._PAREN.search(name)
+        if m:
+            alias = m.group(1).strip()
+            base = PostTurnExtractor._PAREN.sub("", name).strip()
+            return base, alias if alias else None
+        return name.strip(), None
 
     async def _resolve_npc_name(self, session_id: str, raw_name: str) -> str:
-        """Resolve raw NPC name to canonical name via normalization + fuzzy match.
+        """Resolve NPC name: alias exact match → name exact match → LLM judgment.
 
         Returns the existing canonical name if a match is found, otherwise raw_name.
         """
-        normalized = self._normalize_npc_name(raw_name)
-
-        # Get existing characters for this session
         existing = await self.sqlite_db.get_session_characters(session_id)
         if not existing:
             return raw_name
 
-        # Layer 1: exact match on normalized form
+        raw_lower = raw_name.strip().lower()
+
+        # Layer 0: alias exact match (괄호에서 추출된 alias)
+        alias_match = await self.sqlite_db.find_character_by_alias(session_id, raw_name)
+        if alias_match:
+            logger.info(f"[Sub-B] NPC alias match: {raw_name!r} → {alias_match['name']!r}")
+            return alias_match["name"]
+
+        # Layer 1: name exact match (case-insensitive)
         for char in existing:
-            if self._normalize_npc_name(char["name"]) == normalized:
+            if char["name"].strip().lower() == raw_lower:
                 return char["name"]
 
-        # Layer 2: fuzzy match (rapidfuzz)
-        if _fuzz is not None:
-            best_score, best_name = 0, None
-            for char in existing:
-                score = _fuzz.token_set_ratio(normalized, self._normalize_npc_name(char["name"]))
-                if score > best_score:
-                    best_score, best_name = score, char["name"]
-            if best_score >= self._FUZZY_THRESHOLD and best_name:
-                logger.info(
-                    f"[Sub-B] NPC fuzzy match: {raw_name!r} → {best_name!r} "
-                    f"(score={best_score:.0f})"
-                )
-                return best_name
-
-        # Layer 3: cross-script romanized match (한/영 dedup)
-        # "루비아" → unidecode → "lubia" ≈ "rubia" via fuzzy
-        if _fuzz is not None and _unidecode is not None:
-            romanized_input = _unidecode(normalized).lower().strip()
-            best_score, best_name = 0, None
-            for char in existing:
-                romanized_existing = _unidecode(self._normalize_npc_name(char["name"])).lower().strip()
-                score = _fuzz.token_set_ratio(romanized_input, romanized_existing)
-                if score > best_score:
-                    best_score, best_name = score, char["name"]
-            if best_score >= self._CROSS_SCRIPT_THRESHOLD and best_name:
-                logger.info(
-                    f"[Sub-B] NPC cross-script match: {raw_name!r} → {best_name!r} "
-                    f"(romanized score={best_score:.0f})"
-                )
-                return best_name
+        # Layer 2: LLM judgment (한/영, 별명, 번역 등 전부 커버)
+        existing_names = [c["name"] for c in existing if not c.get("is_player")]
+        if existing_names:
+            try:
+                match = await self._llm_dedup_check(raw_name, existing_names)
+                if match:
+                    logger.info(f"[Sub-B] NPC LLM match: {raw_name!r} → {match!r}")
+                    # 새 이름을 alias로 등록
+                    await self.sqlite_db.add_character_alias(session_id, match, raw_name)
+                    return match
+            except Exception as e:
+                logger.warning(f"[Sub-B] NPC LLM dedup failed: {e}")
 
         return raw_name
+
+    async def _llm_dedup_check(self, new_name: str, existing_names: list[str]) -> str | None:
+        """Ask LLM if new_name matches any existing character. Returns matched name or None."""
+        prompt = self._NPC_DEDUP_PROMPT.format(
+            existing_names=", ".join(existing_names),
+            new_name=new_name,
+        )
+        response = await self.llm_client.call_llm(
+            messages=[{"role": "user", "content": prompt}],
+            model=self.config.models.extraction,  # Flash 모델 (저비용)
+            max_tokens=50,
+            temperature=0,
+        )
+        answer = response.strip().strip('"').strip("'")
+        # 응답이 기존 이름 중 하나와 일치하면 반환
+        for name in existing_names:
+            if answer.lower() == name.lower():
+                return name
+        return None
+
+    async def deduplicate_npcs(self, session_id: str) -> list[tuple[str, str]]:
+        """Scan existing NPCs and merge duplicates via LLM judgment.
+
+        Returns list of (keep, removed) pairs that were merged.
+        """
+        chars = await self.sqlite_db.get_session_characters(session_id)
+        npcs = [c for c in chars if not c.get("is_player")]
+        if len(npcs) < 2:
+            return []
+
+        merged = []
+        names = [c["name"] for c in npcs]
+        skip = set()
+
+        for i, npc in enumerate(npcs):
+            if npc["name"] in skip:
+                continue
+            others = [n for j, n in enumerate(names) if j != i and n not in skip]
+            if not others:
+                continue
+            try:
+                match = await self._llm_dedup_check(npc["name"], others)
+                if match:
+                    # keep the one that appeared first (lower id = earlier)
+                    await self.sqlite_db.merge_characters(session_id, match, npc["name"])
+                    merged.append((match, npc["name"]))
+                    skip.add(npc["name"])
+                    logger.info(f"[Sub-B] Dedup merged: {npc['name']!r} → {match!r}")
+            except Exception as e:
+                logger.warning(f"[Sub-B] Dedup check failed for {npc['name']!r}: {e}")
+
+        return merged
 
     @staticmethod
     def _calculate_importance(narrative: dict) -> int:

@@ -57,6 +57,7 @@ class SQLiteDB:
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL REFERENCES sessions(id),
                 name TEXT NOT NULL,
+                aliases TEXT DEFAULT '[]',
                 is_player BOOLEAN DEFAULT FALSE,
                 hp INTEGER DEFAULT 100,
                 max_hp INTEGER DEFAULT 100,
@@ -362,15 +363,18 @@ class SQLiteDB:
         max_hp: int = 100,
         location: str = "unknown",
         mood: str = "neutral",
+        aliases: list[str] | None = None,
     ) -> dict:
         char_id = self._char_id(session_id, name)
         now = datetime.utcnow().isoformat()
+        aliases_json = json.dumps(aliases or [], ensure_ascii=False)
         await self._db.execute(
             """
             INSERT INTO characters
-                (id, session_id, name, is_player, hp, max_hp, location, mood, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, session_id, name, aliases, is_player, hp, max_hp, location, mood, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                aliases = excluded.aliases,
                 is_player = excluded.is_player,
                 hp = excluded.hp,
                 max_hp = excluded.max_hp,
@@ -378,11 +382,66 @@ class SQLiteDB:
                 mood = excluded.mood,
                 updated_at = excluded.updated_at
             """,
-            (char_id, session_id, name, is_player, hp, max_hp, location, mood, now, now),
+            (char_id, session_id, name, aliases_json, is_player, hp, max_hp, location, mood, now, now),
         )
         await self._db.commit()
-        logger.debug(f"[DB] create_character: session={session_id} name={name!r} is_player={is_player} loc={location}")
+        logger.debug(f"[DB] create_character: session={session_id} name={name!r} aliases={aliases} is_player={is_player}")
         return await self.get_character(session_id, name)
+
+    async def add_character_alias(self, session_id: str, name: str, alias: str) -> None:
+        """Add an alias to an existing character."""
+        char = await self.get_character(session_id, name)
+        if not char:
+            return
+        existing_aliases = json.loads(char.get("aliases") or "[]")
+        alias_lower = alias.strip().lower()
+        if alias_lower not in [a.lower() for a in existing_aliases]:
+            existing_aliases.append(alias.strip())
+            await self._db.execute(
+                "UPDATE characters SET aliases = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(existing_aliases, ensure_ascii=False), datetime.utcnow().isoformat(), char["id"]),
+            )
+            await self._db.commit()
+            logger.info(f"[DB] Added alias {alias!r} to character {name!r}")
+
+    async def find_character_by_alias(self, session_id: str, alias: str) -> dict | None:
+        """Find a character by any of its aliases."""
+        chars = await self.get_session_characters(session_id)
+        alias_lower = alias.strip().lower()
+        for char in chars:
+            char_aliases = json.loads(char.get("aliases") or "[]")
+            if alias_lower in [a.lower() for a in char_aliases]:
+                return char
+        return None
+
+    async def merge_characters(self, session_id: str, keep_name: str, remove_name: str) -> bool:
+        """Merge remove_name into keep_name: transfer aliases, delete duplicate."""
+        keep = await self.get_character(session_id, keep_name)
+        remove = await self.get_character(session_id, remove_name)
+        if not keep or not remove:
+            return False
+
+        # Transfer aliases from remove → keep
+        keep_aliases = json.loads(keep.get("aliases") or "[]")
+        remove_aliases = json.loads(remove.get("aliases") or "[]")
+        # Add remove's name and aliases to keep
+        all_new = [remove_name] + remove_aliases
+        for a in all_new:
+            if a.strip().lower() not in [x.lower() for x in keep_aliases]:
+                keep_aliases.append(a.strip())
+
+        now = datetime.utcnow().isoformat()
+        await self._db.execute(
+            "UPDATE characters SET aliases = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(keep_aliases, ensure_ascii=False), now, keep["id"]),
+        )
+        # Delete the duplicate
+        await self._db.execute(
+            "DELETE FROM characters WHERE id = ?", (remove["id"],)
+        )
+        await self._db.commit()
+        logger.info(f"[DB] Merged character {remove_name!r} into {keep_name!r}, aliases={keep_aliases}")
+        return True
 
     async def get_character(self, session_id: str, name: str) -> dict | None:
         char_id = self._char_id(session_id, name)

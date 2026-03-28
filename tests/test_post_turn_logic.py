@@ -63,38 +63,25 @@ class TestCalculateImportance:
 
 
 # ============================================================
-# _normalize_npc_name (entity deduplication)
+# _extract_alias (parenthetical alias extraction)
 # ============================================================
 
-class TestNormalizeNpcName:
-    """Layer 1: normalization for deduplication."""
+class TestExtractAlias:
+    """Layer 0: extract base name and alias from parenthetical notation."""
 
-    @pytest.mark.parametrize("raw,expected", [
-        # English articles
-        ("The Raccoon", "raccoon"),
-        ("the raccoon", "raccoon"),
-        ("A Knight", "knight"),
-        ("An Elf", "elf"),
-        # Case normalization
-        ("Raccoon", "raccoon"),
-        ("RACCOON", "raccoon"),
-        # Japanese honorifics
-        ("raccoon-san", "raccoon"),
-        ("Yuki-sama", "yuki"),
-        # Korean particles
-        ("라쿤이", "라쿤"),
-        ("라쿤을", "라쿤"),
-        ("라쿤의", "라쿤"),
-        ("라쿤에게", "라쿤"),
-        # Parenthetical
-        ("라쿤(Raccoon)", "라쿤"),
-        ("김소연(金素妍)", "김소연"),
-        # Already clean
-        ("Johnson", "johnson"),
-        ("존슨 대장", "존슨 대장"),
+    @pytest.mark.parametrize("raw,expected_base,expected_alias", [
+        ("루비아(Rubia)", "루비아", "Rubia"),
+        ("최은지(崔恩智)", "최은지", "崔恩智"),
+        ("Pink(핑크)", "Pink", "핑크"),
+        ("존슨(Johnson)", "존슨", "Johnson"),
+        ("루비아", "루비아", None),
+        ("Johnson", "Johnson", None),
+        ("테스트()", "테스트", None),
     ])
-    def test_normalization(self, raw, expected):
-        assert PostTurnExtractor._normalize_npc_name(raw) == expected
+    def test_extract_alias(self, raw, expected_base, expected_alias):
+        base, alias = PostTurnExtractor._extract_alias(raw)
+        assert base == expected_base
+        assert alias == expected_alias
 
 
 # ============================================================
