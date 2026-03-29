@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAGA — Portfolio</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=Source+Code+Pro:wght@400;500&display=swap');
+
+  :root {
+    --bg: #e8e0d4;
+    --card: #f5f0e8;
+    --card-alt: #eee8dc;
+    --text: #2d2a26;
+    --text-muted: #6b6560;
+    --accent: #c4622a;
+    --accent-dark: #a14e1e;
+    --green: #3a7d34;
+    --green-dark: #2d6128;
+    --border: #d4ccc0;
+    --tag-bg: #f5f0e8;
+    --tag-border: #c4622a;
+    --code-bg: #2d2a26;
+    --code-text: #f5f0e8;
+    --blue: #3b6fa0;
+    --purple: #7c5cbf;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Noto Sans KR', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+
+  /* Hero */
+  .hero {
+    background: var(--card);
+    padding: 80px 0 60px;
+    border-bottom: 3px solid var(--border);
+  }
+  .hero .badge {
+    display: inline-block;
+    border: 1.5px solid var(--accent);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 14px;
+    border-radius: 20px;
+    letter-spacing: 0.5px;
+    margin-bottom: 20px;
+  }
+  .hero h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: 48px;
+    font-weight: 900;
+    line-height: 1.15;
+    margin-bottom: 8px;
+  }
+  .hero h1 em {
+    font-style: italic;
+    font-weight: 700;
+  }
+  .hero .subtitle {
+    color: var(--text-muted);
+    font-size: 16px;
+    margin-bottom: 40px;
+  }
+  .hero .subtitle strong { color: var(--green); font-weight: 700; }
+
+  .stats {
+    display: flex;
+    gap: 48px;
+    margin-bottom: 32px;
+  }
+  .stat-item .number {
+    font-family: 'Playfair Display', serif;
+    font-size: 42px;
+    font-weight: 900;
+    color: var(--text);
+  }
+  .stat-item .label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tag {
+    border: 1.5px solid var(--tag-border);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 3px 12px;
+    border-radius: 4px;
+  }
+
+  /* Sections */
+  section { padding: 64px 0; }
+  section + section { border-top: 1px solid var(--border); }
+
+  .section-badge {
+    display: inline-block;
+    background: var(--accent);
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 12px;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+    margin-bottom: 16px;
+  }
+  .section-badge.green { background: var(--green); }
+  .section-badge.blue { background: var(--blue); }
+  .section-badge.purple { background: var(--purple); }
+
+  h2 {
+    font-family: 'Playfair Display', serif;
+    font-size: 36px;
+    font-weight: 900;
+    line-height: 1.2;
+    margin-bottom: 20px;
+  }
+  h2 strong { color: var(--green); }
+
+  h3 {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  p { margin-bottom: 16px; color: var(--text); }
+  p.muted { color: var(--text-muted); }
+
+  /* Cards grid */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .cards.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .cards.cols-4 { grid-template-columns: repeat(2, 1fr); }
+
+  .card {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .card.bordered { border: 1.5px solid var(--border); }
+
+  .card .card-badge {
+    display: inline-block;
+    border: 1.5px solid var(--border);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 4px;
+    margin-bottom: 12px;
+    letter-spacing: 0.3px;
+  }
+
+  .card h3 { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
+  .card p { font-size: 14px; line-height: 1.6; color: var(--text-muted); margin-bottom: 8px; }
+  .card .highlight {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-top: 8px;
+  }
+  .card .highlight.green { color: var(--green); }
+
+  /* Code block */
+  .code-block {
+    background: var(--code-bg);
+    color: var(--code-text);
+    font-family: 'Source Code Pro', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 20px 24px;
+    border-radius: 12px;
+    overflow-x: auto;
+    margin: 16px 0;
+  }
+  .code-block .comment { color: #8a8580; }
+  .code-block .string { color: #e8a87c; }
+  .code-block .key { color: #7ec8a0; }
+
+  /* Callout */
+  .callout {
+    background: var(--card);
+    border-left: 4px solid var(--accent);
+    padding: 20px 24px;
+    border-radius: 0 12px 12px 0;
+    margin: 24px 0;
+  }
+  .callout.green { border-left-color: var(--green); }
+  .callout p { margin: 0; font-size: 15px; }
+  .callout strong { color: var(--green); }
+
+  /* Divider text */
+  .divider-text {
+    text-align: center;
+    font-style: italic;
+    color: var(--text-muted);
+    padding: 24px 0;
+    font-size: 15px;
+  }
+
+  /* Table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th {
+    text-align: left;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    padding: 10px 16px;
+    border-bottom: 2px solid var(--border);
+  }
+  td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  td strong { color: var(--accent); }
+
+  /* Architecture workflow */
+  .workflow {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 32px 0;
+  }
+  .wf-row {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+  }
+  .wf-node {
+    background: var(--card);
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    flex: 1;
+    position: relative;
+  }
+  .wf-node.highlight { border-color: var(--accent); border-width: 2px; }
+  .wf-node .wf-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .wf-node .wf-label.orange { color: var(--accent); }
+  .wf-node .wf-label.green { color: var(--green); }
+  .wf-node h4 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+  .wf-node p { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin: 0; }
+
+  .wf-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    min-width: 48px;
+    color: var(--accent);
+    font-size: 24px;
+    font-weight: 700;
+  }
+  .wf-arrow-down {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 40px;
+    color: var(--accent);
+    font-size: 24px;
+    font-weight: 700;
+  }
+  .wf-arrow-fork {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    height: 40px;
+    position: relative;
+  }
+  .wf-arrow-fork::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 2px;
+    height: 20px;
+    background: var(--accent);
+  }
+  .wf-arrow-fork::after {
+    content: '';
+    position: absolute;
+    top: 20px;
+    left: calc(25% + 12px);
+    right: calc(25% + 12px);
+    height: 2px;
+    background: var(--accent);
+  }
+  .wf-fork-legs {
+    display: flex;
+    gap: 16px;
+  }
+  .wf-fork-legs > * { flex: 1; }
+  .wf-fork-leg-arrow {
+    display: flex;
+    justify-content: center;
+    height: 24px;
+    color: var(--accent);
+    font-size: 20px;
+  }
+
+  .wf-async-label {
+    text-align: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 1px;
+    padding: 8px 0 4px;
+  }
+
+  .wf-sync-row {
+    display: flex;
+    gap: 16px;
+  }
+  .wf-sync-row > * { flex: 1; }
+
+  /* Result big numbers */
+  .result-stats {
+    display: flex;
+    justify-content: center;
+    gap: 80px;
+    padding: 40px 0;
+  }
+  .result-stat { text-align: center; }
+  .result-stat .big {
+    font-family: 'Playfair Display', serif;
+    font-size: 56px;
+    font-weight: 900;
+  }
+  .result-stat .big.orange { color: var(--accent); }
+  .result-stat .big.green { color: var(--green); }
+  .result-stat .desc {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  /* Metric cards */
+  .metric-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .metric-card {
+    background: var(--card-alt);
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+  }
+  .metric-card .metric-number {
+    font-family: 'Playfair Display', serif;
+    font-size: 32px;
+    font-weight: 900;
+  }
+  .metric-card .metric-label {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  /* Deep dive additions */
+  h2 .accent { color: var(--accent); }
+  .card.accent-border { border: 2px solid var(--accent); }
+  .card.green-border { border: 2px solid var(--green); }
+
+  .token-bar {
+    display: flex;
+    height: 40px;
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 16px 0;
+    font-size: 11px;
+    font-weight: 700;
+    color: white;
+  }
+  .token-bar > div {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+  .token-bar .system { background: var(--accent); }
+  .token-bar .chunks { background: var(--green); }
+  .token-bar .context { background: var(--blue); }
+  .token-bar .messages { background: var(--purple); }
+  .token-bar .dynamic { background: var(--text-muted); }
+
+  .token-legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin: 8px 0 24px;
+    font-size: 12px;
+  }
+  .token-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .token-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+  }
+
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 0;
+    align-items: stretch;
+    margin: 24px 0;
+  }
+  .compare-side {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .compare-side.bad { border: 2px solid #c44; }
+  .compare-side.good { border: 2px solid var(--green); }
+  .compare-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    font-size: 24px;
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .diff-block {
+    background: var(--code-bg);
+    font-family: 'Source Code Pro', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    padding: 20px 24px;
+    border-radius: 12px;
+    overflow-x: auto;
+    margin: 16px 0;
+  }
+  .diff-block .removed {
+    background: rgba(220, 60, 60, 0.15);
+    color: #e88;
+    display: block;
+    margin: 0 -24px;
+    padding: 0 24px;
+  }
+  .diff-block .added {
+    background: rgba(60, 180, 80, 0.15);
+    color: #8e8;
+    display: block;
+    margin: 0 -24px;
+    padding: 0 24px;
+  }
+  .diff-block .unchanged { color: #8a8580; display: block; }
+
+  .code-block .highlight-line {
+    background: rgba(196, 98, 42, 0.15);
+    display: block;
+    margin: 0 -24px;
+    padding: 0 24px;
+  }
+
+  @media (max-width: 768px) {
+    .hero h1 { font-size: 32px; }
+    .stats { flex-direction: column; gap: 24px; }
+    .cards, .arch-grid, .metric-cards, .compare { grid-template-columns: 1fr; }
+    .compare-arrow { width: auto; height: 32px; }
+    .result-stats { flex-direction: column; gap: 32px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="container">
+    <span class="badge">PERSONAL PROJECT · 2026.02 – ONGOING</span>
+    <h1>SAGA<br>Stateful Context Engine<br><em>for Long-term Narrative RP</em></h1>
+    <p class="subtitle">RP 캐릭터 챗에서 <strong>장기 맥락을 유지</strong>하는 서버사이드 메모리 프록시</p>
+
+    <div class="stats">
+      <div class="stat-item">
+        <div class="number">85.7%</div>
+        <div class="label">PROMPT CACHE HIT</div>
+      </div>
+      <div class="stat-item">
+        <div class="number">43.5%</div>
+        <div class="label">COST REDUCTION</div>
+      </div>
+      <div class="stat-item">
+        <div class="number">1</div>
+        <div class="label">MAIN LLM CALL / TURN</div>
+      </div>
+    </div>
+
+    <div class="tags">
+      <span class="tag">PYTHON</span>
+      <span class="tag">FASTAPI</span>
+      <span class="tag">LETTA</span>
+      <span class="tag">SQLITE</span>
+      <span class="tag">CHROMADB</span>
+      <span class="tag">PROMPT CACHING</span>
+      <span class="tag">LANGSMITH</span>
+      <span class="tag">SSE</span>
+    </div>
+  </div>
+</div>
+
+<!-- PROBLEM -->
+<section>
+  <div class="container">
+    <span class="section-badge">PROBLEM</span>
+    <h2>장기 대화에서 LLM은 <strong>맥락을 놓친다</strong></h2>
+    <p>RP 챗봇을 장기 세션으로 굴리다 보면 구조적인 문제에 부딪힌다. 50턴 전에 죽은 NPC가 다시 나타나고, 버린 아이템이 인벤토리에 남아 있고, 동쪽으로 이동했는데 서쪽 마을에 있다. 200K 토큰을 보내도 LLM이 50턴 전 세부사항을 정확히 기억하리라는 보장은 없고, 비용은 선형으로 늘어난다.</p>
+
+    <div class="code-block" style="font-size:12px;margin-bottom:24px">
+<span class="comment">// 실제 장기 RP 유저의 현실</span>
+max context 60K, HypaMemory ON, 메토비 0.15~0.20
+→ 누적 30만 토큰 쯤부터 봇이 치매
+→ "다음 장기챗할 때 이맘때쯤 슬슬 손요약해라"
+→ NPC 리스트를 5만 토큰마다 수동으로 요약해서 로어북에 반영
+    </div>
+
+    <div class="cards">
+      <div class="card bordered">
+        <span class="card-badge">SUMMARIZATION</span>
+        <p>이전 대화를 요약하여 압축하는 방식이다. HypaMemory V3는 메모리를 system 메시지로 주입하면서 매 턴 내용이 바뀌어 prefix 캐싱을 깨뜨린다. 요약마다 별도 LLM 호출도 필요하다.</p>
+        <div class="highlight">prefix 캐싱 파괴</div>
+      </div>
+      <div class="card bordered">
+        <span class="card-badge">MEMORY STORE</span>
+        <p>메모리 처리를 응답과 함께 동기적으로 처리하기 때문에, 지연이 누적되고 비용이 높다. Mem0는 임베딩 유사도만으로 엔티티를 매칭해서 한/영 이름 중복을 잡지 못한다.</p>
+        <div class="highlight">응답 지연 누적</div>
+      </div>
+      <div class="card bordered">
+        <span class="card-badge">STATEFUL AGENT</span>
+        <p>에이전트 방식. 메모리를 직접 읽고, 판단하고, 쓴다. 가장 유연하지만, 매 턴마다 에이전트가 판단하므로 비용이 높고, 매 턴 3~5회 LLM 호출로 응답 시간이 길다.</p>
+        <div class="highlight">턴당 3~5회 LLM 호출</div>
+      </div>
+    </div>
+
+    <p class="divider-text">기억은 오래 가면서, 응답은 느려지지 않게 할 수 있을까?</p>
+  </div>
+</section>
+
+<!-- BACKGROUND -->
+<section>
+  <div class="container">
+    <span class="section-badge green">BACKGROUND</span>
+    <h2>Stateful 에이전트가 <strong>어려운 이유</strong></h2>
+
+    <div class="cards cols-2">
+      <div class="card">
+        <h3>엔티티 — 같은 캐릭터를 뭐라 부르는지도 모른다</h3>
+        <p>동일 캐릭터가 별명, 본명, 호칭으로 불리며 지칭이 달라진다. "루비아" = "Rubia"를 규칙으로는 잡을 수 없다. 업계 메모리 시스템(Mem0, Graphiti, LangMem)을 조사한 결과, 확실한 건 LLM 판단뿐이었다.</p>
+      </div>
+      <div class="card">
+        <h3>이벤트 — 뭘 저장하고 뭘 버릴지 기준이 없다</h3>
+        <p>일시적 이벤트(싸움, 화가남)와 비가역적 이벤트(사망, 관계 변화)를 LLM이 구분할 수 없다. 잘못 구분하면 서사가 꼬인다.</p>
+      </div>
+      <div class="card">
+        <h3>입력 — 서비스마다 데이터가 전부 다르다</h3>
+        <p>서비스마다 이미지, 수치, 로어북, 모든 형식의 입력이 달라진다. 하나의 파이프라인으로 모든 케이스를 처리할 수 없다.</p>
+      </div>
+      <div class="card">
+        <h3>언어 모델 — 요약이 한 번 틀리면 계속 틀린다</h3>
+        <p>잘못된 요약 → 잘못된 맥락 주입 → 잘못된 응답이 다시 맥락에 쌓이는 악순환. 처음부터 잘못된 요약이 이후 대화를 계속 오염시킨다.</p>
+      </div>
+    </div>
+
+    <div class="callout green">
+      <p>결국 다들 외부 스크립트나 로어북으로 구조화된 입력을 만들어서 Episodic Memory를 보완하고 있다. <strong>SAGA는 이걸 서버사이드에서 자동화한다.</strong></p>
+    </div>
+  </div>
+</section>
+
+<!-- TRIAL & ERROR -->
+<section>
+  <div class="container">
+    <span class="section-badge">TRIAL & ERROR</span>
+    <h2>시도: LLM 출력에서 <strong>상태를 추출하자</strong></h2>
+
+    <div class="code-block">
+      <span class="comment">// 매 턴 LLM 입력 → regex로 12개의 필드</span><br>
+      <span class="comment">// (location, mood, inventory, npc_met...)</span><br>
+      <span class="comment">// → 실패 시 Gemini Flash 폴백 → SQLite 저장</span><br>
+      <span class="comment">// → live_state.md → 다음 턴에 주입</span>
+    </div>
+
+    <h3>문제: 시나리오마다 추출할 필드가 다르다</h3>
+    <div class="cards cols-4">
+      <div class="card bordered"><h3>전투 정보들</h3><p>HP, 위치, 인벤토리가 중요. 감정은 의미 없음</p></div>
+      <div class="card bordered"><h3>연애 시뮬</h3><p>호감도, 관계 변화가 중요. 인벤토리는 의미 없음</p></div>
+      <div class="card bordered"><h3>미스터리</h3><p>단서, 용의자, 타임라인이 중요. HP는 의미 없음</p></div>
+      <div class="card bordered"><h3>일상물</h3><p>고정 필드 자체가 의미 없음</p></div>
+    </div>
+
+    <div class="callout">
+      <p>빼봤더니 오차가 난다. 고정 템플릿으로는 범용 추출이 안 됐다. 방향을 바꿔야 했다.</p>
+    </div>
+  </div>
+</section>
+
+<!-- PIVOT -->
+<section>
+  <div class="container">
+    <span class="section-badge">PIVOT</span>
+    <h2>복잡도를 낮추는 <strong>두 가지 시도</strong></h2>
+
+    <div class="cards cols-2">
+      <div class="card bordered">
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <span class="card-badge">전환 1: 4필드 FLASH 요약</span>
+          <span class="card-badge" style="border-color:var(--green);color:var(--green)">구현 완료</span>
+        </div>
+        <div class="code-block">
+<span class="comment">// 12필드 → 4필드로 축소</span>
+<span class="comment">// Gemini Flash가 매 턴 비동기 추출</span>
+{
+  <span class="key">"summary"</span>: <span class="string">"소연이 웃으며 검을 건넸다"</span>,
+  <span class="key">"npcs_mentioned"</span>: [<span class="string">"소연"</span>],
+  <span class="key">"scene_type"</span>: <span class="string">"dialogue"</span>,
+  <span class="key">"key_event"</span>: <span class="string">"검 전달"</span>
+}
+<span class="comment">// → 이 1회 요약이 4곳에서 재활용:</span>
+<span class="comment">//   turn_log, ChromaDB, MessageCompressor, WindowRecovery</span>
+        </div>
+        <p>시나리오 불문, 서사 흐름만 추출. 필드 정의가 필요 없다.</p>
+      </div>
+      <div class="card bordered">
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <span class="card-badge">전환 2: SCRIPTSTATE 주입</span>
+          <span class="card-badge" style="border-color:var(--text-muted);color:var(--text-muted)">P3 설계</span>
+        </div>
+        <div class="code-block">
+<span class="comment">// RisuAI 카드 제작자가 정의한 공식 상태</span>
+{
+  <span class="key">"hp"</span>: 85,
+  <span class="key">"location"</span>: <span class="string">"폐광 B2층"</span>,
+  <span class="key">"inventory"</span>: [<span class="string">"횃불"</span>,<span class="string">"소연의 반지"</span>],
+  <span class="key">"affection"</span>: 72
+}
+<span class="comment">// → 플러그인이 SAGA에 패스스루</span>
+<span class="comment">// → Curator가 N턴 delta 계산</span>
+        </div>
+        <p>정확도 100% — LLM 추론이 아닌 시스템 관리 데이터. 추가 토큰 0.</p>
+      </div>
+    </div>
+
+    <div class="metric-cards">
+      <div class="metric-card">
+        <div class="metric-number">12→4</div>
+        <div class="metric-label">추출 필드 축소</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-number">×4</div>
+        <div class="metric-label">1회 요약, 4곳 재활용</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-number">범용</div>
+        <div class="metric-label">시나리오 의존성 제거</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- INSIGHT 1 -->
+<section>
+  <div class="container">
+    <span class="section-badge green">INSIGHT</span>
+    <h2 style="text-align:center">코딩 에이전트에서 찾은 <strong>패턴</strong></h2>
+
+    <p>Letta의 Stateful Agent는 강력하지만, 매 턴 3~5회 LLM 호출이라는 복잡도가 있다. 그런데 코딩 에이전트들(Claude Code, Cursor, Codex)은 수천 줄의 코드베이스를 넘나들면서, 메모리 구조는 의외로 단순하다. 전부 <strong>.md와 JSON 파일</strong>이다.</p>
+
+    <table>
+      <thead>
+        <tr><th>System</th><th>Context Management</th><th>Pattern</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Claude Code</td><td>CLAUDE.md, ~/.claude/memory/*.md</td><td>마크다운 기반 지시 + 지속 메모리</td></tr>
+        <tr><td>Cursor</td><td>.cursor/rules/*.mdc, .cursorrules</td><td>프로젝트별 규칙 파일</td></tr>
+        <tr><td>Codex</td><td>AGENTS.md, 마크다운 기반 지시</td><td>에이전트 간 공유 컨텍스트</td></tr>
+        <tr><td>Letta (MemFS)</td><td>memory/*.md + YAML frontmatter</td><td>구조화된 메모리 블록</td></tr>
+      </tbody>
+    </table>
+
+    <p>Letta의 MemFS가 특히 비슷하다. Memory Block(단일 문자열)에서 git 기반 마크다운 파일 시스템으로 진화한 구조인데, SAGA의 stable_prefix.md + live_state.md + YAML frontmatter와 거의 같다. 차이는 편집 주체다 — MemFS는 에이전트가 LLM 호출로 편집하고, SAGA는 코드 로직(Sub-B)이 밀리초 단위로 편집한다.</p>
+
+    <div class="callout green">
+      <p><strong>SAGA:</strong> Curator가 관리한 stable_prefix.md를 시스템 프롬프트에 주입 — DB 전체를 넣는 게 아니라, 정제된 <strong>.md 한 장만 넣는다</strong></p>
+    </div>
+  </div>
+</section>
+
+<!-- INSIGHT 2 -->
+<section>
+  <div class="container">
+    <span class="section-badge green">INSIGHT</span>
+    <h2>구조화된 <strong>.md 요약</strong></h2>
+
+    <p class="muted" style="text-align:center">로어북, 에피소드 기록 같은 세부 데이터를 그대로 프롬프트에 넣으면, 시점이 다른 정보끼리 충돌하여 노이즈를 만들어낸다.</p>
+
+    <div class="cards cols-2" style="margin-top:24px">
+      <div class="card">
+        <h3>예시 1. 캐릭터 설정 모순</h3>
+        <p style="color:var(--accent)">로어북: 엘리나는 착한 약초꾼이다</p>
+        <p style="color:var(--accent)">에피소드 — 턴 12: 엘리나가 점점 냉혹하게 변해들었다</p>
+      </div>
+      <div class="card">
+        <h3>예시 2. 상태 정보 충돌</h3>
+        <p style="color:var(--accent)">에피소드 — 턴 8: 여관에서 쉬고 있다</p>
+        <p style="color:var(--accent)">에피소드 — 턴 11: 숲 한가운데서 길을 잃었다</p>
+      </div>
+    </div>
+
+    <p>이렇게 간단해 보이는 정보 차이가 누적되어 DB에 저장되면, LLM은 어떤 게 최신인지 판단할 수 없다. Curator가 정리한 "엘리나: 약초꾼이나 전투 가능", "현재 위치: 숲" — 충돌 없는 한 줄 요약이라 LLM이 바로 쓸 수 있고, 추론 부담도 줄어든다.</p>
+
+    <div class="callout green">
+      <p>Curator는 정보를 더하는 게 아니라 <strong>정리한다</strong> — 안 나오는 NPC는 빼고, 오래된 에피소드와 최신이 충돌하면 갱신하고, 여러 에피소드를 한 줄로 압축한다. 세부 데이터는 Curator 입력으로만 쓰고, <strong>LLM에는 정리된 .md만 넘긴다.</strong></p>
+    </div>
+  </div>
+</section>
+
+<!-- AGENT PHILOSOPHY -->
+<section>
+  <div class="container">
+    <span class="section-badge green">CORE DECISION</span>
+    <h2>에이전트는 <strong>큐레이션에만</strong></h2>
+
+    <p>RP에서 에이전트의 판단력이 진짜 필요한 곳이 어디인지 생각해보면:</p>
+
+    <div class="cards" style="grid-template-columns: repeat(3, 1fr)">
+      <div class="card bordered">
+        <h3>매 턴 서사 요약</h3>
+        <p>"어떤 장면이었나, 누가 나왔나"</p>
+        <div class="highlight green">→ Flash LLM 4필드 추출로 충분</div>
+      </div>
+      <div class="card bordered">
+        <h3>매 턴 컨텍스트 조립</h3>
+        <p>"어떤 로어북이 관련 있나"</p>
+        <div class="highlight green">→ 점수 기반 필터링으로 충분</div>
+      </div>
+      <div class="card bordered">
+        <h3>N턴마다 서사 큐레이션</h3>
+        <p>"이 모순은 의도된 건가, 이 복선은 회수해야 하나"</p>
+        <div class="highlight">→ 이전 판단을 기억하고 이어가야 함. 에이전트가 필요</div>
+      </div>
+    </div>
+
+    <p>그래서 Letta를 메인 루프에서 빼고 Curator에만 배치했다. 코딩 에이전트가 Notepad로 작업 맥락을 자기관리하듯, Letta Curator는 Memory Block으로 큐레이션 판단 이력을 자기관리한다.</p>
+
+    <div class="code-block">
+<span class="comment">코딩 에이전트 패턴:                    SAGA 적용:</span>
+┌──────────────┐                   ┌──────────────────┐
+│ Agent        │                   │ Letta Curator     │
+│  └ Notepad   │ ← 자기관리        │  └ Memory Block   │ ← 자기편집
+│  └ 작업 실행  │                   │  └ 서사 판단       │
+└──────────────┘                   └──────────────────┘
+  <span class="string">"뭐가 중요하지?"</span>                    <span class="string">"이 모순은 의도적인가?"</span>
+  <span class="string">"이전에 뭘 했지?"</span>                   <span class="string">"지난 큐레이션에서 뭘 결정했지?"</span>
+    </div>
+
+    <div class="callout green">
+      <p>메인 루프는 LLM 0회(Sub-A) + 1회(내레이션)로 최소 지연이고, Curator의 다회 호출은 N턴마다 비동기라 유저에게 영향 없다.</p>
+    </div>
+  </div>
+</section>
+
+<!-- SYSTEM ARCHITECTURE -->
+<section>
+  <div class="container">
+    <span class="section-badge">SYSTEM ARCHITECTURE</span>
+    <h2>3-Agent 비동기 <strong>파이프라인</strong></h2>
+
+    <!-- Step 1: User Input -->
+    <div class="workflow">
+      <div class="wf-node" style="max-width:320px">
+        <div class="wf-label orange">USER INPUT</div>
+        <h4>SSE Middleware</h4>
+        <p>OpenAI-compatible API 미들웨어<br>프론트엔드 수신 입력 처리</p>
+      </div>
+
+      <div class="wf-arrow-down">▼</div>
+
+      <!-- Step 2: Sub-A -->
+      <div class="wf-node" style="max-width:480px">
+        <div class="wf-label green">SYNC · SUB-A</div>
+        <h4>Context Builder</h4>
+        <p>stable_prefix.md 읽기 → ChromaDB 에피소드 검색 (RRF 3-source) → 프롬프트에 서사 맥락 주입<br><strong style="color:var(--green)">~200ms · LLM 호출 없음</strong></p>
+      </div>
+
+      <div class="wf-arrow-down">▼</div>
+
+      <!-- Step 3: Main LLM -->
+      <div class="wf-node highlight">
+        <div class="wf-label orange">MAIN LLM CALL</div>
+        <h4>LLM 1회 호출</h4>
+        <p>Anthropic 3-Breakpoint 프롬프트 캐싱 적용 · SystemStabilizer가 prefix 고정 · MessageCompressor가 immutable chunk로 선제 압축<br><strong style="color:var(--accent)">캐시 히트율 85.7%</strong></p>
+      </div>
+
+      <div class="wf-arrow-down">▼</div>
+
+      <!-- Step 4: Response -->
+      <div class="wf-node" style="max-width:320px">
+        <div class="wf-label green">RESPONSE</div>
+        <h4>SSE 스트리밍 응답</h4>
+        <p>유저에게 즉시 반환</p>
+      </div>
+
+      <!-- Fork: async tasks -->
+      <div class="wf-async-label">▼ 응답 반환 후 비동기 ──────────────────</div>
+
+      <div class="wf-sync-row">
+        <div class="wf-node">
+          <div class="wf-label orange">ASYNC · SUB-B</div>
+          <h4>Post-Turn (Flash)</h4>
+          <p>Flash 4필드 요약·추출<br>ChromaDB episode + turn_log 기록<br>live_state.md 갱신<br>NPC alias + LLM dedup<br><strong style="color:var(--text-muted)">비동기 · 유저 대기 없음</strong></p>
+        </div>
+        <div class="wf-node">
+          <div class="wf-label orange">ASYNC · N턴마다</div>
+          <h4>Curator (Letta)</h4>
+          <p>에피소드 분석 → 모순 탐지<br>NPC 에피소드 갱신<br>stable_prefix.md 재작성<br>로어 자동생성<br><strong style="color:var(--text-muted)">Letta Memory Block · 연속성</strong></p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SUB-B REUSE -->
+<section>
+  <div class="container">
+    <span class="section-badge">SUB-B</span>
+    <h2>Flash 요약 1회, <strong>4곳에서 재활용</strong></h2>
+
+    <p>Sub-B가 매 턴 뽑아내는 4필드 요약은 단순 로그가 아니다. 이 한 번의 요약을 시스템 전체가 돌려쓴다.</p>
+
+    <div class="code-block">
+<span class="comment">// Sub-B 추출 결과 (Gemini Flash, 비동기)</span>
+{
+  <span class="key">"summary"</span>: <span class="string">"소연이 검을 건네며 조심하라고 당부했다"</span>,
+  <span class="key">"npcs_mentioned"</span>: [<span class="string">"소연"</span>],
+  <span class="key">"scene_type"</span>: <span class="string">"dialogue"</span>,
+  <span class="key">"key_event"</span>: <span class="string">"검 전달"</span>
+}
+    </div>
+
+    <div class="cards cols-2">
+      <div class="card bordered">
+        <span class="card-badge" style="color:var(--green);border-color:var(--green)">1 · turn_log</span>
+        <p>턴별 서사 기록. Curator가 N턴치를 한꺼번에 읽고 stable_prefix를 다시 쓸 때 원본이 된다.</p>
+      </div>
+      <div class="card bordered">
+        <span class="card-badge" style="color:var(--green);border-color:var(--green)">2 · ChromaDB episode</span>
+        <p>벡터 검색용 에피소드. Sub-A가 RRF 검색할 때 similar / important 소스로 쓰인다.</p>
+      </div>
+      <div class="card bordered">
+        <span class="card-badge" style="color:var(--green);border-color:var(--green)">3 · MessageCompressor</span>
+        <p>오래된 턴 압축 시, 별도 LLM 호출 없이 turn_log의 summary를 그대로 chunk에 넣는다.</p>
+      </div>
+      <div class="card bordered">
+        <span class="card-badge" style="color:var(--green);border-color:var(--green)">4 · WindowRecovery</span>
+        <p>슬라이딩 윈도우로 메시지가 유실되면, 잃어버린 턴의 summary를 모아 복구 블록을 만든다.</p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <p>보통 메모리 시스템은 압축할 때마다 별도 LLM을 호출한다. SAGA는 Sub-B가 이미 만들어둔 요약을 돌려쓴다. 압축이든 복구든 <strong>추가 LLM 호출 0회.</strong></p>
+    </div>
+  </div>
+</section>
+
+<!-- CACHING STRATEGY -->
+<section>
+  <div class="container">
+    <span class="section-badge green">PROMPT CACHING</span>
+    <h2>슬라이딩 윈도우와 <strong>캐시</strong></h2>
+
+    <h3 style="margin-bottom:12px">max token과 슬라이딩 윈도우</h3>
+    <p>LLM API에는 한 번에 보낼 수 있는 토큰 한도(max context)가 있다. 대화가 길어져서 메시지 총량이 이 한도를 넘으면, 프론트엔드(RisuAI)가 오래된 메시지를 앞에서부터 잘라낸다. 이게 슬라이딩 윈도우다.</p>
+
+    <p>문제는 Anthropic의 프롬프트 캐싱이 <strong>prefix 해시 기반</strong>이라는 점이다. 메시지 배열의 앞부분이 이전 턴과 똑같으면 캐시 히트, 한 글자라도 다르면 전부 미스. 슬라이딩 윈도우가 앞쪽 메시지를 잘라내는 순간, 배열 자체가 바뀌니까 캐시가 통째로 날아간다.</p>
+
+    <div class="callout">
+      <p>즉, 대화가 길어질수록 캐시가 깨지기 쉽고, 캐시가 깨지면 매 턴 전체 토큰을 새로 처리해야 해서 비용과 지연이 같이 올라간다. SAGA는 이걸 세 가지로 잡는다.</p>
+    </div>
+
+    <div class="cards" style="grid-template-columns: repeat(3, 1fr)">
+      <div class="card accent-border">
+        <h3>System 메시지 변동</h3>
+        <p>RisuAI가 Lorebook을 매 턴 시스템 프롬프트에 넣었다 뺐다 함. system 내용이 바뀌면 제일 앞(BP1) 캐시가 통째로 날아간다.</p>
+        <div class="highlight">→ SystemStabilizer</div>
+      </div>
+      <div class="card accent-border">
+        <h3>슬라이딩 윈도우</h3>
+        <p>토큰 한도 초과 → 앞쪽 메시지 삭제 → 메시지 배열이 달라짐 → prefix 전체 미스.</p>
+        <div class="highlight">→ MessageCompressor</div>
+      </div>
+      <div class="card accent-border">
+        <h3>외부 윈도우 유실</h3>
+        <p>RisuAI가 자체적으로 윈도우를 밀면 SAGA가 모르는 사이에 메시지가 사라진다. 맥락에 구멍이 뚫린다.</p>
+        <div class="highlight">→ WindowRecovery</div>
+      </div>
+    </div>
+
+    <h3 style="margin-top:40px;margin-bottom:16px">3-Breakpoint 배치</h3>
+    <p class="muted">메시지 배열 안에 3개의 cache_control 마커를 전략적으로 배치한다. 각 breakpoint까지의 prefix가 캐시 단위다.</p>
+
+    <div class="token-bar">
+      <div class="system" style="flex:2">BP1: System</div>
+      <div class="chunks" style="flex:2.5">BP2: Chunks</div>
+      <div class="context" style="flex:1.5">BP3: Summary</div>
+      <div class="messages" style="flex:2">Messages</div>
+      <div class="dynamic" style="flex:1.5">Dynamic</div>
+    </div>
+    <div class="token-legend">
+      <div class="token-legend-item"><div class="token-legend-dot" style="background:var(--accent)"></div>System 프롬프트 (고정)</div>
+      <div class="token-legend-item"><div class="token-legend-dot" style="background:var(--green)"></div>압축 Chunks (불변)</div>
+      <div class="token-legend-item"><div class="token-legend-dot" style="background:var(--blue)"></div>윈도우 복구 요약</div>
+      <div class="token-legend-item"><div class="token-legend-dot" style="background:var(--purple)"></div>실제 대화 메시지</div>
+      <div class="token-legend-item"><div class="token-legend-dot" style="background:var(--text-muted)"></div>동적 컨텍스트 (캐시 밖)</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>Breakpoint</th><th>위치</th><th>내용</th><th>바뀌는 시점</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>BP1</strong></td>
+          <td>System message</td>
+          <td>캐릭터 카드 + 세계관 (Stabilizer가 고정)</td>
+          <td>캐릭터 교체 시에만</td>
+        </tr>
+        <tr>
+          <td><strong>BP2</strong></td>
+          <td>마지막 chunk의 assistant</td>
+          <td>압축된 요약 chunks (Compressor)</td>
+          <td>압축 시 뒤에 추가만, 기존 불변</td>
+        </tr>
+        <tr>
+          <td><strong>BP3</strong></td>
+          <td>복구 블록 assistant</td>
+          <td>윈도우 유실분 요약 (Recovery)</td>
+          <td>윈도우가 밀릴 때만</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout green">
+      <p>검색 결과나 Lorebook delta 같은 매 턴 바뀌는 데이터는 <strong>마지막 user 메시지에 prepend</strong>한다. prefix 밖이라 내용이 바뀌어도 캐시에 영향이 없다.</p>
+    </div>
+  </div>
+</section>
+
+<!-- SYSTEM STABILIZER -->
+<section>
+  <div class="container">
+    <span class="section-badge blue">SYSTEM STABILIZER</span>
+    <h2>시스템 프롬프트 <strong>고정</strong></h2>
+
+    <p>RisuAI는 활성화된 Lorebook 항목을 시스템 프롬프트에 동적으로 넣었다 뺐다 한다. 대화 중 조건이 바뀌면 시스템 메시지가 매 턴 달라지고, BP1 캐시가 깨진다.</p>
+
+    <div class="compare">
+      <div class="compare-side bad">
+        <h3 style="color:#c44;margin-bottom:12px">Before (매 턴 변동)</h3>
+        <div class="code-block" style="margin:0;font-size:12px">
+<span class="comment">// Turn 10: Lorebook "숲" 활성</span>
+system: 캐릭터 설정...
+<span class="highlight-line">+ 이 숲에는 정령이 산다.</span>
+
+<span class="comment">// Turn 11: Lorebook "마을" 활성</span>
+system: 캐릭터 설정...
+<span class="highlight-line">+ 마을 중앙에 분수가 있다.</span>
+<span class="comment">// → system 해시 변경 → BP1 미스</span>
+        </div>
+      </div>
+      <div class="compare-arrow">→</div>
+      <div class="compare-side good">
+        <h3 style="color:var(--green);margin-bottom:12px">After (Stabilizer 적용)</h3>
+        <div class="code-block" style="margin:0;font-size:12px">
+<span class="comment">// Turn 10~11: system 동일</span>
+system: 캐릭터 설정...  <span class="comment">← 고정</span>
+
+<span class="comment">// 바뀐 부분은 user prepend로 이동</span>
+user: <span class="string">[Lorebook: 마을 중앙에...]</span>
+      실제 유저 입력...
+<span class="comment">// → system 해시 불변 → BP1 히트</span>
+        </div>
+      </div>
+    </div>
+
+    <p>첫 턴의 시스템 프롬프트를 canonical로 저장해두고, 매 턴 현재 시스템과 paragraph 단위로 비교한다. 새로 추가된 부분(delta)만 떼어내서 마지막 user 메시지 앞에 붙인다. Jaccard 유사도가 임계값 아래로 떨어지면 캐릭터 자체가 바뀐 거니까 canonical을 새로 갱신한다.</p>
+  </div>
+</section>
+
+<!-- MESSAGE COMPRESSOR -->
+<section>
+  <div class="container">
+    <span class="section-badge green">MESSAGE COMPRESSOR</span>
+    <h2>잘리기 전에 <strong>먼저 압축</strong></h2>
+
+    <p>대화가 길어지면 메시지 토큰이 한도에 가까워진다. RisuAI가 슬라이딩 윈도우로 앞쪽 메시지를 잘라내면 메시지 배열이 바뀌고 prefix 캐시가 전부 깨진다. MessageCompressor는 RisuAI가 자르기 전에 먼저 오래된 턴 쌍(user + assistant)을 요약 chunk로 교체한다. 한번 만든 chunk는 안 건드린다.</p>
+
+    <div class="diff-block">
+<span class="comment">// 압축 전: 토큰 임계값 초과</span>
+<span class="removed">  { role: "user",      content: "Turn 1 유저 입력..." }     // 오래된 턴</span>
+<span class="removed">  { role: "assistant", content: "Turn 1 어시스턴트 응답..." }</span>
+<span class="removed">  { role: "user",      content: "Turn 2 유저 입력..." }</span>
+<span class="removed">  { role: "assistant", content: "Turn 2 어시스턴트 응답..." }</span>
+<span class="removed">  { role: "user",      content: "Turn 3 유저 입력..." }</span>
+<span class="removed">  { role: "assistant", content: "Turn 3 어시스턴트 응답..." }</span>
+<span class="unchanged">  { role: "user",      content: "Turn 4 유저 입력..." }     // 유지</span>
+<span class="unchanged">  { role: "assistant", content: "Turn 4 어시스턴트 응답..." }</span>
+
+<span class="comment">// 압축 후: chunk로 교체</span>
+<span class="added">  { role: "user",      content: "[SAGA: 이전 대화 요약 1: Turn 1-3]" }</span>
+<span class="added">  { role: "assistant", content: "Turn 1: 소연이 검을 건넸다.       ← turn_log에서 가져옴</span>
+<span class="added">                                Turn 2: 폐광 B2층으로 이동했다.</span>
+<span class="added">                                Turn 3: 정령과 첫 조우.",</span>
+<span class="added">    cache_control: { type: "ephemeral" }                    ← BP2 고정</span>
+<span class="added">  }</span>
+<span class="unchanged">  { role: "user",      content: "Turn 4 유저 입력..." }</span>
+<span class="unchanged">  { role: "assistant", content: "Turn 4 어시스턴트 응답..." }</span>
+    </div>
+
+    <div class="cards cols-2">
+      <div class="card green-border">
+        <h3>Chunk = 불변</h3>
+        <p>Anthropic 캐시는 prefix 해시가 같아야 히트한다. chunk 내용이 한 글자라도 바뀌면 BP2부터 전부 미스. 그래서 chunk는 한번 만들면 안 건드린다.</p>
+        <p>새 턴이 압축되면 <strong>기존 chunk 뒤에 새 chunk를 붙일 뿐</strong>이다.</p>
+      </div>
+      <div class="card green-border">
+        <h3>추가 LLM 호출 0회</h3>
+        <p>chunk 요약 텍스트는 Sub-B가 매 턴 이미 만들어둔 turn_log.summary를 그대로 가져다 쓴다. 압축할 때 새로 요약을 돌리지 않는다.</p>
+        <p>turn_log가 없는 턴은 assistant 응답 앞 200자를 fallback으로 쓴다.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top:32px;margin-bottom:16px">턴이 쌓이면서 일어나는 일</h3>
+
+    <table>
+      <thead>
+        <tr><th>시점</th><th>메시지 구조</th><th>캐시 상태</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Turn 1~20</td>
+          <td>system + 실제 메시지 20쌍</td>
+          <td>BP1(system) 캐시 히트</td>
+        </tr>
+        <tr>
+          <td>Turn 21 (임계값 초과)</td>
+          <td>system + <strong>chunk_001</strong>(Turn 1~8) + 메시지 12쌍</td>
+          <td>BP1 히트 + BP2(chunk) 새로 캐시됨</td>
+        </tr>
+        <tr>
+          <td>Turn 30 (두 번째 압축)</td>
+          <td>system + chunk_001 + <strong>chunk_002</strong>(Turn 9~16) + 메시지 14쌍</td>
+          <td>BP1 히트 + chunk_001 <span style="color:var(--green);font-weight:700">불변, 히트</span> + chunk_002 새로 캐시됨</td>
+        </tr>
+        <tr>
+          <td>Turn 100+</td>
+          <td>system + chunk_001~N + 메시지 ~10쌍</td>
+          <td>전체 chunk 불변 → <strong>prefix 캐시 계속 히트</strong></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <p><strong>WindowRecovery</strong> — Compressor가 미처 압축하기 전에 RisuAI가 윈도우를 밀어버리면, 첫 번째 메시지 해시 변화로 shift를 감지하고 잃어버린 턴의 turn_log를 모아 복구 블록(BP3)으로 주입한다. Compressor가 이미 처리한 범위는 건너뛴다.</p>
+    </div>
+  </div>
+</section>
+
+<!-- COMPARISON -->
+<section>
+  <div class="container">
+    <span class="section-badge">COMPARISON</span>
+    <h2>HypaMemory V3와 <strong>뭐가 다른지</strong></h2>
+
+    <p class="muted">RisuAI 기본 메모리인 HypaMemory V3와 나란히 놓고 보면.</p>
+
+    <table style="margin-top:24px">
+      <thead>
+        <tr><th>항목</th><th>HypaMemory V3</th><th>SAGA</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>메모리 주입 위치</td>
+          <td>system 메시지에 매 턴 삽입</td>
+          <td>stable_prefix는 고정, 동적 결과는 user prepend</td>
+        </tr>
+        <tr>
+          <td>캐시 영향</td>
+          <td>매 턴 system 변경 → <strong>prefix 캐시 파괴</strong></td>
+          <td>system 불변 + chunk 불변 → <span style="color:var(--green);font-weight:700">85.7% 히트</span></td>
+        </tr>
+        <tr>
+          <td>압축 방식</td>
+          <td>매번 LLM으로 재요약</td>
+          <td>turn_log 재활용 → <span style="color:var(--green);font-weight:700">추가 LLM 0회</span></td>
+        </tr>
+        <tr>
+          <td>검색</td>
+          <td>RRF (Recent / Similar / Random)</td>
+          <td>RRF (Recent / Important / Similar) + 토큰 예산 기반 조립</td>
+        </tr>
+        <tr>
+          <td>캐시 포인트</td>
+          <td>automaticCachePoint (마지막 user 3개)</td>
+          <td>3-BP 수동 배치 (system / chunk / summary)</td>
+        </tr>
+        <tr>
+          <td>메모리 갱신</td>
+          <td>동기 (응답 전)</td>
+          <td>비동기 (응답 후) → <span style="color:var(--green);font-weight:700">유저 대기 없음</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- RESULTS -->
+<section>
+  <div class="container">
+    <span class="section-badge">RESULTS</span>
+
+    <div class="result-stats">
+      <div class="result-stat">
+        <div class="big orange">85.7%</div>
+        <div class="desc">프롬프트 캐시 적중률<br>100턴 이후에도 유지</div>
+      </div>
+      <div class="result-stat">
+        <div class="big green">43.5%</div>
+        <div class="desc">비용 절감<br>RisuAI 자동 캐싱(-11.4%) 대비</div>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>벤치마크</th><th>규모</th><th>Baseline</th><th>SAGA</th><th>비고</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>LOCOMO</strong> (ACL 2024)</td>
+          <td>304 QA, 2개 대화</td>
+          <td>Judge 2.02/5</td>
+          <td><strong>3.12/5 (+54%)</strong></td>
+          <td>multi-hop <strong>4.71</strong>/5</td>
+        </tr>
+        <tr>
+          <td><strong>LongMemEval</strong> (ICLR 2025)</td>
+          <td>499 QA, ~53 세션/인스턴스</td>
+          <td>21.2%</td>
+          <td><strong>63.5% (+42.3%p)</strong></td>
+          <td>truncation vs retrieval</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table style="margin-top:24px">
+      <thead>
+        <tr><th>캐싱 모드</th><th>히트율</th><th>비용 효과</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>SAGA 3-BP + 1h TTL</td><td><strong>85.7%</strong></td><td><strong>43.5% 절감</strong></td></tr>
+        <tr><td>RisuAI 자동 캐싱</td><td>12.1%</td><td>-11.4% (손해)</td></tr>
+        <tr><td>캐시 없음</td><td>0%</td><td>기준선</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</body>
+</html>
