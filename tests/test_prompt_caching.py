@@ -9,12 +9,13 @@ Tests the 3-breakpoint prompt caching strategy:
 import copy
 import pytest
 import saga.server as server_module
+import saga.core.dependencies as deps
 
 
 @pytest.fixture(autouse=True)
 def _patch_server_config(mock_config, monkeypatch):
-    """Patch the global config in saga.server for all tests in this module."""
-    monkeypatch.setattr(server_module, "config", mock_config)
+    """Patch the global config in saga.core.dependencies for all tests in this module."""
+    monkeypatch.setattr(deps, "config", mock_config)
 
 
 def _make_conversation(n_turns: int) -> list[dict]:
@@ -146,7 +147,7 @@ class TestDynamicContextPlacement:
 class TestNonClaudeFallback:
     def test_non_claude_context_in_system(self, mock_config_non_claude, monkeypatch):
         """Non-Claude: dynamic context goes into system message."""
-        monkeypatch.setattr(server_module, "config", mock_config_non_claude)
+        monkeypatch.setattr(deps, "config", mock_config_non_claude)
         msgs = _make_conversation(2)
         result = server_module._build_cacheable_messages(msgs, "prefix", "suffix")
         system_msg = result[0]
@@ -156,7 +157,7 @@ class TestNonClaudeFallback:
 
     def test_non_claude_no_cache_control(self, mock_config_non_claude, monkeypatch):
         """Non-Claude: no messages should have cache_control."""
-        monkeypatch.setattr(server_module, "config", mock_config_non_claude)
+        monkeypatch.setattr(deps, "config", mock_config_non_claude)
         msgs = _make_conversation(3)
         result = server_module._build_cacheable_messages(msgs, "p", "s")
         cached = [m for m in result if m.get("cache_control")]
@@ -170,7 +171,7 @@ class TestNonClaudeFallback:
 class TestCachingDisabled:
     def test_disabled_behaves_like_non_claude(self, mock_config_caching_disabled, monkeypatch):
         """Even with Claude model, disabled caching = no cache_control."""
-        monkeypatch.setattr(server_module, "config", mock_config_caching_disabled)
+        monkeypatch.setattr(deps, "config", mock_config_caching_disabled)
         msgs = _make_conversation(3)
         result = server_module._build_cacheable_messages(msgs, "p", "s")
         cached = [m for m in result if m.get("cache_control")]
@@ -178,7 +179,7 @@ class TestCachingDisabled:
 
     def test_disabled_context_in_system(self, mock_config_caching_disabled, monkeypatch):
         """Disabled caching: context goes in system message."""
-        monkeypatch.setattr(server_module, "config", mock_config_caching_disabled)
+        monkeypatch.setattr(deps, "config", mock_config_caching_disabled)
         msgs = _make_conversation(1)
         result = server_module._build_cacheable_messages(msgs, "prefix", "suffix")
         system_msg = result[0]
@@ -192,7 +193,7 @@ class TestCachingDisabled:
 class TestEdgeCases:
     def test_no_system_message_non_claude(self, mock_config_non_claude, monkeypatch):
         """No system message + non-Claude: inserts new system message."""
-        monkeypatch.setattr(server_module, "config", mock_config_non_claude)
+        monkeypatch.setattr(deps, "config", mock_config_non_claude)
         msgs = [{"role": "user", "content": "Hi"}]
         result = server_module._build_cacheable_messages(msgs, "prefix", "suffix")
         assert result[0]["role"] == "system"

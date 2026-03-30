@@ -9,11 +9,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+from saga.core.logging import setup_logging  # noqa: E402
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 
 def _wipe_db():
@@ -28,10 +27,10 @@ def _wipe_db():
             continue
         if kind == "file":
             os.remove(path)
-            print(f"[SAGA] Deleted {path}")
+            logger.info(f"[SAGA] Deleted {path}")
         else:
             shutil.rmtree(path)
-            print(f"[SAGA] Deleted {path}/")
+            logger.info(f"[SAGA] Deleted {path}/")
 
 
 def main():
@@ -48,17 +47,17 @@ def main():
     if not os.path.exists(config_path):
         example = "config.example.yaml"
         if os.path.exists(example):
-            print(f"[SAGA] config.yaml not found. Copy from {example}:")
-            print(f"  cp {example} config.yaml")
+            logger.error(f"[SAGA] config.yaml not found. Copy from {example}:")
+            logger.error(f"  cp {example} config.yaml")
         else:
-            print("[SAGA] config.yaml not found.")
+            logger.error("[SAGA] config.yaml not found.")
         sys.exit(1)
 
     # Wipe DB if requested (before any async DB connections)
     if args.reset_db:
-        print("[SAGA] --reset-db: wiping all databases and caches...")
+        logger.info("[SAGA] --reset-db: wiping all databases and caches...")
         _wipe_db()
-        print("[SAGA] DB reset complete. Starting fresh.")
+        logger.info("[SAGA] DB reset complete. Starting fresh.")
 
     from saga.config import load_config
     config = load_config(config_path)
@@ -68,9 +67,9 @@ def main():
     os.makedirs("cache/sessions", exist_ok=True)
     os.makedirs("logs/turns", exist_ok=True)
 
-    print(f"[SAGA] Starting server on {config.server.host}:{config.server.port}")
-    print(f"[SAGA] Narration model: {config.models.narration}")
-    print(f"[SAGA] Curator: {'enabled' if config.curator.enabled else 'disabled'} (interval: {config.curator.interval})")
+    logger.info(f"[SAGA] Starting server on {config.server.host}:{config.server.port}")
+    logger.info(f"[SAGA] Narration model: {config.models.narration}")
+    logger.info(f"[SAGA] Curator: {'enabled' if config.curator.enabled else 'disabled'} (interval: {config.curator.interval})")
 
     uvicorn.run(
         "saga.server:app",
