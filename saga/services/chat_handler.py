@@ -473,10 +473,12 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
     logger.info(f"[Trace] LLM done: {(t_llm_end - t_llm_start)*1000:.0f}ms | response={len(llm_response)}ch")
 
     usage = deps.llm_client._last_usage
+    total_ms = (t_llm_end - t_llm_start) * 1000
     await deps.cost_tracker.record(UsageRecord(
         model=usage["model"], input_tokens=usage["input_tokens"],
         output_tokens=usage["output_tokens"], cache_read_tokens=usage["cache_read"],
         cache_create_tokens=usage["cache_create"], session_id=session_id, call_type="main",
+        total_ms=total_ms,
     ))
 
     clean_response = strip_state_block(llm_response)

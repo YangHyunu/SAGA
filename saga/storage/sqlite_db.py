@@ -117,6 +117,22 @@ class SQLiteDB:
         """)
         await self._db.commit()
 
+        # ── Schema migrations for pre-existing databases ──
+        await self._migrate()
+
+    async def _migrate(self):
+        """Add missing columns to tables created by older schema versions."""
+        migrations = [
+            ("characters", "aliases", "TEXT DEFAULT '[]'"),
+        ]
+        for table, column, col_def in migrations:
+            try:
+                await self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+                await self._db.commit()
+                logger.info(f"[DB] Migration: added {table}.{column}")
+            except Exception:
+                pass  # column already exists
+
     async def close(self):
         if self._db:
             await self._db.close()

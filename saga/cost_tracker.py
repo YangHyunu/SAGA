@@ -78,6 +78,8 @@ class UsageRecord:
     session_id: str = ""
     call_type: str = ""  # "main", "sub_b", "curator", etc.
     timestamp: float = field(default_factory=time.time)
+    ttft_ms: float = 0.0     # time to first token (ms)
+    total_ms: float = 0.0    # total request duration (ms)
 
 
 class CostTracker:
@@ -101,9 +103,17 @@ class CostTracker:
                 cache_create_tokens INTEGER DEFAULT 0,
                 cost_usd REAL DEFAULT 0.0,
                 savings_usd REAL DEFAULT 0.0,
-                timestamp REAL NOT NULL
+                timestamp REAL NOT NULL,
+                ttft_ms REAL DEFAULT 0.0,
+                total_ms REAL DEFAULT 0.0
             )
         """)
+        # Migrate existing tables that lack the new columns
+        for col in ("ttft_ms", "total_ms"):
+            try:
+                await self.sqlite_db._db.execute(f"ALTER TABLE cost_log ADD COLUMN {col} REAL DEFAULT 0.0")
+            except Exception:
+                pass  # column already exists
         await self.sqlite_db._db.commit()
         self._initialized = True
 
@@ -145,13 +155,15 @@ class CostTracker:
         await self.sqlite_db._db.execute(
             """
             INSERT INTO cost_log (session_id, model, call_type, input_tokens, output_tokens,
-                                  cache_read_tokens, cache_create_tokens, cost_usd, savings_usd, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  cache_read_tokens, cache_create_tokens, cost_usd, savings_usd,
+                                  timestamp, ttft_ms, total_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (record.session_id, record.model, record.call_type,
              record.input_tokens, record.output_tokens,
              record.cache_read_tokens, record.cache_create_tokens,
-             record.cost_usd, record.savings_usd, record.timestamp),
+             record.cost_usd, record.savings_usd, record.timestamp,
+             record.ttft_ms, record.total_ms),
         )
         await self.sqlite_db._db.commit()
 
@@ -160,6 +172,7 @@ class CostTracker:
             f"in={record.input_tokens} out={record.output_tokens} "
             f"cache_read={record.cache_read_tokens} "
             f"cost=${record.cost_usd:.4f} saved=${record.savings_usd:.4f}"
+            + (f" ttft={record.ttft_ms:.0f}ms total={record.total_ms:.0f}ms" if record.total_ms else "")
         )
 
     async def get_session_summary(self, session_id: str) -> dict:

@@ -3,13 +3,17 @@
 All business logic, routes, and services are in their respective modules.
 This file only creates the FastAPI app, registers middleware, and includes routers.
 """
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from saga.core.lifespan import lifespan
 from saga.routes.chat import router as chat_router
 from saga.routes.sessions import router as sessions_router
 from saga.routes.admin import router as admin_router
+from saga.routes.metrics import router as metrics_router
 
 # ── Backward-compatible re-exports for tests ──
 # Tests import these symbols from saga.server; re-export from new locations.
@@ -85,3 +89,9 @@ app.add_middleware(
 app.include_router(chat_router)
 app.include_router(sessions_router)
 app.include_router(admin_router)
+app.include_router(metrics_router)
+
+# Dashboard static files
+_static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/dashboard", StaticFiles(directory=_static_dir, html=True), name="dashboard")

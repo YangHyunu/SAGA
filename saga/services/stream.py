@@ -24,6 +24,7 @@ async def stream_response(session_id, session, augmented_messages, request, stre
     t_stream_start = time.time()
     state_block_filtered = False
     ttft_recorded = False   # Track first token time
+    ttft_ms = 0.0
 
     if gen_params is None:
         gen_params = {}
@@ -91,14 +92,14 @@ async def stream_response(session_id, session, augmented_messages, request, stre
     yield "data: [DONE]\n\n"
 
     # Record cost for stream call
+    stream_total_ms = (time.time() - t_stream_start) * 1000
     usage = deps.llm_client._last_usage
     await deps.cost_tracker.record(UsageRecord(
         model=usage["model"], input_tokens=usage["input_tokens"],
         output_tokens=usage["output_tokens"], cache_read_tokens=usage["cache_read"],
         cache_create_tokens=usage["cache_create"], session_id=session_id, call_type="main_stream",
+        ttft_ms=ttft_ms, total_ms=stream_total_ms,
     ))
-
-    stream_total_ms = (time.time() - t_stream_start) * 1000
     logger.info(
         f"[Trace] Stream done: {stream_total_ms:.0f}ms | "
         f"response={len(full_response)}ch state_filtered={state_block_filtered}"
