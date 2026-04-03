@@ -510,11 +510,11 @@
 
     <div class="stats">
       <div class="stat-item">
-        <div class="number">85.7%</div>
+        <div class="number">84.2%</div>
         <div class="label">PROMPT CACHE HIT</div>
       </div>
       <div class="stat-item">
-        <div class="number">43.5%</div>
+        <div class="number">67.1%</div>
         <div class="label">COST REDUCTION</div>
       </div>
       <div class="stat-item">
@@ -825,7 +825,7 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
       <div class="wf-node highlight">
         <div class="wf-label orange">MAIN LLM CALL</div>
         <h4>LLM 1회 호출</h4>
-        <p>Anthropic 3-Breakpoint 프롬프트 캐싱 적용 · SystemStabilizer가 prefix 고정 · MessageCompressor가 immutable chunk로 선제 압축<br><strong style="color:var(--accent)">캐시 히트율 85.7%</strong></p>
+        <p>Anthropic 3-Breakpoint 프롬프트 캐싱 적용 · SystemStabilizer가 prefix 고정 · MessageCompressor가 immutable chunk로 선제 압축<br><strong style="color:var(--accent)">캐시 히트율 84.2% (steady-state 86.8%)</strong></p>
       </div>
 
       <div class="wf-arrow-down">▼</div>
@@ -853,6 +853,7 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
         </div>
       </div>
     </div>
+
   </div>
 </section>
 
@@ -1123,7 +1124,7 @@ user: <span class="string">[Lorebook: 마을 중앙에...]</span>
         <tr>
           <td>캐시 영향</td>
           <td>매 턴 system 변경 → <strong>prefix 캐시 파괴</strong></td>
-          <td>system 불변 + chunk 불변 → <span style="color:var(--green);font-weight:700">85.7% 히트</span></td>
+          <td>system 불변 + chunk 불변 → <span style="color:var(--green);font-weight:700">84.2% 히트</span></td>
         </tr>
         <tr>
           <td>압축 방식</td>
@@ -1157,15 +1158,20 @@ user: <span class="string">[Lorebook: 마을 중앙에...]</span>
 
     <div class="result-stats">
       <div class="result-stat">
-        <div class="big orange">85.7%</div>
-        <div class="desc">프롬프트 캐시 적중률<br>100턴 이후에도 유지</div>
+        <div class="big orange">84.2%</div>
+        <div class="desc">프롬프트 캐시 적중률<br>steady-state 86.8%</div>
       </div>
       <div class="result-stat">
-        <div class="big green">43.5%</div>
-        <div class="desc">비용 절감<br>RisuAI 자동 캐싱(-11.4%) 대비</div>
+        <div class="big green">67.1%</div>
+        <div class="desc">순비용 절감<br>Sub-B + Curator 오버헤드 차감</div>
+      </div>
+      <div class="result-stat">
+        <div class="big">4.64<span style="font-size:20px">/5.0</span></div>
+        <div class="desc">응답 품질 (LLM Judge)<br>원본 4.63 대비 동등</div>
       </div>
     </div>
 
+    <h3 style="margin-top:40px; margin-bottom:16px;">메모리 품질 벤치마크</h3>
     <table>
       <thead>
         <tr><th>벤치마크</th><th>규모</th><th>Baseline</th><th>SAGA</th><th>비고</th></tr>
@@ -1188,14 +1194,27 @@ user: <span class="string">[Lorebook: 마을 중앙에...]</span>
       </tbody>
     </table>
 
-    <table style="margin-top:24px">
+    <h3 style="margin-top:32px; margin-bottom:16px;">캐시 효율 벤치마크 (100턴 실측, Haiku 4.5)</h3>
+    <table>
       <thead>
-        <tr><th>캐싱 모드</th><th>히트율</th><th>비용 효과</th></tr>
+        <tr><th>캐싱 모드</th><th>히트율</th><th>비용 효과</th><th>TTFT p50</th></tr>
       </thead>
       <tbody>
-        <tr><td>SAGA 3-BP + 1h TTL</td><td><strong>85.7%</strong></td><td><strong>43.5% 절감</strong></td></tr>
-        <tr><td>RisuAI 자동 캐싱</td><td>12.1%</td><td>-11.4% (손해)</td></tr>
-        <tr><td>캐시 없음</td><td>0%</td><td>기준선</td></tr>
+        <tr><td>SAGA 3-BP + 1h TTL</td><td><strong>84.2%</strong></td><td><strong>67.1% 절감</strong></td><td>1,417ms</td></tr>
+        <tr><td>RisuAI 자동 캐싱</td><td>12.1%</td><td>-11.4% (손해)</td><td>-</td></tr>
+        <tr><td>캐시 없음</td><td>0%</td><td>기준선</td><td>-</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:32px; margin-bottom:16px;">오버헤드 분석</h3>
+    <table>
+      <thead>
+        <tr><th>컴포넌트</th><th>모델</th><th>호출 수</th><th>비용</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>메인 LLM</td><td>Haiku 4.5</td><td>100</td><td>$1.207</td></tr>
+        <tr><td>Sub-B (서사 요약)</td><td>Gemini Flash Lite</td><td>180</td><td><strong>$0.000</strong></td></tr>
+        <tr><td>Curator</td><td>Gemini 3 Flash</td><td>10</td><td>$0.024</td></tr>
       </tbody>
     </table>
   </div>
