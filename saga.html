@@ -626,7 +626,7 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
     </div>
 
     <div class="callout">
-      <p>빼봤더니 오차가 난다. 고정 템플릿으로는 범용 추출이 안 됐다. 방향을 바꿔야 했다.</p>
+      <p>고정 템플릿으로는 시나리오마다 필요한 정보가 달라서 범용 추출이 안 됐다. RisuAI Preset이 이미 보내주는 구조화된 데이터를 쓰는 쪽으로 방향을 바꿨다.</p>
     </div>
   </div>
 </section>
@@ -640,11 +640,11 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
     <div class="cards cols-2">
       <div class="card bordered">
         <div style="display:flex;gap:8px;margin-bottom:16px">
-          <span class="card-badge">전환 1: 4필드 FLASH 요약</span>
+          <span class="card-badge">전환 1: FLASH 서사 요약</span>
           <span class="card-badge" style="border-color:var(--green);color:var(--green)">구현 완료</span>
         </div>
         <div class="code-block">
-<span class="comment">// 12필드 → 4필드로 축소</span>
+<span class="comment">// 12필드 regex 추출 → Flash 자유 추출로 전환</span>
 <span class="comment">// Gemini Flash가 매 턴 비동기 추출</span>
 {
   <span class="key">"summary"</span>: <span class="string">"소연이 웃으며 검을 건넸다"</span>,
@@ -652,7 +652,7 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
   <span class="key">"scene_type"</span>: <span class="string">"dialogue"</span>,
   <span class="key">"key_event"</span>: <span class="string">"검 전달"</span>
 }
-<span class="comment">// → 이 1회 요약이 4곳에서 재활용:</span>
+<span class="comment">// → 이 요약을 시스템 전체가 돌려씀:</span>
 <span class="comment">//   turn_log, ChromaDB, MessageCompressor, WindowRecovery</span>
         </div>
         <p>시나리오 불문, 서사 흐름만 추출. 필드 정의가 필요 없다.</p>
@@ -677,20 +677,6 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
       </div>
     </div>
 
-    <div class="metric-cards">
-      <div class="metric-card">
-        <div class="metric-number">12→4</div>
-        <div class="metric-label">추출 필드 축소</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-number">×4</div>
-        <div class="metric-label">1회 요약, 4곳 재활용</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-number">범용</div>
-        <div class="metric-label">시나리오 의존성 제거</div>
-      </div>
-    </div>
   </div>
 </section>
 
@@ -763,7 +749,7 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
       <div class="card bordered">
         <h3>매 턴 서사 요약</h3>
         <p>"어떤 장면이었나, 누가 나왔나"</p>
-        <div class="highlight green">→ Flash LLM 4필드 추출로 충분</div>
+        <div class="highlight green">→ Flash 서사 요약으로 충분</div>
       </div>
       <div class="card bordered">
         <h3>매 턴 컨텍스트 조립</h3>
@@ -779,15 +765,29 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
 
     <p>그래서 Letta를 메인 루프에서 빼고 Curator에만 배치했다. 코딩 에이전트가 Notepad로 작업 맥락을 자기관리하듯, Letta Curator는 Memory Block으로 큐레이션 판단 이력을 자기관리한다.</p>
 
-    <div class="code-block">
-<span class="comment">코딩 에이전트 패턴:                    SAGA 적용:</span>
-┌──────────────┐                   ┌──────────────────┐
-│ Agent        │                   │ Letta Curator     │
-│  └ Notepad   │ ← 자기관리        │  └ Memory Block   │ ← 자기편집
-│  └ 작업 실행  │                   │  └ 서사 판단       │
-└──────────────┘                   └──────────────────┘
-  <span class="string">"뭐가 중요하지?"</span>                    <span class="string">"이 모순은 의도적인가?"</span>
-  <span class="string">"이전에 뭘 했지?"</span>                   <span class="string">"지난 큐레이션에서 뭘 결정했지?"</span>
+    <div class="cards cols-2">
+      <div class="card bordered">
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <span class="card-badge">코딩 에이전트</span>
+        </div>
+        <div class="code-block">
+<span class="key">Agent</span>
+  └ <span class="string">Notepad</span> ← 자기관리
+  └ 작업 실행
+        </div>
+        <p>"뭐가 중요하지?" "이전에 뭘 했지?"</p>
+      </div>
+      <div class="card bordered">
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <span class="card-badge">SAGA 적용</span>
+        </div>
+        <div class="code-block">
+<span class="key">Letta Curator</span>
+  └ <span class="string">Memory Block</span> ← 자기편집
+  └ 서사 판단
+        </div>
+        <p>"이 모순은 의도적인가?" "지난 큐레이션에서 뭘 결정했지?"</p>
+      </div>
     </div>
 
     <div class="callout green">
@@ -844,7 +844,7 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
         <div class="wf-node">
           <div class="wf-label orange">ASYNC · SUB-B</div>
           <h4>Post-Turn (Flash)</h4>
-          <p>Flash 4필드 요약·추출<br>ChromaDB episode + turn_log 기록<br>live_state.md 갱신<br>NPC alias + LLM dedup<br><strong style="color:var(--text-muted)">비동기 · 유저 대기 없음</strong></p>
+          <p>Flash 서사 요약·추출<br>ChromaDB episode + turn_log 기록<br>live_state.md 갱신<br>NPC alias + LLM dedup<br><strong style="color:var(--text-muted)">비동기 · 유저 대기 없음</strong></p>
         </div>
         <div class="wf-node">
           <div class="wf-label orange">ASYNC · N턴마다</div>
@@ -861,9 +861,9 @@ max context 60K, HypaMemory ON, 메토비 0.15~0.20
 <section>
   <div class="container">
     <span class="section-badge">SUB-B</span>
-    <h2>Flash 요약 1회, <strong>4곳에서 재활용</strong></h2>
+    <h2>Flash 요약 1회, <strong>시스템 전체가 재활용</strong></h2>
 
-    <p>Sub-B가 매 턴 뽑아내는 4필드 요약은 단순 로그가 아니다. 이 한 번의 요약을 시스템 전체가 돌려쓴다.</p>
+    <p>Sub-B가 매 턴 뽑는 요약은 단순 로그가 아니다. 이 요약 하나를 시스템 전체가 돌려쓴다.</p>
 
     <div class="code-block">
 <span class="comment">// Sub-B 추출 결과 (Gemini Flash, 비동기)</span>
@@ -1206,17 +1206,6 @@ user: <span class="string">[Lorebook: 마을 중앙에...]</span>
       </tbody>
     </table>
 
-    <h3 style="margin-top:32px; margin-bottom:16px;">오버헤드 분석</h3>
-    <table>
-      <thead>
-        <tr><th>컴포넌트</th><th>모델</th><th>호출 수</th><th>비용</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>메인 LLM</td><td>Haiku 4.5</td><td>100</td><td>$1.207</td></tr>
-        <tr><td>Sub-B (서사 요약)</td><td>Gemini Flash Lite</td><td>180</td><td><strong>$0.000</strong></td></tr>
-        <tr><td>Curator</td><td>Gemini 3 Flash</td><td>10</td><td>$0.024</td></tr>
-      </tbody>
-    </table>
   </div>
 </section>
 
