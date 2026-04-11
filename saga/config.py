@@ -58,7 +58,7 @@ class PromptCachingConfig(BaseModel):
     canonical_similarity_threshold: float = 0.30
     cache_ttl: str = "1h"  # extended-cache-ttl: "5m" (default) or "1h"
     compress_enabled: bool = True
-    compress_threshold_ratio: float = 0.50  # total_context_max * ratio 초과 시 압축 (65K 기준 ~33K)
+    compress_threshold_ratio: float = 0.35  # total_context_max * ratio 초과 시 압축 (65K 기준 ~33K)
     min_compress_turns: int = 3             # 최소 압축 단위 (턴)
     max_compress_turns: int = 8             # chunk 당 최대 턴 수 (균등한 작은 chunk 유도)
     max_summary_ratio: float = 0.20         # summary chunk 최대 비율

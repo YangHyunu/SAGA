@@ -65,18 +65,22 @@ class MessageCompressor:
         # know about our compression — we need to match by turn counting).
         compressed_through = await self._get_compressed_through(session_id)
 
-        if total_tokens <= threshold and not chunks:
-            # Nothing to do
+        if not chunks and total_tokens <= threshold:
+            # No chunks, below threshold — nothing to do
             return messages, 0
 
-        if total_tokens <= threshold and chunks:
-            # Below threshold but we have existing chunks — restore them
-            # into the message array (replacing turns they already cover).
-            return self._rebuild_with_chunks(system_msgs, non_system, chunks, compressed_through), 0
+        if chunks:
+            # Rebuild with existing chunks first, then check if MORE compression needed
+            rebuilt = self._rebuild_with_chunks(system_msgs, non_system, chunks, compressed_through)
+            rebuilt_tokens = count_messages_tokens(rebuilt)
+            if rebuilt_tokens <= threshold:
+                return rebuilt, 0
+            # Rebuilt still exceeds threshold — need more compression
+            total_tokens = rebuilt_tokens
 
         # --- Compression needed ---
         # Calculate how many additional turns to compress
-        target_tokens = int(threshold * 0.85)  # aim for 85% of threshold to avoid re-triggering next turn
+        target_tokens = int(self.config.token_budget.total_context_max * 0.50)  # aim for 50% of max context to give ~15-20 turns of headroom
         turns_to_compress = self._calculate_turns_to_compress(
             non_system, total_tokens, target_tokens, compressed_through
         )
@@ -247,8 +251,7 @@ class MessageCompressor:
         # Don't compress all messages — keep at least 5 turns of real conversation
         min_remaining_turns = 5
         max_compressible = max(0, (len(non_system) - start_idx) // 2 - min_remaining_turns)
-        max_per_chunk = getattr(self.config.prompt_caching, "max_compress_turns", 8)
-        turns = min(turns, max_compressible, max_per_chunk)
+        turns = min(turns, max_compressible)
 
         return turns
 

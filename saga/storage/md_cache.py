@@ -1,8 +1,8 @@
 import os
 import yaml
 
-STABLE_FILE = "stable_prefix.md"  # BP2 cache target
-LIVE_FILE = "live_state.md"       # dynamic, no cache
+STABLE_FILE = "stable_prefix.md"  # Curator-curated summary; injected as md_prefix into last user (outside BP cache)
+LIVE_FILE = "live_state.md"       # Per-turn state; merged into dynamic_suffix (outside BP cache)
 
 
 class MdCache:

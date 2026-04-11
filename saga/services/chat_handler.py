@@ -194,7 +194,7 @@ def build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, loreb
                 and str(messages[idx - 1].get("content", "")).startswith(_CHUNK_USER_PREFIX)
             ]
             if summary_asst_indices:
-                mid_idx = summary_asst_indices[-1]
+                mid_idx = summary_asst_indices[0]
             else:
                 mid_idx = assistant_indices[len(assistant_indices) // 2]
             messages[mid_idx] = dict(messages[mid_idx])
