@@ -8,6 +8,7 @@ from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.adapters.curator_adapter import LettaCuratorAdapter, DirectLLMCuratorAdapter
+from saga.cost_tracker import UsageRecord
 from saga.utils.parsers import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -22,12 +23,13 @@ def _log_lore_task_exception(task: asyncio.Task) -> None:
 
 
 class CuratorRunner:
-    def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client, config):
+    def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client, config, cost_tracker=None):
         self.sqlite_db = sqlite_db
         self.vector_db = vector_db
         self.md_cache = md_cache
         self.llm_client = llm_client
         self.config = config
+        self.cost_tracker = cost_tracker
 
         # Try Letta first, fallback to direct LLM
         self.letta_adapter = LettaCuratorAdapter(config)
@@ -62,6 +64,31 @@ class CuratorRunner:
 
             adapter = self.letta_adapter if self._use_letta else self.fallback_adapter
             result = await adapter.run(session_id, context)
+
+            # Record curator cost
+            if self.cost_tracker:
+                if self._use_letta:
+                    # Letta: estimate tokens from prompt length (Letta doesn't expose usage)
+                    prompt_text = self.letta_adapter._build_prompt(session_id, context)
+                    est_input = len(prompt_text) // 3  # rough: 3 chars ≈ 1 token
+                    await self.cost_tracker.record(UsageRecord(
+                        model=self.config.curator.letta_model.split("/")[-1],
+                        input_tokens=est_input,
+                        output_tokens=500,  # estimated curator response
+                        session_id=session_id,
+                        call_type="curator_letta",
+                    ))
+                else:
+                    usage = self.llm_client._last_usage
+                    await self.cost_tracker.record(UsageRecord(
+                        model=usage.get("model", self.config.models.curator),
+                        input_tokens=usage.get("input_tokens", 0),
+                        output_tokens=usage.get("output_tokens", 0),
+                        cache_read_tokens=usage.get("cache_read", 0),
+                        cache_create_tokens=usage.get("cache_create", 0),
+                        session_id=session_id,
+                        call_type="curator",
+                    ))
 
             await self._apply_results(session_id, turn_number, result)
 

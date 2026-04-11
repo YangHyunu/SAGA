@@ -66,19 +66,20 @@ async def lifespan(app: FastAPI):
 
     # Initialize agents
     deps.context_builder = ContextBuilder(deps.sqlite_db, deps.vector_db, deps.md_cache, deps.config)
-    extract_fn = partial(narrative_extract, llm_client=deps.llm_client, config=deps.config)
-    deps.post_turn = PostTurnExtractor(
-        deps.sqlite_db, deps.vector_db, deps.md_cache, deps.llm_client, deps.config, extract_fn=extract_fn
-    )
-    deps.curator = CuratorRunner(deps.sqlite_db, deps.vector_db, deps.md_cache, deps.llm_client, deps.config)
-
-    if deps.config.curator.enabled:
-        deps.curator.initialize()
-
-    # Initialize window recovery, cost tracker & message compressor
+    # Initialize window recovery, cost tracker & message compressor (before agents that need cost_tracker)
     deps.window_recovery = WindowRecovery(deps.sqlite_db, deps.vector_db, deps.config)
     deps.cost_tracker = CostTracker(deps.sqlite_db)
     await deps.cost_tracker.initialize()
+
+    extract_fn = partial(narrative_extract, llm_client=deps.llm_client, config=deps.config, cost_tracker=deps.cost_tracker)
+    deps.post_turn = PostTurnExtractor(
+        deps.sqlite_db, deps.vector_db, deps.md_cache, deps.llm_client, deps.config,
+        extract_fn=extract_fn, cost_tracker=deps.cost_tracker,
+    )
+    deps.curator = CuratorRunner(deps.sqlite_db, deps.vector_db, deps.md_cache, deps.llm_client, deps.config, cost_tracker=deps.cost_tracker)
+
+    if deps.config.curator.enabled:
+        deps.curator.initialize()
 
     deps.message_compressor = MessageCompressor(deps.sqlite_db, deps.config)
 

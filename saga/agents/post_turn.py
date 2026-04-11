@@ -16,6 +16,7 @@ from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
 from saga.llm.client import LLMClient
+from saga.cost_tracker import UsageRecord
 from saga.utils.parsers import format_turn_narrative
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,14 @@ _sub_b_lock = asyncio.Lock()
 
 
 class PostTurnExtractor:
-    def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client: LLMClient, config, extract_fn: Callable = None):
+    def __init__(self, sqlite_db: SQLiteDB, vector_db: VectorDB, md_cache: MdCache, llm_client: LLMClient, config, extract_fn: Callable = None, cost_tracker=None):
         self.sqlite_db = sqlite_db
         self.vector_db = vector_db
         self.md_cache = md_cache
         self.llm_client = llm_client
         self.config = config
         self.extract_fn = extract_fn
+        self.cost_tracker = cost_tracker
 
     @traceable(name="pipeline.sub_b")
     async def extract_and_update(self, session_id: str, response_text: str, turn_number: int, user_input: str = "", scriptstate: dict | None = None):
@@ -217,6 +219,18 @@ class PostTurnExtractor:
             max_tokens=50,
             temperature=0,
         )
+        # Record NPC dedup cost
+        if self.cost_tracker:
+            usage = self.llm_client._last_usage
+            await self.cost_tracker.record(UsageRecord(
+                model=usage.get("model", self.config.models.extraction),
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                cache_read_tokens=usage.get("cache_read", 0),
+                cache_create_tokens=usage.get("cache_create", 0),
+                session_id="",  # dedup is cross-session
+                call_type="npc_dedup",
+            ))
         answer = response.strip().strip('"').strip("'")
         # 응답이 기존 이름 중 하나와 일치하면 반환
         for name in existing_names:
