@@ -11,6 +11,7 @@ build/
 db/
 cache/
 logs/
+*.log
 
 # Environment & Secrets
 .env
@@ -54,12 +55,14 @@ RESEARCH.md
 
 # Portfolio / presentation files
 *.html
-!docker-compose.letta.yaml
 *.pptx
 SAGA_Portfolio*
 portfolio*
 pportfolio*
 양현우_*
+
+# Personal cheat sheet (interview prep, not project doc)
+CHEAT_SHEET.md
 
 # Plugins (WIP, not tracked)
 plugins/

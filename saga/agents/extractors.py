@@ -6,6 +6,7 @@
 """
 import logging
 from saga.utils.parsers import parse_llm_json
+from saga.cost_tracker import UsageRecord
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ async def narrative_extract(
     session_id: str,
     llm_client,
     config,
+    cost_tracker=None,
 ) -> dict | None:
     """Flash로 서사 요약 추출. 4필드 미니 요약.
 
@@ -50,6 +52,19 @@ async def narrative_extract(
             max_tokens=1024,
             response_mime_type="application/json",
         )
+        # Record Sub-B extraction cost
+        if cost_tracker:
+            usage = llm_client._last_usage
+            await cost_tracker.record(UsageRecord(
+                model=usage.get("model", config.models.extraction),
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                cache_read_tokens=usage.get("cache_read", 0),
+                cache_create_tokens=usage.get("cache_create", 0),
+                session_id=session_id,
+                call_type="sub_b",
+            ))
+
         parsed = parse_llm_json(result)
         if parsed is None:
             logger.warning(f"[Extractor] Flash returned unparseable: {result[:200]}")

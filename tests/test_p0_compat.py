@@ -30,13 +30,13 @@ class TestBearerAuth:
     def _patch_config(self):
         """Patch the global config in server module."""
         cfg = SagaConfig(server=ServerConfig(api_key="test-secret-key"))
-        with patch("saga.server.config", cfg):
+        with patch("saga.core.dependencies.config", cfg):
             yield cfg
 
     @pytest.fixture
     def _patch_config_no_auth(self):
         cfg = SagaConfig(server=ServerConfig(api_key=""))
-        with patch("saga.server.config", cfg):
+        with patch("saga.core.dependencies.config", cfg):
             yield cfg
 
     @pytest.mark.asyncio
@@ -79,7 +79,7 @@ class TestBearerAuth:
     async def test_none_api_key_disables_auth(self):
         from saga.server import _verify_bearer
         cfg = SagaConfig(server=ServerConfig(api_key=None))
-        with patch("saga.server.config", cfg):
+        with patch("saga.core.dependencies.config", cfg):
             request = self._make_request()
             await _verify_bearer(request)
 
@@ -289,15 +289,19 @@ class TestStreamingStateFilter:
             for c in chunks:
                 yield c
 
-        with patch("saga.server.llm_client") as mock_llm, \
-             patch("saga.server.sqlite_db") as mock_db, \
-             patch("saga.server.post_turn") as mock_pt, \
-             patch("saga.server.config") as mock_cfg:
+        with patch("saga.core.dependencies.llm_client") as mock_llm, \
+             patch("saga.core.dependencies.sqlite_db") as mock_db, \
+             patch("saga.core.dependencies.post_turn") as mock_pt, \
+             patch("saga.core.dependencies.config") as mock_cfg, \
+             patch("saga.core.dependencies.cost_tracker") as mock_cost:
 
             mock_llm.call_llm_stream = mock_stream
+            mock_llm._last_usage = {"model": "test", "input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0}
             mock_db.increment_turn = AsyncMock(return_value=1)
             mock_pt.extract_and_update = AsyncMock()
             mock_cfg.curator.enabled = False
+            mock_cfg.models.narration = "claude-test"
+            mock_cost.record = AsyncMock()
 
             collected = ""
             async for sse_line in _stream_response("test-sess", {}, [], mock_request, {"full_response": ""}):

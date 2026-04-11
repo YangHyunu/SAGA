@@ -15,6 +15,7 @@ import pytest
 from unittest.mock import MagicMock
 
 import saga.server as server_module
+import saga.core.dependencies as deps
 from saga.config import SagaConfig, ApiKeysConfig, ModelsConfig, PromptCachingConfig
 
 
@@ -25,7 +26,7 @@ from saga.config import SagaConfig, ApiKeysConfig, ModelsConfig, PromptCachingCo
 @pytest.fixture(autouse=True)
 def _patch_config(mock_config, monkeypatch):
     """Inject a Claude config so caching branches are reachable."""
-    monkeypatch.setattr(server_module, "config", mock_config)
+    monkeypatch.setattr(deps, "config", mock_config)
 
 
 @pytest.fixture(autouse=True)
