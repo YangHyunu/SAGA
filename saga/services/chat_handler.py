@@ -17,7 +17,6 @@ from saga.models import (
 )
 from saga.utils.tokens import count_tokens, count_messages_tokens
 from saga.utils.parsers import strip_state_block
-from saga.window_recovery import _KEY_SUMMARY_THROUGH_TURN
 from saga.cost_tracker import UsageRecord
 from saga.services.stream import stream_response
 
@@ -161,7 +160,7 @@ def extract_gen_params(request: ChatCompletionRequest) -> dict:
     return params
 
 
-def build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lorebook_delta="", window_summary=""):
+def build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, lorebook_delta=""):
     """Build messages with 3-breakpoint prompt caching structure.
 
     BP1: system prompt (절대 안 변함 — SystemStabilizer가 보장)
@@ -211,8 +210,6 @@ def build_cacheable_messages(original_messages, md_prefix, dynamic_suffix, loreb
 
         # Dynamic context: prepend to last user message
         context_block = ""
-        if window_summary:
-            context_block += f"[--- Lost Turn Summary ---]\n{window_summary}\n\n"
         if md_prefix:
             context_block += f"[--- SAGA Context Cache ---]\n{md_prefix}\n\n"
         if lorebook_delta:
@@ -334,21 +331,6 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
             }
             logger.info(f"[Trace] MessageCompressor: {compress_shift} messages replaced with summary chunks")
 
-    # Window Recovery
-    window_summary = ""
-    shift_info = await deps.window_recovery.detect_shift(session_id, messages_dicts)
-    if shift_info["shifted"]:
-        summary_block = await deps.window_recovery.build_summary_block(session_id, shift_info)
-        if summary_block:
-            window_summary = summary_block
-        logger.info(f"[Trace] WindowRecovery: shift detected, summary prepared (lost ~{shift_info['estimated_lost_turns']} turns)")
-    else:
-        existing_summary = await deps.window_recovery._get_existing_summary(session_id)
-        last_injected = await deps.sqlite_db.get_world_state_value(session_id, "window_summary_injected_turn")
-        summary_through = await deps.sqlite_db.get_world_state_value(session_id, _KEY_SUMMARY_THROUGH_TURN)
-        if existing_summary and (last_injected != summary_through):
-            window_summary = existing_summary
-
     context_result = await deps.context_builder.build_context(session_id, messages_dicts, dynamic_budget)
     t_ctx_end = time.time()
 
@@ -368,12 +350,7 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
         context_result["md_prefix"],
         context_result["dynamic_suffix"],
         lorebook_delta,
-        window_summary,
     )
-    if window_summary:
-        summary_through = await deps.sqlite_db.get_world_state_value(session_id, _KEY_SUMMARY_THROUGH_TURN)
-        if summary_through:
-            await deps.sqlite_db.upsert_world_state(session_id, "window_summary_injected_turn", summary_through)
 
     # Restore multimodal content
     if _multimodal_parts:

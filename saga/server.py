@@ -55,7 +55,7 @@ import saga.core.dependencies as _deps  # noqa: F401
 _DEPS_ATTRS = frozenset({
     "config", "sqlite_db", "vector_db", "md_cache", "llm_client",
     "context_builder", "post_turn", "curator", "session_mgr",
-    "system_stabilizer", "window_recovery", "cost_tracker", "message_compressor",
+    "system_stabilizer", "cost_tracker", "message_compressor",
 })
 
 

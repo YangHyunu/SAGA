@@ -21,7 +21,6 @@ if typing.TYPE_CHECKING:
     from saga.agents.curator import CuratorRunner
     from saga.session import SessionManager
     from saga.system_stabilizer import SystemStabilizer
-    from saga.window_recovery import WindowRecovery
     from saga.cost_tracker import CostTracker
     from saga.message_compressor import MessageCompressor
 
@@ -82,7 +81,6 @@ post_turn: PostTurnExtractor | None = None
 curator: CuratorRunner | None = None
 session_mgr: SessionManager | None = None
 system_stabilizer: SystemStabilizer | None = None
-window_recovery: WindowRecovery | None = None
 cost_tracker: CostTracker | None = None
 message_compressor: MessageCompressor | None = None
 
