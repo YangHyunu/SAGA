@@ -263,7 +263,7 @@ class CuratorRunner:
         lore_type = lore_data.get("lore_type", entity_type)
         priority = lore_data.get("priority", 50)
 
-        # Store in SQLite
+        # Store in SQLite (single source of truth for lore)
         await self.sqlite_db.create_lore(
             session_id=session_id,
             name=f"lore_{entity_name}",
@@ -273,23 +273,6 @@ class CuratorRunner:
             priority=priority,
             auto_generated=True,
             source_turns=json.dumps(source_turns[:5]),
-        )
-
-        # Store in ChromaDB for vector search
-        lore_id = f"{session_id}_lore_{entity_name}"
-        self.vector_db.add_lorebook_entry(
-            entry_id=lore_id,
-            text=content,
-            metadata={
-                "session_id": session_id,
-                "entity_name": entity_name,
-                "entity_type": entity_type,
-                "lore_type": lore_type,
-                "keywords": keywords,
-                "priority": priority,
-                "auto_generated": True,
-                "source_turns": json.dumps(source_turns[:5]),
-            },
         )
 
         logger.info(f"[Curator] Auto-generated lore for '{entity_name}' ({lore_type}, priority={priority})")

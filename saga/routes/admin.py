@@ -48,17 +48,13 @@ async def reset_all():
         await deps.sqlite_db._db.execute("DELETE FROM sessions WHERE id = ?", (s["id"],))
     await deps.sqlite_db._db.commit()
 
-    # 2. ChromaDB
+    # 2. ChromaDB (episodes only; lore is in SQLite)
     try:
         if deps.vector_db.client:
-            for col_name in ("lorebook", "episodes"):
-                try:
-                    deps.vector_db.client.delete_collection(col_name)
-                except Exception:
-                    pass
-            deps.vector_db.lorebook = deps.vector_db.client.get_or_create_collection(
-                name="lorebook", metadata={"hnsw:space": "cosine"}
-            )
+            try:
+                deps.vector_db.client.delete_collection("episodes")
+            except Exception:
+                pass
             deps.vector_db.episodes = deps.vector_db.client.get_or_create_collection(
                 name="episodes", metadata={"hnsw:space": "cosine"}
             )
@@ -107,10 +103,7 @@ async def reset_all():
 async def search_memory(q: str, session: str = "", collection: str = "episodes"):
     if not session:
         return {"documents": [], "metadatas": []}
-    if collection == "lorebook":
-        return deps.vector_db.search_lorebook(session, q, n_results=10)
-    else:
-        return deps.vector_db.search_episodes(session, q, n_results=10)
+    return deps.vector_db.search_episodes(session, q, n_results=10)
 
 
 @router.get("/api/graph/query", dependencies=[Depends(verify_bearer)])
