@@ -120,5 +120,4 @@ async def graph_query(q: str = "", session: str = ""):
         return {"error": "session parameter required"}
     chars = await deps.sqlite_db.get_session_characters(session)
     rels = await deps.sqlite_db.get_relationships(session)
-    events = await deps.sqlite_db.get_recent_events(session, limit=10)
-    return {"characters": chars, "relationships": rels, "recent_events": events}
+    return {"characters": chars, "relationships": rels}

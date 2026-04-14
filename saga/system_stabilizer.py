@@ -82,16 +82,6 @@ class SystemStabilizer:
             logger.debug("[Stabilizer] System message unchanged, cache stable")
             return messages, ""
 
-        # Check if this is a completely different character (major change)
-        threshold = self.config.prompt_caching.canonical_similarity_threshold
-        if self._should_update_canonical(canonical, current_system, threshold):
-            await self._save_canonical(session_id, current_system, current_hash)
-            logger.info(
-                f"[Stabilizer] Canonical replaced (similarity < {threshold}) "
-                f"for session {session_id}"
-            )
-            return messages, ""
-
         # Extract delta: paragraphs in current but not in canonical
         stable_text, delta_text = self._extract_delta(canonical, current_system)
 
@@ -178,33 +168,6 @@ class SystemStabilizer:
         delta_text = "\n\n".join(delta_parts)
 
         return canonical, delta_text
-
-    def _should_update_canonical(
-        self, canonical: str, current: str, threshold: float
-    ) -> bool:
-        """Determine if current system is a completely different character.
-
-        Uses Jaccard similarity on paragraph sets. If similarity < threshold,
-        the character has fundamentally changed and canonical should be replaced.
-        """
-        canonical_paras = set(self._split_paragraphs(canonical))
-        current_paras = set(self._split_paragraphs(current))
-
-        if not canonical_paras and not current_paras:
-            return False
-
-        intersection = canonical_paras & current_paras
-        union = canonical_paras | current_paras
-
-        if not union:
-            return False
-
-        similarity = len(intersection) / len(union)
-        logger.debug(
-            f"[Stabilizer] Jaccard similarity: {similarity:.2f} "
-            f"(threshold={threshold}, canon={len(canonical_paras)} cur={len(current_paras)})"
-        )
-        return similarity < threshold
 
     @staticmethod
     def _split_paragraphs(text: str) -> list[str]:

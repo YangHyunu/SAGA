@@ -154,14 +154,11 @@ class CuratorRunner:
         from_turn = max(0, turn_number - self.config.curator.interval)
         turn_logs = await self.sqlite_db.get_turn_logs(session_id, from_turn=from_turn, to_turn=turn_number)
 
-        contradictions = await self.sqlite_db.detect_contradictions(session_id)
-
         return {
             "turn_number": turn_number,
             "graph_summary": graph_summary,
             "episodes_text": episodes_text,
             "turn_logs": turn_logs,
-            "contradictions": contradictions,
         }
 
     async def _apply_results(self, session_id, turn_number, result):
@@ -169,13 +166,6 @@ class CuratorRunner:
             for fix in result["contradictions"]:
                 logger.info(f"[Curator] Contradiction fix: {fix}")
                 # Apply graph fixes as needed
-
-        if result.get("events"):
-            for event in result["events"]:
-                if not isinstance(event, dict):
-                    logger.debug(f"[Curator] Skipping non-dict event: {event!r}")
-                    continue
-                await self.sqlite_db.queue_event(session_id, event)
 
         if result.get("compress_story") and result.get("compressed_summary"):
             await self._compress_story_md(session_id, turn_number, result["compressed_summary"])

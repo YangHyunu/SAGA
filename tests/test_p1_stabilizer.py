@@ -29,9 +29,7 @@ class StubConfig:
 
     class PromptCaching:
         enabled = True
-        strategy = "md_prefix"
         stabilize_system = True
-        canonical_similarity_threshold = 0.30
 
     prompt_caching = PromptCaching()
 
@@ -180,30 +178,6 @@ async def test_multiple_lorebook_delta(stabilizer, db):
 
 
 # ──────────────────────────────────────────────────────────────────
-# Test: different character -> canonical replaced
-# ──────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_different_character_replaces_canonical(stabilizer, db):
-    system_a = "You are Yui, a young girl.\n\nShe lives in a village.\n\nShe is kind."
-    system_b = "You are Hana, a warrior.\n\nShe fights in arenas.\n\nShe is fierce."
-
-    msgs_a = [{"role": "system", "content": system_a}, {"role": "user", "content": "Hi"}]
-    msgs_b = [{"role": "system", "content": system_b}, {"role": "user", "content": "Hi"}]
-
-    # Turn 1: Yui
-    await stabilizer.stabilize("s1", msgs_a)
-
-    # Turn 2: completely different character (Hana)
-    result_msgs, delta = await stabilizer.stabilize("s1", msgs_b)
-
-    # Should replace canonical, not extract delta
-    assert delta == ""
-    saved = await db.get_world_state_value("s1", "canonical_system_prompt")
-    assert saved == system_b
-
-
-# ──────────────────────────────────────────────────────────────────
 # Test: disabled config -> passthrough
 # ──────────────────────────────────────────────────────────────────
 
@@ -212,9 +186,7 @@ async def test_disabled_passthrough(db):
     class DisabledConfig:
         class PromptCaching:
             enabled = True
-            strategy = "md_prefix"
             stabilize_system = False
-            canonical_similarity_threshold = 0.30
         prompt_caching = PromptCaching()
 
     stabilizer = SystemStabilizer(db, DisabledConfig())
@@ -241,35 +213,6 @@ async def test_no_system_message(stabilizer):
     result_msgs, delta = await stabilizer.stabilize("s1", messages)
     assert result_msgs is messages
     assert delta == ""
-
-
-# ──────────────────────────────────────────────────────────────────
-# Test: Jaccard similarity calculation
-# ──────────────────────────────────────────────────────────────────
-
-def test_jaccard_exact_match(stabilizer):
-    text = "A\n\nB\n\nC"
-    assert not stabilizer._should_update_canonical(text, text, 0.30)
-
-
-def test_jaccard_completely_different(stabilizer):
-    a = "X\n\nY\n\nZ"
-    b = "A\n\nB\n\nC"
-    assert stabilizer._should_update_canonical(a, b, 0.30)
-
-
-def test_jaccard_partial_overlap(stabilizer):
-    a = "Shared base.\n\nParagraph A.\n\nParagraph B."
-    b = "Shared base.\n\nParagraph C.\n\nParagraph D."
-    # 1 shared out of 5 unique = 0.20 < 0.30 -> should update
-    assert stabilizer._should_update_canonical(a, b, 0.30)
-
-
-def test_jaccard_high_overlap(stabilizer):
-    a = "Shared 1.\n\nShared 2.\n\nShared 3.\n\nOnly A."
-    b = "Shared 1.\n\nShared 2.\n\nShared 3.\n\nOnly B."
-    # 3 shared out of 5 unique = 0.60 > 0.30 -> should NOT update
-    assert not stabilizer._should_update_canonical(a, b, 0.30)
 
 
 # ──────────────────────────────────────────────────────────────────
