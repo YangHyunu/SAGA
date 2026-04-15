@@ -28,15 +28,19 @@ from saga.core.dependencies import (  # noqa: F401
     _background_tasks,
     _MAX_TRACKED_SESSIONS,
 )
-from saga.services.chat_handler import (  # noqa: F401
-    is_continuation as _is_continuation,
-    prune_pending_responses as _prune_pending_responses,
-    is_anthropic_model as _is_anthropic_model,
+from saga.services.chat_handler import handle_chat as _handle_chat  # noqa: F401
+from saga.services.session_extractor import (  # noqa: F401
     extract_session_id as _extract_session_id,
     extract_scriptstate as _extract_scriptstate,
     extract_gen_params as _extract_gen_params,
+)
+from saga.services.cache_marker import (  # noqa: F401
+    is_anthropic_model as _is_anthropic_model,
     build_cacheable_messages as _build_cacheable_messages,
-    handle_chat as _handle_chat,
+)
+from saga.services.post_turn_pipeline import (  # noqa: F401
+    is_continuation as _is_continuation,
+    prune_pending_responses as _prune_pending_responses,
 )
 from saga.services.stream import (  # noqa: F401
     stream_response as _stream_response,
