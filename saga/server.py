@@ -23,8 +23,6 @@ from saga.core.dependencies import (  # noqa: F401
     _pending_responses,
     _PENDING_TTL_SECONDS,
     _SESSION_ID_RE,
-    _SAGA_META_PREFIX,
-    _SAGA_STATE_PREFIX,
     _warming_data,
     _warming_lock,
     _background_tasks,

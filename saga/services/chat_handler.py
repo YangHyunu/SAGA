@@ -59,43 +59,12 @@ def is_anthropic_model(model: str | None) -> bool:
 
 
 def extract_session_id(request: ChatCompletionRequest, raw_request: Request) -> str | None:
-    """Extract session ID with priority: plugin sentinel > header > user field > system hash.
+    """Extract session ID with priority: header > user field > system hash.
 
-    0. @@SAGA: sentinel in messages[0] (RisuAI plugin injection)
     1. X-SAGA-Session-ID header (explicit)
     2. request.user field (OpenAI spec, configurable in RisuAI)
     3. System message hash fallback (legacy, backward-compatible)
     """
-    # Priority 0: SAGA plugin sentinel in messages[0]
-    if request.messages and request.messages[0].role == "system":
-        text = request.messages[0].get_text_content()
-        if text.startswith(deps._SAGA_META_PREFIX):
-            lines = text.split("\n")
-            meta_line = lines[0]
-            meta = dict(
-                kv.split("=", 1)
-                for kv in meta_line[len(deps._SAGA_META_PREFIX):].split("&")
-                if "=" in kv
-            )
-            for line in lines[1:]:
-                if line.startswith(deps._SAGA_STATE_PREFIX):
-                    try:
-                        raw_state = json.loads(line[len(deps._SAGA_STATE_PREFIX):])
-                        if isinstance(raw_state, dict):
-                            request._saga_scriptstate = {
-                                (k.lstrip("$") if isinstance(k, str) else str(k)): v
-                                for k, v in raw_state.items()
-                            }
-                            logger.info(f"[Session] Plugin scriptstate: {len(request._saga_scriptstate)} vars")
-                    except (json.JSONDecodeError, ValueError) as e:
-                        logger.warning(f"[Session] Invalid scriptstate in sentinel: {e}")
-                    break
-            sid = meta.get("sid", "").strip()
-            if sid and deps._SESSION_ID_RE.match(sid):
-                request.messages.pop(0)
-                logger.info(f"[Session] Plugin sentinel: sid={sid} grp={meta.get('grp', '0')}")
-                return sid
-
     # Priority 1: Custom header
     header_id = raw_request.headers.get("x-saga-session-id", "").strip()
     if header_id:
@@ -278,7 +247,7 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
     logger.info(f"[Trace] Session: {session_id} (via {session_src})")
 
     # ── Scriptstate ──
-    scriptstate = getattr(request, '_saga_scriptstate', None) or extract_scriptstate(raw_request)
+    scriptstate = extract_scriptstate(raw_request)
     if scriptstate:
         await deps.sqlite_db.upsert_world_state(session_id, "scriptstate", json.dumps(scriptstate, ensure_ascii=False))
         logger.info(f"[Trace] Scriptstate: {len(scriptstate)} vars received ({list(scriptstate.keys())[:5]})")

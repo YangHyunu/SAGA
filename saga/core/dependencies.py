@@ -64,8 +64,6 @@ _PENDING_TTL_SECONDS = 60
 # ============================================================
 
 _SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
-_SAGA_META_PREFIX = "@@SAGA:"
-_SAGA_STATE_PREFIX = "@@SAGA_STATE:"
 
 # ============================================================
 # Global component instances (set in lifespan)
