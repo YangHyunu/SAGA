@@ -83,7 +83,29 @@ class SystemStabilizer:
             return messages, ""
 
         # Extract delta: paragraphs in current but not in canonical
-        stable_text, delta_text = self._extract_delta(canonical, current_system)
+        stable_text, delta_text, canonical_needs_update = self._extract_delta(
+            canonical, current_system
+        )
+
+        # inject_replace: update canonical so next turns see the corrected content
+        if canonical_needs_update:
+            await self._save_canonical(session_id, current_system, current_hash)
+            logger.info(
+                f"[Stabilizer] inject_replace: canonical updated for session {session_id} "
+                f"({len(current_system)} chars, hash={current_hash[:8]})"
+            )
+            # Use current system as-is (already has replaced content);
+            # if there are also pure additions, they appear in delta as dynamic context
+            if delta_text:
+                stabilized = list(messages)
+                stabilized[system_idx] = dict(messages[system_idx])
+                stabilized[system_idx]["content"] = current_system
+                logger.info(
+                    f"[Stabilizer] inject_replace + pure adds: "
+                    f"{len(delta_text)} chars delta alongside updated canonical"
+                )
+                return stabilized, delta_text
+            return messages, ""
 
         if delta_text:
             # Replace system message with canonical (stable) version
@@ -100,16 +122,22 @@ class SystemStabilizer:
         logger.debug("[Stabilizer] No delta detected despite hash mismatch (whitespace?)")
         return messages, ""
 
-    def _extract_delta(self, canonical: str, current: str) -> tuple[str, str]:
+    def _extract_delta(self, canonical: str, current: str) -> tuple[str, str, bool]:
         """Extract paragraph-level delta between canonical and current system message.
 
-        Handles inject-modified paragraphs: if a removed paragraph and an added
-        paragraph are related (substring or >50% word overlap), the added one is
-        treated as a modification rather than new content, avoiding duplication.
+        Handles inject-modified paragraphs:
+        - inject_append (r_para is prefix of a_para): extracts the appended portion as delta.
+          The canonical paragraph is stable; only the injected addition goes to dynamic context.
+        - inject_replace (>50% word overlap, no substring): signals caller to update canonical.
+          The replaced paragraph is excluded from delta; caller persists current as new canonical.
+        - inject_shrink (a_para is prefix of r_para): rare, excluded from delta.
+        - pure add: genuinely new paragraphs included in delta.
 
         Returns:
-            (stable_text, delta_text) where delta_text contains paragraphs
-            present in current but absent from canonical.
+            (stable_text, delta_text, canonical_needs_update) where:
+            - stable_text: canonical (always unchanged here; caller decides what to send)
+            - delta_text: content for dynamic context injection
+            - canonical_needs_update: True when inject_replace detected; caller must persist
         """
         canonical_paras = self._split_paragraphs(canonical)
         current_paras = self._split_paragraphs(current)
@@ -123,51 +151,64 @@ class SystemStabilizer:
         removed = set(p for p in canonical_paras if canonical_counts[p] > current_counts[p])
 
         if not added:
-            return canonical, ""
+            return canonical, "", False
 
         if not removed:
             # No removals — all added are genuinely new
             delta_parts = [p for p in current_paras if p in added]
-            return canonical, "\n\n".join(delta_parts)
+            return canonical, "\n\n".join(delta_parts), False
 
         # Detect modified paragraphs (inject_at/inject_lore/inject_replace)
         matched_added: set[str] = set()
+        inject_delta_parts: list[str] = []  # appended content extracted from inject_append
+        canonical_needs_update = False
+
         for r_para in removed:
             for a_para in added:
                 if a_para in matched_added:
                     continue
-                # Substring check: append or prepend
-                if r_para in a_para or a_para in r_para:
+                # inject_append: r_para is a substring prefix of a_para
+                if r_para in a_para:
+                    appended = a_para[a_para.index(r_para) + len(r_para):].strip()
+                    if appended:
+                        inject_delta_parts.append(appended)
                     matched_added.add(a_para)
                     logger.info(
-                        f"[Stabilizer] inject detected: substring match "
-                        f"({len(r_para)}\u2192{len(a_para)} chars)"
+                        f"[Stabilizer] inject_append: +{len(appended)} chars → delta"
                     )
                     break
-                # Word overlap check: replace
+                # inject_shrink: a_para is substring of r_para (content removed from para)
+                if a_para in r_para:
+                    matched_added.add(a_para)
+                    logger.info("[Stabilizer] inject_shrink: paragraph shortened, excluded")
+                    break
+                # inject_replace: >50% word overlap, no substring relation
                 r_words = set(r_para.lower().split())
                 a_words = set(a_para.lower().split())
                 if r_words and a_words:
                     overlap = len(r_words & a_words) / max(len(r_words), len(a_words))
                     if overlap > 0.5:
                         matched_added.add(a_para)
+                        canonical_needs_update = True
                         logger.info(
-                            f"[Stabilizer] inject detected: word overlap {overlap:.0%} "
-                            f"({len(r_para)}\u2192{len(a_para)} chars)"
+                            f"[Stabilizer] inject_replace: {overlap:.0%} overlap "
+                            f"→ canonical update required"
                         )
                         break
 
         pure_added = added - matched_added
         if matched_added:
             logger.info(
-                f"[Stabilizer] {len(matched_added)} modified para(s) excluded from delta, "
-                f"{len(pure_added)} new para(s) in delta"
+                f"[Stabilizer] {len(matched_added)} modified para(s): "
+                f"{len(inject_delta_parts)} inject delta(s), "
+                f"{len(pure_added)} pure addition(s)"
             )
 
         delta_parts = [p for p in current_paras if p in pure_added]
-        delta_text = "\n\n".join(delta_parts)
+        all_delta = delta_parts + inject_delta_parts
+        delta_text = "\n\n".join(all_delta)
 
-        return canonical, delta_text
+        return canonical, delta_text, canonical_needs_update
 
     @staticmethod
     def _split_paragraphs(text: str) -> list[str]:

@@ -220,38 +220,47 @@ async def test_no_system_message(stabilizer):
 # ──────────────────────────────────────────────────────────────────
 
 def test_inject_append(stabilizer):
-    """@@inject_at append: modified paragraph should not appear in delta."""
+    """inject_append: appended content extracted as delta; full modified para not duplicated."""
     canonical = "A is friendly."
     current = "A is friendly. [New lore about A]"
-    _, delta = stabilizer._extract_delta(canonical, current)
-    assert delta == "", f"Expected empty delta, got: {delta!r}"
+    _, delta, needs_update = stabilizer._extract_delta(canonical, current)
+    # Appended injection must appear in delta
+    assert "[New lore about A]" in delta, f"Expected inject content in delta, got: {delta!r}"
+    # Full modified paragraph must NOT be in delta (no duplication with canonical)
+    assert "A is friendly. [New lore about A]" not in delta
+    # inject_append does not require canonical update (canonical stays stable)
+    assert needs_update is False
 
 
 def test_inject_replace(stabilizer):
-    """@@inject_replace: paragraph with >50% word overlap should not appear in delta."""
+    """inject_replace: >50% word overlap excluded from delta, canonical update flagged."""
     canonical = "The hero stands tall and proud in battle."
-    # Replaced version shares most words but differs
     current = "The hero stands tall and proud in glorious battle today."
-    _, delta = stabilizer._extract_delta(canonical, current)
+    _, delta, needs_update = stabilizer._extract_delta(canonical, current)
+    # Replaced paragraph does not appear in delta
     assert delta == "", f"Expected empty delta for replaced para, got: {delta!r}"
+    # Canonical update must be requested so stale content is evicted next turn
+    assert needs_update is True
 
 
 def test_inject_plus_new(stabilizer):
-    """Modified para excluded + genuinely new para included in delta."""
+    """inject_append extracts injection AND genuinely new para both appear in delta."""
     para_a = "A is friendly."
     para_a_modified = "A is friendly. [New lore about A]"
     para_b = "B is quiet."
     para_c = "[Lorebook: Forest]\nThe forest is dark and deep."
 
     canonical = f"{para_a}\n\n{para_b}"
-    # A is modified (inject append), B unchanged, C is new
+    # A is modified (inject append), B unchanged, C is new lorebook
     current = f"{para_a_modified}\n\n{para_b}\n\n{para_c}"
 
-    _, delta = stabilizer._extract_delta(canonical, current)
+    _, delta, _ = stabilizer._extract_delta(canonical, current)
 
-    # Modified A must not be in delta
+    # Full modified A must NOT be in delta (no duplication)
     assert "A is friendly. [New lore about A]" not in delta
-    # Genuinely new lorebook entry must be in delta
+    # Injected addition IS extracted as delta
+    assert "[New lore about A]" in delta
+    # Genuinely new lorebook entry must also be in delta
     assert "Forest" in delta
     assert "dark and deep" in delta
 
@@ -265,10 +274,54 @@ def test_normal_lorebook_unchanged(stabilizer):
     canonical = f"{para_a}\n\n{para_b}"
     current = f"{para_a}\n\n{para_b}\n\n{para_c}"
 
-    _, delta = stabilizer._extract_delta(canonical, current)
+    _, delta, needs_update = stabilizer._extract_delta(canonical, current)
 
     assert "[Lorebook: Beach]" in delta
     assert "beautiful" in delta
+    assert needs_update is False
+
+
+@pytest.mark.asyncio
+async def test_inject_replace_updates_canonical(stabilizer, db):
+    """inject_replace via stabilize(): canonical updated to current_system."""
+    canonical_text = "The hero is calm and composed."
+    replaced_text = "The hero is fierce and determined."  # >50% word overlap
+
+    msgs_t1 = [{"role": "system", "content": canonical_text}, {"role": "user", "content": "Hi"}]
+    msgs_t2 = [{"role": "system", "content": replaced_text}, {"role": "user", "content": "Fight"}]
+
+    # Turn 1: save canonical
+    await stabilizer.stabilize("s1", msgs_t1)
+
+    # Turn 2: inject_replace detected
+    result_msgs, delta = await stabilizer.stabilize("s1", msgs_t2)
+
+    # Canonical must be updated to the replaced version
+    saved = await db.get_world_state_value("s1", "canonical_system_prompt")
+    assert saved == replaced_text, f"Expected canonical updated, got: {saved!r}"
+    # No separate delta for the replace itself
+    assert delta == ""
+
+
+@pytest.mark.asyncio
+async def test_inject_append_via_stabilize(stabilizer, db):
+    """inject_append via stabilize(): system stays canonical, appended content in delta."""
+    canonical_text = "Character A is friendly and kind."
+    appended_text = "Character A is friendly and kind. [Lorebook inject: She has silver hair.]"
+
+    msgs_t1 = [{"role": "system", "content": canonical_text}, {"role": "user", "content": "Hi"}]
+    msgs_t2 = [{"role": "system", "content": appended_text}, {"role": "user", "content": "Describe"}]
+
+    await stabilizer.stabilize("s1", msgs_t1)
+    result_msgs, delta = await stabilizer.stabilize("s1", msgs_t2)
+
+    # System restored to canonical (cache stable)
+    assert result_msgs[0]["content"] == canonical_text
+    # Injected addition in dynamic context
+    assert "silver hair" in delta
+    # Canonical NOT updated (cache prefix stays stable)
+    saved = await db.get_world_state_value("s1", "canonical_system_prompt")
+    assert saved == canonical_text
 
 
 # ──────────────────────────────────────────────────────────────────
