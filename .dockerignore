@@ -1,0 +1,41 @@
+# VCS / editor
+.git
+.gitignore
+.claude
+.omc
+.groupedtimelineinclude
+.pytest_cache
+*.swp
+.idea
+.vscode
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.mypy_cache
+.ruff_cache
+
+# Secrets / local config (must not leak into image)
+.env
+config.yaml
+
+# Runtime state (mounted as volumes instead)
+db/
+cache/
+logs/
+
+# Docs & scratch
+README*.md
+DESIGN.md
+CHEAT_SHEET.md
+saga.html
+benchmarks/
+tests/
+docker-compose.letta.yaml
+init-pgvector.sql
+requirements-dev.txt
+README_old.md
+README3.md

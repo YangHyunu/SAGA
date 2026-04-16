@@ -2,19 +2,45 @@ import chromadb
 import logging
 from datetime import datetime
 
+from chromadb.utils import embedding_functions
+
 logger = logging.getLogger(__name__)
 
 
 class VectorDB:
-    def __init__(self, db_path: str = "db/chroma"):
+    def __init__(
+        self,
+        db_path: str = "db/chroma",
+        openai_api_key: str | None = None,
+        embedding_model: str = "text-embedding-3-small",
+    ):
         self.db_path = db_path
+        self.openai_api_key = openai_api_key
+        self.embedding_model = embedding_model
         self.client = None
         self.episodes = None
 
     def initialize(self):
         self.client = chromadb.PersistentClient(path=self.db_path)
+
+        if not self.openai_api_key:
+            raise RuntimeError(
+                "VectorDB requires an OpenAI API key for embeddings. "
+                "Set api_keys.openai in config.yaml."
+            )
+
+        embed_fn = embedding_functions.OpenAIEmbeddingFunction(
+            api_key=self.openai_api_key,
+            model_name=self.embedding_model,
+        )
+
         self.episodes = self.client.get_or_create_collection(
-            name="episodes", metadata={"hnsw:space": "cosine"}
+            name="episodes",
+            metadata={"hnsw:space": "cosine"},
+            embedding_function=embed_fn,
+        )
+        logger.info(
+            f"[VectorDB] initialized with OpenAI embedding model={self.embedding_model}"
         )
 
     # ------------------------------------------------------------------ #

@@ -55,7 +55,11 @@ async def lifespan(app: FastAPI):
     deps.sqlite_db = SQLiteDB(db_path="db/state.db")
     await deps.sqlite_db.initialize()
 
-    deps.vector_db = VectorDB(db_path="db/chroma")
+    deps.vector_db = VectorDB(
+        db_path="db/chroma",
+        openai_api_key=deps.config.api_keys.openai,
+        embedding_model=deps.config.models.embedding,
+    )
     deps.vector_db.initialize()
 
     deps.md_cache = MdCache(cache_dir=deps.config.md_cache.cache_dir)
