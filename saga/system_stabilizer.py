@@ -167,9 +167,9 @@ class SystemStabilizer:
             for a_para in added:
                 if a_para in matched_added:
                     continue
-                # inject_append: r_para is a substring prefix of a_para
-                if r_para in a_para:
-                    appended = a_para[a_para.index(r_para) + len(r_para):].strip()
+                # inject_append: r_para is a strict prefix of a_para
+                if a_para.startswith(r_para):
+                    appended = a_para[len(r_para):].strip()
                     if appended:
                         inject_delta_parts.append(appended)
                     matched_added.add(a_para)
