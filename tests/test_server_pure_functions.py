@@ -275,59 +275,6 @@ class TestExtractSessionId:
         result = server_module._extract_session_id(request, raw)
         assert result == "padded-id"
 
-    def test_sentinel_extracts_session_id(self):
-        msg = MagicMock()
-        msg.role = "system"
-        msg.get_text_content.return_value = "@@SAGA:sid=plugin-session-1&grp=0"
-        request = self._make_request(messages=[msg])
-        raw = _raw_request()
-        result = server_module._extract_session_id(request, raw)
-        assert result == "plugin-session-1"
-        assert len(request.messages) == 0  # sentinel stripped
-
-    def test_sentinel_with_scriptstate(self):
-        msg = MagicMock()
-        msg.role = "system"
-        msg.get_text_content.return_value = '@@SAGA:sid=sess-abc\n@@SAGA_STATE:{"$hp":"85","$location":"dungeon"}'
-        request = self._make_request(messages=[msg])
-        raw = _raw_request()
-        result = server_module._extract_session_id(request, raw)
-        assert result == "sess-abc"
-        assert hasattr(request, '_saga_scriptstate')
-        assert request._saga_scriptstate == {"hp": "85", "location": "dungeon"}
-
-    def test_sentinel_scriptstate_strips_dollar_prefix(self):
-        msg = MagicMock()
-        msg.role = "system"
-        msg.get_text_content.return_value = '@@SAGA:sid=sess-1\n@@SAGA_STATE:{"$mood":"angry","plain":"val"}'
-        request = self._make_request(messages=[msg])
-        raw = _raw_request()
-        server_module._extract_session_id(request, raw)
-        assert request._saga_scriptstate["mood"] == "angry"
-        assert request._saga_scriptstate["plain"] == "val"
-        assert "$mood" not in request._saga_scriptstate
-
-    def test_sentinel_invalid_scriptstate_ignored(self):
-        msg = MagicMock()
-        msg.role = "system"
-        msg.get_text_content.return_value = "@@SAGA:sid=sess-2\n@@SAGA_STATE:not-json"
-        request = self._make_request(messages=[msg])
-        raw = _raw_request()
-        result = server_module._extract_session_id(request, raw)
-        assert result == "sess-2"
-        assert not isinstance(getattr(request, '_saga_scriptstate', None), dict)
-
-    def test_sentinel_without_scriptstate_line(self):
-        msg = MagicMock()
-        msg.role = "system"
-        msg.get_text_content.return_value = "@@SAGA:sid=sess-3"
-        request = self._make_request(messages=[msg])
-        raw = _raw_request()
-        result = server_module._extract_session_id(request, raw)
-        assert result == "sess-3"
-        assert not isinstance(getattr(request, '_saga_scriptstate', None), dict)
-
-
 # ─────────────────────────────────────────────────────────────
 # _extract_gen_params
 # ─────────────────────────────────────────────────────────────

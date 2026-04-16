@@ -18,7 +18,6 @@ class FakeConfig:
         compress_enabled = True
         compress_threshold_ratio = 0.70  # threshold = 700 tokens
         min_compress_turns = 2
-        max_summary_ratio = 0.20
 
 
 def _make_messages(num_turns: int, tokens_per_msg: int = 50) -> list[dict]:

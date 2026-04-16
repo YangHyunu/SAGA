@@ -53,15 +53,11 @@ class MdCacheConfig(BaseModel):
 
 class PromptCachingConfig(BaseModel):
     enabled: bool = True
-    strategy: str = "md_prefix"
     stabilize_system: bool = True
-    canonical_similarity_threshold: float = 0.30
     cache_ttl: str = "1h"  # extended-cache-ttl: "5m" (default) or "1h"
     compress_enabled: bool = True
     compress_threshold_ratio: float = 0.35  # total_context_max * ratio 초과 시 압축 (65K 기준 ~33K)
     min_compress_turns: int = 3             # 최소 압축 단위 (턴)
-    max_compress_turns: int = 8             # chunk 당 최대 턴 수 (균등한 작은 chunk 유도)
-    max_summary_ratio: float = 0.20         # summary chunk 최대 비율
 
 
 class CuratorConfig(BaseModel):
@@ -76,18 +72,10 @@ class CuratorConfig(BaseModel):
     letta_embedding: str = "openai/text-embedding-3-small"
 
 
-class SessionConfig(BaseModel):
-    default_world: str = "my_world"
-
-
 class CacheWarmingConfig(BaseModel):
     enabled: bool = True
     interval: int = 270  # seconds (4.5 minutes — just before 5-min TTL expiry)
     max_warmings: int = 4  # per session before giving up
-
-
-class StateInstructionConfig(BaseModel):
-    enabled: bool = True
 
 
 class LangSmithConfig(BaseModel):
@@ -110,9 +98,7 @@ class SagaConfig(BaseModel):
     md_cache: MdCacheConfig = Field(default_factory=MdCacheConfig)
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
     curator: CuratorConfig = Field(default_factory=CuratorConfig)
-    session: SessionConfig = Field(default_factory=SessionConfig)
     cache_warming: CacheWarmingConfig = Field(default_factory=CacheWarmingConfig)
-    state_instruction: StateInstructionConfig = Field(default_factory=StateInstructionConfig)
     langsmith: LangSmithConfig = Field(default_factory=LangSmithConfig)
 
 

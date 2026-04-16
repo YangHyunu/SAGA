@@ -98,6 +98,12 @@ class TestIsValidNpcName:
         "NPC #3", "병사A", "A",  # too short / numbered
         "", "   ",  # empty / whitespace
         "a" * 31,  # too long
+        # Unnamed prefix patterns
+        "이름 없는 병사", "이름없는 기사", "무명의 상인", "무명 농부",
+        "정체불명의 여인", "Unknown guard", "unnamed soldier",
+        # English generic NPC types
+        "Guard", "Soldier", "Merchant", "Villager", "Bystander",
+        "guard 1", "soldier3", "Peasant", "Servant",
     ])
     def test_rejects_extras(self, name):
         assert not PostTurnExtractor._is_valid_npc_name(name)

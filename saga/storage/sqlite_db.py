@@ -32,16 +32,6 @@ class SQLiteDB:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (session_id, key)
             );
-            CREATE TABLE IF NOT EXISTS event_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL REFERENCES sessions(id),
-                event_type TEXT NOT NULL,
-                trigger_condition TEXT,
-                priority INTEGER DEFAULT 0,
-                payload TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
             CREATE TABLE IF NOT EXISTS turn_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -78,25 +68,6 @@ class SQLiteDB:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(session_id, from_name, to_name)
             );
-            CREATE TABLE IF NOT EXISTS locations (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL REFERENCES sessions(id),
-                name TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                first_visit_turn INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS events (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL REFERENCES sessions(id),
-                name TEXT NOT NULL,
-                event_type TEXT DEFAULT '',
-                description TEXT DEFAULT '',
-                turn INTEGER DEFAULT 0,
-                importance INTEGER DEFAULT 10,
-                entities TEXT DEFAULT '[]',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
             CREATE TABLE IF NOT EXISTS lore (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -112,7 +83,7 @@ class SQLiteDB:
             );
             CREATE INDEX IF NOT EXISTS idx_characters_session ON characters(session_id);
             CREATE INDEX IF NOT EXISTS idx_relationships_session ON relationships(session_id);
-            CREATE INDEX IF NOT EXISTS idx_events_session_importance ON events(session_id, importance);
+
             CREATE INDEX IF NOT EXISTS idx_lore_session ON lore(session_id);
         """)
         await self._db.commit()
@@ -198,7 +169,7 @@ class SQLiteDB:
             return row[0]
 
     async def reset_session(self, session_id: str):
-        """Reset turn_count to 0 and clear world_state / turn_log / event_queue."""
+        """Reset turn_count to 0 and clear world_state / turn_log."""
         now = datetime.utcnow().isoformat()
         await self._db.execute(
             "UPDATE sessions SET turn_count = 0, updated_at = ? WHERE id = ?",
@@ -211,19 +182,10 @@ class SQLiteDB:
             "DELETE FROM turn_log WHERE session_id = ?", (session_id,)
         )
         await self._db.execute(
-            "DELETE FROM event_queue WHERE session_id = ?", (session_id,)
-        )
-        await self._db.execute(
             "DELETE FROM characters WHERE session_id = ?", (session_id,)
         )
         await self._db.execute(
             "DELETE FROM relationships WHERE session_id = ?", (session_id,)
-        )
-        await self._db.execute(
-            "DELETE FROM locations WHERE session_id = ?", (session_id,)
-        )
-        await self._db.execute(
-            "DELETE FROM events WHERE session_id = ?", (session_id,)
         )
         await self._db.execute(
             "DELETE FROM lore WHERE session_id = ?", (session_id,)
@@ -337,31 +299,6 @@ class SQLiteDB:
                 r["state_changes"] = {}
             result.append(r)
         return result
-
-    # ------------------------------------------------------------------ #
-    # Event Queue
-    # ------------------------------------------------------------------ #
-
-    async def queue_event(self, session_id: str, event: dict):
-        """Insert an event into the queue. Expects keys: event_type, trigger_condition, priority, payload."""
-        payload_json = json.dumps(event.get("payload", {}), ensure_ascii=False)
-        now = datetime.utcnow().isoformat()
-        await self._db.execute(
-            """
-            INSERT INTO event_queue
-                (session_id, event_type, trigger_condition, priority, payload, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?)
-            """,
-            (
-                session_id,
-                event.get("event_type", ""),
-                event.get("trigger_condition", ""),
-                event.get("priority", 0),
-                payload_json,
-                now,
-            ),
-        )
-        await self._db.commit()
 
     # ------------------------------------------------------------------ #
     # Characters
@@ -503,43 +440,6 @@ class SQLiteDB:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------ #
-    # Locations
-    # ------------------------------------------------------------------ #
-
-    async def get_locations(self, session_id: str) -> list[dict]:
-        async with self._db.execute(
-            "SELECT * FROM locations WHERE session_id = ? ORDER BY first_visit_turn ASC",
-            (session_id,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
-
-    # ------------------------------------------------------------------ #
-    # Events
-    # ------------------------------------------------------------------ #
-
-    async def get_recent_events(self, session_id: str, limit: int = 5) -> list[dict]:
-        async with self._db.execute(
-            """
-            SELECT * FROM events
-            WHERE session_id = ?
-            ORDER BY turn DESC, importance DESC
-            LIMIT ?
-            """,
-            (session_id, limit),
-        ) as cursor:
-            rows = await cursor.fetchall()
-        result = []
-        for row in rows:
-            r = dict(row)
-            try:
-                r["entities"] = json.loads(r.get("entities") or "[]")
-            except (json.JSONDecodeError, TypeError):
-                r["entities"] = []
-            result.append(r)
-        return result
-
-    # ------------------------------------------------------------------ #
     # Lore
     # ------------------------------------------------------------------ #
 
@@ -639,19 +539,12 @@ class SQLiteDB:
                     break
             nearby_enriched.append(npc_info)
 
-        # Recent events
-        recent_events = await self.get_recent_events(session_id, limit=5)
-
         return {
             "location": location,
             "hp": player.get("hp", 100),
             "max_hp": player.get("max_hp", 100),
             "mood": player.get("mood", "neutral"),
             "nearby_npcs": nearby_enriched,
-            "recent_events": [
-                {"turn": e["turn"], "description": e["description"]}
-                for e in recent_events
-            ],
             "relationships": relationships,
             "session_id": session_id,
         }
@@ -671,13 +564,6 @@ class SQLiteDB:
                     f"| loc:{c.get('location')} | mood:{c.get('mood')}"
                 )
 
-        # Locations
-        locs = await self.get_locations(session_id)
-        if locs:
-            lines.append("\n## Locations")
-            for loc in locs:
-                lines.append(f"- {loc.get('name')}: {loc.get('description', '')}")
-
         # Relationships
         rels = await self.get_relationships(session_id)
         if rels:
@@ -688,25 +574,6 @@ class SQLiteDB:
                 )
 
         return "\n".join(lines)
-
-    async def detect_contradictions(self, session_id: str) -> list[dict]:
-        """Rule-based contradiction detection (replaces graph_db.detect_contradictions)."""
-        contradictions = []
-
-        # Characters with HP <= 0
-        async with self._db.execute(
-            "SELECT name, hp FROM characters WHERE session_id = ? AND hp <= 0",
-            (session_id,),
-        ) as cursor:
-            for row in await cursor.fetchall():
-                contradictions.append({
-                    "type": "zero_hp",
-                    "character": row[0],
-                    "hp": row[1],
-                    "description": f"Character '{row[0]}' has HP={row[1]}",
-                })
-
-        return contradictions
 
     async def get_entities_without_lore(self, session_id: str) -> list[dict]:
         """Find characters that have no matching lore entries."""

@@ -128,6 +128,18 @@ class PostTurnExtractor:
         r"(사람|여인|남자|여자|병사|기사|상인|농부|노인|아이|소녀|소년|시민|주민|행인|경비|하인|종자|시녀|광부|어부|사제|수녀)\s*\d*$"
     )
     _NUMBERED_PATTERN = re.compile(r"^.{1,4}\s*[#\dA-D]+$")
+    # "이름 없는 병사", "무명의 상인", "unknown guard" etc.
+    _UNNAMED_PREFIX_PATTERN = re.compile(
+        r"^(이름\s*없는|무명의?|정체불명의?|unknown|unnamed)\s+",
+        re.IGNORECASE,
+    )
+    # English generic NPC types (whole-name match, optional trailing number)
+    _ENGLISH_EXTRA_PATTERN = re.compile(
+        r"^(guard|soldier|merchant|villager|bystander|passerby|"
+        r"knight|citizen|peasant|servant|priest|nun|miner|fisherman|"
+        r"woman|man|old\s+man|old\s+woman|young\s+man|young\s+woman)\s*\d*$",
+        re.IGNORECASE,
+    )
 
     # Parenthetical alias: "루비아(Rubia)" → base="루비아", alias="Rubia"
     _PAREN = re.compile(r"\s*\(([^)]*)\)\s*$")
@@ -153,6 +165,10 @@ class PostTurnExtractor:
         if PostTurnExtractor._EXTRA_PATTERN.match(name):
             return False
         if PostTurnExtractor._NUMBERED_PATTERN.match(name):
+            return False
+        if PostTurnExtractor._UNNAMED_PREFIX_PATTERN.match(name):
+            return False
+        if PostTurnExtractor._ENGLISH_EXTRA_PATTERN.match(name):
             return False
         return True
 

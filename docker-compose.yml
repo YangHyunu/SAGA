@@ -1,0 +1,35 @@
+services:
+  saga:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: saga:latest
+    container_name: saga
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Config (copy config.example.yaml to config.yaml before first run)
+      - ./config.yaml:/app/config.yaml:ro
+      # Persistent state
+      - saga-db:/app/db
+      - saga-cache:/app/cache
+      - saga-logs:/app/logs
+    environment:
+      - SAGA_CONFIG=/app/config.yaml
+      # API keys — prefer .env file (see below)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  saga-db:
+  saga-cache:
+  saga-logs:

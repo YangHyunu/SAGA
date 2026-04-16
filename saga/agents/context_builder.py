@@ -134,31 +134,9 @@ class ContextBuilder:
         return selected
 
     async def _get_active_lore(self, session_id: str, query: str) -> list[str]:
-        """Get relevant lore from SQLite + vector search."""
-        # SQLite lore
+        """Get relevant lore from SQLite."""
         all_lore = await self.sqlite_db.get_all_lore(session_id)
-
-        # Vector search for relevant lorebook entries
-        vector_lore = self.vector_db.search_lorebook(session_id, query, n_results=5)
-
-        # Combine and deduplicate
-        lore_texts = []
-        seen = set()
-        for lore in all_lore:
-            if lore['name'] not in seen:
-                seen.add(lore['name'])
-                lore_texts.append(f"### {lore['name']}\n{lore['content']}")
-
-        # Add vector results not already in SQLite lore
-        docs = vector_lore.get("documents", [[]])[0] if vector_lore.get("documents") else []
-        metas = vector_lore.get("metadatas", [[]])[0] if vector_lore.get("metadatas") else []
-        for doc, meta in zip(docs, metas):
-            name = meta.get("name", "") if meta else ""
-            if name and name not in seen:
-                seen.add(name)
-                lore_texts.append(f"### {name}\n{doc}")
-
-        return lore_texts
+        return [f"### {lore['name']}\n{lore['content']}" for lore in all_lore]
 
     def _assemble_dynamic(self, live_state: str, episodes: list[dict], active_lore: list[str], token_budget: int, stable_prefix: str) -> str:
         """Assemble dynamic suffix from live state + episodes + lore."""

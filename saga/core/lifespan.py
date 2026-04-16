@@ -33,7 +33,6 @@ async def lifespan(app: FastAPI):
     from saga.agents.curator import CuratorRunner
     from saga.session import SessionManager
     from saga.system_stabilizer import SystemStabilizer
-    from saga.window_recovery import WindowRecovery
     from saga.cost_tracker import CostTracker
     from saga.message_compressor import MessageCompressor
 
@@ -56,7 +55,11 @@ async def lifespan(app: FastAPI):
     deps.sqlite_db = SQLiteDB(db_path="db/state.db")
     await deps.sqlite_db.initialize()
 
-    deps.vector_db = VectorDB(db_path="db/chroma")
+    deps.vector_db = VectorDB(
+        db_path="db/chroma",
+        openai_api_key=deps.config.api_keys.openai,
+        embedding_model=deps.config.models.embedding,
+    )
     deps.vector_db.initialize()
 
     deps.md_cache = MdCache(cache_dir=deps.config.md_cache.cache_dir)
@@ -66,8 +69,6 @@ async def lifespan(app: FastAPI):
 
     # Initialize agents
     deps.context_builder = ContextBuilder(deps.sqlite_db, deps.vector_db, deps.md_cache, deps.config)
-    # Initialize window recovery, cost tracker & message compressor (before agents that need cost_tracker)
-    deps.window_recovery = WindowRecovery(deps.sqlite_db, deps.vector_db, deps.config)
     deps.cost_tracker = CostTracker(deps.sqlite_db)
     await deps.cost_tracker.initialize()
 

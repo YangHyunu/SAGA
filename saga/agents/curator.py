@@ -154,14 +154,11 @@ class CuratorRunner:
         from_turn = max(0, turn_number - self.config.curator.interval)
         turn_logs = await self.sqlite_db.get_turn_logs(session_id, from_turn=from_turn, to_turn=turn_number)
 
-        contradictions = await self.sqlite_db.detect_contradictions(session_id)
-
         return {
             "turn_number": turn_number,
             "graph_summary": graph_summary,
             "episodes_text": episodes_text,
             "turn_logs": turn_logs,
-            "contradictions": contradictions,
         }
 
     async def _apply_results(self, session_id, turn_number, result):
@@ -169,13 +166,6 @@ class CuratorRunner:
             for fix in result["contradictions"]:
                 logger.info(f"[Curator] Contradiction fix: {fix}")
                 # Apply graph fixes as needed
-
-        if result.get("events"):
-            for event in result["events"]:
-                if not isinstance(event, dict):
-                    logger.debug(f"[Curator] Skipping non-dict event: {event!r}")
-                    continue
-                await self.sqlite_db.queue_event(session_id, event)
 
         if result.get("compress_story") and result.get("compressed_summary"):
             await self._compress_story_md(session_id, turn_number, result["compressed_summary"])
@@ -273,7 +263,7 @@ class CuratorRunner:
         lore_type = lore_data.get("lore_type", entity_type)
         priority = lore_data.get("priority", 50)
 
-        # Store in SQLite
+        # Store in SQLite (single source of truth for lore)
         await self.sqlite_db.create_lore(
             session_id=session_id,
             name=f"lore_{entity_name}",
@@ -283,23 +273,6 @@ class CuratorRunner:
             priority=priority,
             auto_generated=True,
             source_turns=json.dumps(source_turns[:5]),
-        )
-
-        # Store in ChromaDB for vector search
-        lore_id = f"{session_id}_lore_{entity_name}"
-        self.vector_db.add_lorebook_entry(
-            entry_id=lore_id,
-            text=content,
-            metadata={
-                "session_id": session_id,
-                "entity_name": entity_name,
-                "entity_type": entity_type,
-                "lore_type": lore_type,
-                "keywords": keywords,
-                "priority": priority,
-                "auto_generated": True,
-                "source_turns": json.dumps(source_turns[:5]),
-            },
         )
 
         logger.info(f"[Curator] Auto-generated lore for '{entity_name}' ({lore_type}, priority={priority})")

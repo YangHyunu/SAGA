@@ -2,52 +2,46 @@ import chromadb
 import logging
 from datetime import datetime
 
+from chromadb.utils import embedding_functions
+
 logger = logging.getLogger(__name__)
 
 
 class VectorDB:
-    def __init__(self, db_path: str = "db/chroma"):
+    def __init__(
+        self,
+        db_path: str = "db/chroma",
+        openai_api_key: str | None = None,
+        embedding_model: str = "text-embedding-3-small",
+    ):
         self.db_path = db_path
+        self.openai_api_key = openai_api_key
+        self.embedding_model = embedding_model
         self.client = None
-        self.lorebook = None
         self.episodes = None
 
     def initialize(self):
         self.client = chromadb.PersistentClient(path=self.db_path)
-        self.lorebook = self.client.get_or_create_collection(
-            name="lorebook", metadata={"hnsw:space": "cosine"}
-        )
-        self.episodes = self.client.get_or_create_collection(
-            name="episodes", metadata={"hnsw:space": "cosine"}
-        )
 
-    # ------------------------------------------------------------------ #
-    # Lorebook operations
-    # ------------------------------------------------------------------ #
-
-    def add_lorebook_entry(self, entry_id: str, text: str, metadata: dict):
-        """Add or update a lorebook entry. Upserts by entry_id."""
-        self.lorebook.upsert(
-            ids=[entry_id],
-            documents=[text],
-            metadatas=[metadata],
-        )
-        logger.debug(f"[VectorDB] upsert lorebook: id={entry_id} text_len={len(text)}")
-
-    def search_lorebook(
-        self, session_id: str, query: str, n_results: int = 10
-    ) -> dict:
-        """Semantic search over lorebook entries filtered by session_id."""
-        try:
-            result = self.lorebook.query(
-                query_texts=[query],
-                n_results=n_results,
-                where={"session_id": session_id},
+        if not self.openai_api_key:
+            raise RuntimeError(
+                "VectorDB requires an OpenAI API key for embeddings. "
+                "Set api_keys.openai in config.yaml."
             )
-        except Exception as e:
-            logger.warning(f"[VectorDB] search_lorebook failed: {e}")
-            result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-        return result
+
+        embed_fn = embedding_functions.OpenAIEmbeddingFunction(
+            api_key=self.openai_api_key,
+            model_name=self.embedding_model,
+        )
+
+        self.episodes = self.client.get_or_create_collection(
+            name="episodes",
+            metadata={"hnsw:space": "cosine"},
+            embedding_function=embed_fn,
+        )
+        logger.info(
+            f"[VectorDB] initialized with OpenAI embedding model={self.embedding_model}"
+        )
 
     # ------------------------------------------------------------------ #
     # Episode operations
@@ -151,11 +145,10 @@ class VectorDB:
     # ------------------------------------------------------------------ #
 
     def delete_session_data(self, session_id: str):
-        """Delete all lorebook entries and episodes belonging to a session."""
-        for collection in (self.lorebook, self.episodes):
-            if collection is None:
-                continue
-            try:
-                collection.delete(where={"session_id": session_id})
-            except Exception as e:
-                logger.warning(f"[VectorDB] delete_session_data failed for {collection.name}: {e}")
+        """Delete all episodes belonging to a session."""
+        if self.episodes is None:
+            return
+        try:
+            self.episodes.delete(where={"session_id": session_id})
+        except Exception as e:
+            logger.warning(f"[VectorDB] delete_session_data failed: {e}")
