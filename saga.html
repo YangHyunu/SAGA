@@ -123,6 +123,53 @@
     margin-bottom: 6px;
   }
 
+  /* Domain Context box */
+  .context-box {
+    background: #fafafa;
+    border-left: 3px solid #3a5a40;
+    padding: 16px 20px;
+    margin: 16px 0 20px 0;
+    font-size: 10pt;
+    line-height: 1.75;
+    color: #2d2d2d;
+  }
+  .context-box .context-label {
+    font-size: 9pt;
+    font-weight: 700;
+    color: #3a5a40;
+    letter-spacing: 1.5px;
+    margin-bottom: 10px;
+  }
+  .context-box .context-meta {
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #e8e8e8;
+  }
+  .context-box .context-meta .title {
+    color: #2d2d2d;
+    font-weight: 700;
+    font-size: 10.2pt;
+  }
+  .context-box .context-body {
+    margin-bottom: 10px;
+    color: #2d2d2d;
+  }
+  .context-box .context-body strong {
+    color: #2d2d2d;
+    font-weight: 700;
+  }
+  .context-box .context-position {
+    font-size: 9.8pt;
+    color: #3a5a40;
+    font-weight: 500;
+    padding-top: 8px;
+    border-top: 1px dashed #d0d0d0;
+  }
+  .context-box .context-position strong {
+    color: #2d2d2d;
+    font-weight: 700;
+  }
+
   /* Body text */
   .body-text {
     font-size: 10.2pt;
@@ -439,6 +486,23 @@
     </div>
   </div>
 
+  <!-- Domain Context: 도메인 + SAGA 위치 -->
+  <div class="context-box">
+    <div class="context-label">DOMAIN CONTEXT</div>
+    <div class="context-meta">
+      <div class="title">AI 캐릭터 챗 · Narrative Roleplay</div>
+    </div>
+    <div class="context-body">
+      사용자가 LLM API(OpenAI/Claude/Gemini 등)와 직접 연결해 AI 캐릭터와 페르소나·세계관·관계를 공유하며
+      수십~수백 턴 대화를 이어가는 서비스 영역이다. 프론트엔드로는
+      <strong>RisuAI · SillyTavern · JanitorAI</strong> 등 오픈소스/커뮤니티 클라이언트가 쓰이고,
+      사용자가 캐릭터 카드·세계관 설정·로어북을 직접 만들어 주고받는 자생적 생태계가 형성돼 있다.
+    </div>
+    <div class="context-position">
+      → SAGA는 RisuAI·SillyTavern 등의 <strong>커뮤니티 플러그인 모듈로 통합하는 것을 목표로</strong> 설계된 백엔드 리버스 프록시다.
+    </div>
+  </div>
+
   <!-- TL;DR -->
   <div class="tldr">
     <div class="tldr-label">TL;DR</div>
@@ -446,7 +510,7 @@
     용도별 <strong>3계층 저장소</strong>(SQLite · ChromaDB · 프롬프트 앞부분) 와 <strong>동기/비동기 분리</strong>로
     캐시 적중률 <strong>84.2%</strong>, 순비용 <strong>67.1% 절감</strong>을 확보하면서
     LOCOMO <strong>+54%</strong>, LongMemEval <strong>+42.3%p</strong>의 벤치마크 향상을 달성했다.
-    RisuAI·SillyTavern 등 기존 롤플레이 프론트엔드 수정 없이 리버스 프록시로 삽입 가능.
+    RisuAI·SillyTavern 등 롤플레이 프론트엔드에 <strong>커뮤니티 플러그인 모듈로 통합하는 것을 목표로 설계</strong>됨.
   </div>
 
   <!-- 1. 배경 -->
@@ -646,7 +710,6 @@
     </div>
 
     <div class="tech-detail">
-      <span class="label">▼ 구현 디테일 (관심 있는 분만)</span>
       <ul>
         <li><strong>캐시 경계 위치 고정</strong> — Anthropic 캐시 포인트(BP2)를 "가장 최근 블록"이 아닌 "맨 앞 블록(블록1)의 assistant 메시지"에 고정. 새 블록이 뒤에 붙어도 경계의 바이트 오프셋이 움직이지 않게 하기 위함.</li>
         <li><strong>압축 임계치는 조립 후 측정</strong> — "대화가 N 토큰 넘으면 압축" 판단을 <strong>원본 히스토리 기준</strong>으로 하면, 이미 블록으로 압축된 대화를 또 압축하는 오버 컴프레션이 발생한다. 해결은 <strong>현재 프롬프트를 실제로 조립한 뒤 그 결과의 토큰 수</strong>로 판단하는 것. 조립된 프롬프트는 이미 작아져 있으므로 임계치에 한참 미달 → 압축 트리거 안 걸림.</li>
@@ -749,17 +812,39 @@
     </div>
   </div>
 
-  <!-- 5. 현재 진행 및 로드맵 -->
+  <!-- 5. 포지션 변경과 다음 단계 -->
   <div class="section">
-    <div class="section-title"><span class="num">5</span>유지보수 및 진행 중인 리팩터링</div>
+    <div class="section-title"><span class="num">5</span>포지션 변경과 다음 단계</div>
 
+    <div class="subsection-title">5.1 v1의 도달점</div>
     <div class="body-text">
+      <p>
+        SAGA는 <strong>핵심 엔진</strong>(메모리 3계층 · 캐시 보존 · 동기/비동기 분리 · 검색·요약 파이프라인)과
+        <strong>벤치마크 검증</strong>(LOCOMO · LongMemEval) 단계까지 완성됐다. 본래 목표였던
+        <strong>커뮤니티 플러그인 모듈로의 패키징</strong> — Docker 이미지화, 설치 경로 간소화, RisuAI·SillyTavern 통합 가이드 작성 — 단계는 진입하지 않은 상태에서 v1을 마무리했다.
+      </p>
+      <p>
+        그 외 내부 정리·리팩터링 작업은 다음 항목까지 진행됐다.
+      </p>
       <ul>
-        <li><strong>chat_handler.py 책임 분리</strong> (완료) — 너무 많은 기능이 한 파일에 뭉쳐 있던 512줄짜리 모듈을 세션 관리·캐시 마킹·파이프라인 오케스트레이션·후처리 4파일로 분해</li>
+        <li><strong>chat_handler.py 책임 분리</strong> (완료) — 512줄 단일 파일을 세션 관리·캐시 마킹·파이프라인 오케스트레이션·후처리 4파일로 분해</li>
         <li><strong>WindowRecovery 제거</strong> (완료) — MessageCompressor가 완전 대체하면서 파이프라인 단계 1개 축소</li>
         <li><strong>ChromaDB 용도 재정렬</strong> (완료) — Lorebook을 SQLite 단일 소스로 이관, ChromaDB는 에피소드 전용으로 역할 명확화</li>
-        <li><strong>Curator 책임 분리</strong> (진행 중) — 모순 검증과 lore 생성을 별도 모듈로 분해</li>
+        <li><strong>Curator 책임 분리</strong> (보류) — 모순 검증과 lore 생성 분해 작업이 v1 마무리 시점에 보류</li>
       </ul>
+    </div>
+
+    <div class="subsection-title">5.2 포지션 변경 — 인사이트의 다음 컨셉으로</div>
+    <div class="body-text">
+      <p>
+        SAGA는 <strong>"프롬프트 캐시 보존 + 의미 검색·서사 요약 분리"</strong>라는 가설을 벤치마크로 실증한 뒤
+        (캐시 적중률 84.2%, 비용 67.1% 절감), 패키징 단계로 넘어가는 시점에 AI 캐릭터 챗 커뮤니티의 비용 모델이
+        캐시 보존이 아닌 <strong>API 호출을 늘려 매 턴 컨텍스트를 적극 재구성하는 방향</strong>으로 진화하는 것을 확인했다.
+      </p>
+      <p>
+        이 시점에 v1을 마무리하고, 검증된 핵심 인사이트
+        (<strong>프롬프트 캐싱 · 맥락 관리</strong>)를 다음 컨셉으로 옮기는 방향으로 <strong>포지션을 변경</strong>했다.
+      </p>
     </div>
   </div>
 
