@@ -248,20 +248,21 @@ class LettaCuratorAdapter(CuratorAdapter):
 
     def _build_prompt(self, session_id: str, context: dict) -> str:
         # Truncate individual sections to prevent context overflow
-        MAX_SECTION = 1500  # chars per section (reduced from 3000 for token savings)
+        max_section = self.config.curator.prompt_section_char_cap
 
-        graph_summary = (context.get('graph_summary', '없음') or '없음')[:MAX_SECTION]
-        episodes_text = (context.get('episodes_text', '없음') or '없음')[:MAX_SECTION]
+        graph_summary = (context.get('graph_summary', '없음') or '없음')[:max_section]
+        episodes_text = (context.get('episodes_text', '없음') or '없음')[:max_section]
 
-        # Truncate turn logs: keep only last 5 turns, limit total size
+        # Truncate turn logs: keep only last N turns, limit total size
         turn_logs = context.get('turn_logs', [])
-        if len(turn_logs) > 5:
-            turn_logs = turn_logs[-5:]
-        turn_logs_str = json.dumps(turn_logs, ensure_ascii=False, indent=2)[:MAX_SECTION]
+        recent_cap = self.config.curator.prompt_recent_turns_cap
+        if len(turn_logs) > recent_cap:
+            turn_logs = turn_logs[-recent_cap:]
+        turn_logs_str = json.dumps(turn_logs, ensure_ascii=False, indent=2)[:max_section]
 
         contradictions_str = '없음'
         if context.get('contradictions'):
-            contradictions_str = json.dumps(context['contradictions'], ensure_ascii=False)[:MAX_SECTION]
+            contradictions_str = json.dumps(context['contradictions'], ensure_ascii=False)[:max_section]
 
         return (
             f"세션 {session_id}의 큐레이션 요청입니다. 현재 턴: {context.get('turn_number', '?')}\n\n"

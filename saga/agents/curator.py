@@ -70,11 +70,12 @@ class CuratorRunner:
                 if self._use_letta:
                     # Letta: estimate tokens from prompt length (Letta doesn't expose usage)
                     prompt_text = self.letta_adapter._build_prompt(session_id, context)
-                    est_input = len(prompt_text) // 3  # rough: 3 chars ≈ 1 token
+                    chars_per_token = self.config.curator.letta_token_estimate_chars
+                    est_input = len(prompt_text) // chars_per_token
                     await self.cost_tracker.record(UsageRecord(
                         model=self.config.curator.letta_model.split("/")[-1],
                         input_tokens=est_input,
-                        output_tokens=500,  # estimated curator response
+                        output_tokens=self.config.curator.letta_output_estimate_tokens,
                         session_id=session_id,
                         call_type="curator_letta",
                     ))
@@ -176,8 +177,8 @@ class CuratorRunner:
         if not entities:
             return
 
-        # Limit to 3 per curation cycle to avoid overload
-        entities = entities[:3]
+        # Limit per curation cycle to avoid overload
+        entities = entities[: self.config.curator.lore_per_curation_cap]
         logger.info(f"[Curator] Auto-generating lore for {len(entities)} entities: {[e.get('name') for e in entities]}")
 
         for entity in entities:
@@ -203,7 +204,7 @@ class CuratorRunner:
                 turn = meta.get("turn", "?")
                 source_turns.append(turn)
                 ep_lines.append(f"- [Turn {turn}] {doc[:300]}")
-            episodes_text = "\n".join(ep_lines[:8])
+            episodes_text = "\n".join(ep_lines[: self.config.curator.episodes_per_lore_cap])
 
         # Get relationships for this entity
         relationships = []

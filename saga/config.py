@@ -57,7 +57,10 @@ class PromptCachingConfig(BaseModel):
     cache_ttl: str = "1h"  # extended-cache-ttl: "5m" (default) or "1h"
     compress_enabled: bool = True
     compress_threshold_ratio: float = 0.35  # total_context_max * ratio 초과 시 압축 (65K 기준 ~33K)
+    compress_target_ratio: float = 0.50     # 압축 후 목표 토큰 (total_context_max * ratio)
     min_compress_turns: int = 3             # 최소 압축 단위 (턴)
+    min_keep_turns: int = 5                 # 압축 후 보존할 최소 실제 대화 턴 수
+    msg_token_overhead: int = 4             # 메시지당 토큰 오버헤드 추정치
 
 
 class CuratorConfig(BaseModel):
@@ -70,6 +73,12 @@ class CuratorConfig(BaseModel):
     letta_base_url: str = "http://localhost:8283"
     letta_model: str = "anthropic/claude-haiku-4-5-20251001"
     letta_embedding: str = "openai/text-embedding-3-small"
+    letta_token_estimate_chars: int = 3       # Letta input token 추정 (chars per token)
+    letta_output_estimate_tokens: int = 500   # Letta output token 추정치
+    prompt_section_char_cap: int = 1500       # 큐레이터 프롬프트 섹션당 최대 char
+    prompt_recent_turns_cap: int = 5          # 큐레이터 프롬프트에 포함할 최근 턴 수
+    lore_per_curation_cap: int = 3            # 큐레이션 1회당 자동 생성 lore 최대 개수
+    episodes_per_lore_cap: int = 8            # lore 생성 시 참조할 에피소드 최대 개수
 
 
 class CacheWarmingConfig(BaseModel):
