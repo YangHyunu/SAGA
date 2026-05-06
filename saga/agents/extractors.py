@@ -5,6 +5,8 @@
 향후 scriptstate 수신 시 extract_fn 교체로 대응 (P3-a 참조).
 """
 import logging
+
+from saga.agents.narrative import NarrativeSummary
 from saga.utils.parsers import parse_llm_json
 from saga.cost_tracker import UsageRecord
 
@@ -17,12 +19,11 @@ async def narrative_extract(
     llm_client,
     config,
     cost_tracker=None,
-) -> dict | None:
+) -> NarrativeSummary | None:
     """Flash로 서사 요약 추출. 4필드 미니 요약.
 
     Returns:
-        dict with keys: summary, npcs_mentioned, scene_type, key_event
-        or None if extraction fails.
+        NarrativeSummary (always populated, may be empty fields) or None on error.
     """
     try:
         clean_text = ''.join(
@@ -68,7 +69,8 @@ async def narrative_extract(
         parsed = parse_llm_json(result)
         if parsed is None:
             logger.warning(f"[Extractor] Flash returned unparseable: {result[:200]}")
-        return parsed
+            return None
+        return NarrativeSummary.from_llm_dict(parsed)
     except Exception as e:
         logger.error(f"[Extractor] Flash narrative extraction failed: {e}")
         return None
