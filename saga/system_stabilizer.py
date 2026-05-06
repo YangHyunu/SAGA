@@ -15,10 +15,45 @@ import hashlib
 import logging
 import re
 from collections import Counter
+from dataclasses import dataclass
+from typing import Literal
 
 from langsmith import traceable
 
 logger = logging.getLogger(__name__)
+
+InjectKind = Literal["append", "shrink", "replace"]
+
+
+@dataclass
+class InjectMatch:
+    """Classification result for a (removed, added) paragraph pair."""
+    r_para: str
+    a_para: str
+    kind: InjectKind
+    appended: str = ""  # only for kind="append"
+    overlap: float = 0.0  # only for kind="replace" (for logging)
+
+
+def _classify_inject(r_para: str, a_para: str) -> InjectMatch | None:
+    """Classify a (removed, added) paragraph pair as one of three inject patterns.
+
+    - append: r_para is a strict prefix of a_para → injected suffix becomes delta
+    - shrink: a_para is a substring of r_para → paragraph was shortened (excluded)
+    - replace: >50% word overlap with no substring relation → canonical needs update
+    - None: paragraphs are unrelated; caller treats a_para as a pure addition
+    """
+    if a_para.startswith(r_para):
+        return InjectMatch(r_para, a_para, "append", appended=a_para[len(r_para):].strip())
+    if a_para in r_para:
+        return InjectMatch(r_para, a_para, "shrink")
+    r_words = set(r_para.lower().split())
+    a_words = set(a_para.lower().split())
+    if r_words and a_words:
+        overlap = len(r_words & a_words) / max(len(r_words), len(a_words))
+        if overlap > 0.5:
+            return InjectMatch(r_para, a_para, "replace", overlap=overlap)
+    return None
 
 
 class SystemStabilizer:
@@ -125,13 +160,9 @@ class SystemStabilizer:
     def _extract_delta(self, canonical: str, current: str) -> tuple[str, str, bool]:
         """Extract paragraph-level delta between canonical and current system message.
 
-        Handles inject-modified paragraphs:
-        - inject_append (r_para is prefix of a_para): extracts the appended portion as delta.
-          The canonical paragraph is stable; only the injected addition goes to dynamic context.
-        - inject_replace (>50% word overlap, no substring): signals caller to update canonical.
-          The replaced paragraph is excluded from delta; caller persists current as new canonical.
-        - inject_shrink (a_para is prefix of r_para): rare, excluded from delta.
-        - pure add: genuinely new paragraphs included in delta.
+        Delegates per-pair classification to :func:`_classify_inject` and pair
+        matching to :meth:`_match_inject_pairs`. Builds final delta text from
+        pure-add paragraphs plus appended content extracted from inject_append.
 
         Returns:
             (stable_text, delta_text, canonical_needs_update) where:
@@ -145,56 +176,31 @@ class SystemStabilizer:
         canonical_counts = Counter(canonical_paras)
         current_counts = Counter(current_paras)
 
-        # Paragraphs with more occurrences in current than canonical
         added = set(p for p in current_paras if current_counts[p] > canonical_counts[p])
-        # Paragraphs with more occurrences in canonical than current
         removed = set(p for p in canonical_paras if canonical_counts[p] > current_counts[p])
 
         if not added:
             return canonical, "", False
 
         if not removed:
-            # No removals — all added are genuinely new
             delta_parts = [p for p in current_paras if p in added]
             return canonical, "\n\n".join(delta_parts), False
 
-        # Detect modified paragraphs (inject_at/inject_lore/inject_replace)
-        matched_added: set[str] = set()
-        inject_delta_parts: list[str] = []  # appended content extracted from inject_append
-        canonical_needs_update = False
+        matches = self._match_inject_pairs(removed, added)
+        for m in matches:
+            if m.kind == "append":
+                logger.info(f"[Stabilizer] inject_append: +{len(m.appended)} chars → delta")
+            elif m.kind == "shrink":
+                logger.info("[Stabilizer] inject_shrink: paragraph shortened, excluded")
+            elif m.kind == "replace":
+                logger.info(
+                    f"[Stabilizer] inject_replace: {m.overlap:.0%} overlap "
+                    f"→ canonical update required"
+                )
 
-        for r_para in removed:
-            for a_para in added:
-                if a_para in matched_added:
-                    continue
-                # inject_append: r_para is a strict prefix of a_para
-                if a_para.startswith(r_para):
-                    appended = a_para[len(r_para):].strip()
-                    if appended:
-                        inject_delta_parts.append(appended)
-                    matched_added.add(a_para)
-                    logger.info(
-                        f"[Stabilizer] inject_append: +{len(appended)} chars → delta"
-                    )
-                    break
-                # inject_shrink: a_para is substring of r_para (content removed from para)
-                if a_para in r_para:
-                    matched_added.add(a_para)
-                    logger.info("[Stabilizer] inject_shrink: paragraph shortened, excluded")
-                    break
-                # inject_replace: >50% word overlap, no substring relation
-                r_words = set(r_para.lower().split())
-                a_words = set(a_para.lower().split())
-                if r_words and a_words:
-                    overlap = len(r_words & a_words) / max(len(r_words), len(a_words))
-                    if overlap > 0.5:
-                        matched_added.add(a_para)
-                        canonical_needs_update = True
-                        logger.info(
-                            f"[Stabilizer] inject_replace: {overlap:.0%} overlap "
-                            f"→ canonical update required"
-                        )
-                        break
+        matched_added = {m.a_para for m in matches}
+        canonical_needs_update = any(m.kind == "replace" for m in matches)
+        inject_delta_parts = [m.appended for m in matches if m.kind == "append" and m.appended]
 
         pure_added = added - matched_added
         if matched_added:
@@ -204,11 +210,26 @@ class SystemStabilizer:
                 f"{len(pure_added)} pure addition(s)"
             )
 
-        delta_parts = [p for p in current_paras if p in pure_added]
-        all_delta = delta_parts + inject_delta_parts
-        delta_text = "\n\n".join(all_delta)
+        delta_parts = [p for p in current_paras if p in pure_added] + inject_delta_parts
+        return canonical, "\n\n".join(delta_parts), canonical_needs_update
 
-        return canonical, delta_text, canonical_needs_update
+    def _match_inject_pairs(self, removed: set[str], added: set[str]) -> list[InjectMatch]:
+        """For each removed paragraph, find at most one added paragraph that
+        classifies as a non-trivial inject pattern. Each added paragraph is
+        consumed at most once.
+        """
+        matches: list[InjectMatch] = []
+        used_added: set[str] = set()
+        for r in removed:
+            for a in added:
+                if a in used_added:
+                    continue
+                m = _classify_inject(r, a)
+                if m is not None:
+                    matches.append(m)
+                    used_added.add(a)
+                    break
+        return matches
 
     @staticmethod
     def _split_paragraphs(text: str) -> list[str]:
