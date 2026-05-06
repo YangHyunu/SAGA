@@ -5,6 +5,8 @@
 향후 scriptstate 수신 시 extract_fn 교체로 대응 (P3-a 참조).
 """
 import logging
+
+from saga.agents.narrative import NarrativeSummary
 from saga.utils.parsers import parse_llm_json
 from saga.cost_tracker import UsageRecord
 
@@ -17,19 +19,18 @@ async def narrative_extract(
     llm_client,
     config,
     cost_tracker=None,
-) -> dict | None:
+) -> NarrativeSummary | None:
     """Flash로 서사 요약 추출. 4필드 미니 요약.
 
     Returns:
-        dict with keys: summary, npcs_mentioned, scene_type, key_event
-        or None if extraction fails.
+        NarrativeSummary (always populated, may be empty fields) or None on error.
     """
     try:
         clean_text = ''.join(
             c if c.isprintable() or c in '\n\r' else ' '
             for c in assistant_text
         )
-        result = await llm_client.call_llm(
+        result, usage = await llm_client.call_llm(
             model=config.models.extraction,
             messages=[
                 {
@@ -54,13 +55,12 @@ async def narrative_extract(
         )
         # Record Sub-B extraction cost
         if cost_tracker:
-            usage = llm_client._last_usage
             await cost_tracker.record(UsageRecord(
-                model=usage.get("model", config.models.extraction),
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
-                cache_read_tokens=usage.get("cache_read", 0),
-                cache_create_tokens=usage.get("cache_create", 0),
+                model=usage.model or config.models.extraction,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_create_tokens=usage.cache_create_tokens,
                 session_id=session_id,
                 call_type="sub_b",
             ))
@@ -68,7 +68,8 @@ async def narrative_extract(
         parsed = parse_llm_json(result)
         if parsed is None:
             logger.warning(f"[Extractor] Flash returned unparseable: {result[:200]}")
-        return parsed
+            return None
+        return NarrativeSummary.from_llm_dict(parsed)
     except Exception as e:
         logger.error(f"[Extractor] Flash narrative extraction failed: {e}")
         return None

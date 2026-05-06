@@ -30,11 +30,13 @@ async def stream_response(session_id, session, augmented_messages, request, stre
         gen_params = {}
     logger.info(f"[Trace] Stream start: model={deps.config.models.narration}")
 
+    usage_holder: list = []
     async for chunk in deps.llm_client.call_llm_stream(
         model=deps.config.models.narration,
         messages=augmented_messages,
         temperature=request.temperature or 0.7,
         max_tokens=request.max_tokens or 8192,
+        usage_out=usage_holder,
         **gen_params,
     ):
         full_response += chunk
@@ -93,11 +95,12 @@ async def stream_response(session_id, session, augmented_messages, request, stre
 
     # Record cost for stream call
     stream_total_ms = (time.time() - t_stream_start) * 1000
-    usage = deps.llm_client._last_usage
+    from saga.llm.client import LLMUsage
+    usage = usage_holder[0] if usage_holder else LLMUsage(model=deps.config.models.narration)
     await deps.cost_tracker.record(UsageRecord(
-        model=usage["model"], input_tokens=usage["input_tokens"],
-        output_tokens=usage["output_tokens"], cache_read_tokens=usage["cache_read"],
-        cache_create_tokens=usage["cache_create"], session_id=session_id, call_type="main_stream",
+        model=usage.model, input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens, cache_read_tokens=usage.cache_read_tokens,
+        cache_create_tokens=usage.cache_create_tokens, session_id=session_id, call_type="main_stream",
         ttft_ms=ttft_ms, total_ms=stream_total_ms,
     ))
     logger.info(

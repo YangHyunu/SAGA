@@ -12,6 +12,7 @@ from typing import Callable
 
 from langsmith import traceable
 
+from saga.agents.narrative import NarrativeSummary
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
@@ -44,7 +45,7 @@ class PostTurnExtractor:
         logger.info(f"[Sub-B] Lock acquired for turn {turn_number}")
 
         t_start = time.monotonic()
-        narrative = None
+        narrative: NarrativeSummary | None = None
         importance = 0
         try:
             # 1. Flash 서사 요약 추출
@@ -52,14 +53,14 @@ class PostTurnExtractor:
 
             if narrative is None:
                 logger.warning(f"[Sub-B] Narrative extraction failed for turn {turn_number}, recording minimal")
-                narrative = {"summary": "", "npcs_mentioned": [], "scene_type": "dialogue", "key_event": None}
+                narrative = NarrativeSummary.empty()
 
             # 2. ChromaDB 에피소드 저장
-            importance = self._calculate_importance(narrative)
+            importance = narrative.importance()
             self._record_episode(session_id, turn_number, user_input, response_text, narrative, importance)
 
             # 3. NPC 레지스트리 업데이트 (Flash의 npcs_mentioned 기반, 필터링 + 정규화)
-            for npc in (narrative.get("npcs_mentioned") or []):
+            for npc in narrative.npcs_mentioned:
                 if npc and self._is_valid_npc_name(npc):
                     base_name, alias = self._extract_alias(npc)
                     resolved = await self._resolve_npc_name(session_id, base_name)
@@ -71,9 +72,9 @@ class PostTurnExtractor:
                         if base_name != resolved:
                             await self.sqlite_db.add_character_alias(session_id, resolved, base_name)
 
-            # 4. turn_log 기록
+            # 4. turn_log 기록 (state_changes JSON 형식 유지)
             await self.sqlite_db.insert_turn_log(
-                session_id, turn_number, narrative,
+                session_id, turn_number, narrative.to_dict(),
                 user_input=user_input, assistant_output=response_text,
             )
 
@@ -103,24 +104,23 @@ class PostTurnExtractor:
             logger.info(f"[Sub-B] Releasing lock for turn {turn_number}, elapsed={elapsed_ms:.0f}ms")
             _sub_b_lock.release()
 
-    def _record_episode(self, session_id, turn_number, user_input, response_text, narrative, importance):
+    def _record_episode(self, session_id, turn_number, user_input, response_text, narrative: NarrativeSummary, importance: int):
         """Record episode summary to ChromaDB."""
-        summary = narrative.get("summary", "")
+        summary = narrative.summary
         if not summary:
             summary = format_turn_narrative(turn_number, user_input, response_text, {})
 
-        scene_type = narrative.get("scene_type", "dialogue")
-        npcs = narrative.get("npcs_mentioned") or []
+        npcs = list(narrative.npcs_mentioned)
 
         self.vector_db.add_episode(
             session_id, turn_number, summary, "unknown",
-            episode_type=scene_type,
+            episode_type=narrative.scene_type,
             importance=importance,
             entities=npcs,
             npcs=npcs,
         )
         if importance >= 50:
-            logger.info(f"[Sub-B] High-importance episode (turn {turn_number}, score={importance}, type={scene_type})")
+            logger.info(f"[Sub-B] High-importance episode (turn {turn_number}, score={importance}, type={narrative.scene_type})")
 
     # Unnamed extras / generic descriptions
     _EXTRA_PATTERN = re.compile(
@@ -229,7 +229,7 @@ class PostTurnExtractor:
             existing_names=", ".join(existing_names),
             new_name=new_name,
         )
-        response = await self.llm_client.call_llm(
+        response, usage = await self.llm_client.call_llm(
             messages=[{"role": "user", "content": prompt}],
             model=self.config.models.extraction,  # Flash 모델 (저비용)
             max_tokens=50,
@@ -237,13 +237,12 @@ class PostTurnExtractor:
         )
         # Record NPC dedup cost
         if self.cost_tracker:
-            usage = self.llm_client._last_usage
             await self.cost_tracker.record(UsageRecord(
-                model=usage.get("model", self.config.models.extraction),
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
-                cache_read_tokens=usage.get("cache_read", 0),
-                cache_create_tokens=usage.get("cache_create", 0),
+                model=usage.model or self.config.models.extraction,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_create_tokens=usage.cache_create_tokens,
                 session_id="",  # dedup is cross-session
                 call_type="npc_dedup",
             ))
@@ -287,24 +286,3 @@ class PostTurnExtractor:
 
         return merged
 
-    @staticmethod
-    def _calculate_importance(narrative: dict) -> int:
-        """Calculate episode importance from narrative summary."""
-        score = 10  # base
-
-        scene_type = narrative.get("scene_type", "dialogue")
-        if scene_type == "combat":
-            score += 40
-        elif scene_type == "event":
-            score += 35
-        elif scene_type == "exploration":
-            score += 15
-
-        if narrative.get("key_event"):
-            score += 30
-
-        npcs = narrative.get("npcs_mentioned") or []
-        if npcs:
-            score += 10 * min(2, len(npcs))
-
-        return min(score, 100)

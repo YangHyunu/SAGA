@@ -105,7 +105,7 @@ class TestCallAnthropic:
         llm_client._anthropic.messages.create = AsyncMock(
             return_value=_mock_anthropic_response("Hello world")
         )
-        result = await llm_client._call_anthropic(
+        result, _usage = await llm_client._call_anthropic(
             "claude-3-sonnet", [{"role": "user", "content": "Hi"}], 0.7, 2048
         )
         assert result == "Hello world"
@@ -197,7 +197,7 @@ class TestCallAnthropic:
         llm_client._anthropic.messages.create = AsyncMock(
             return_value=_mock_anthropic_response(multi_blocks=["Hello ", "world"])
         )
-        result = await llm_client._call_anthropic(
+        result, _usage = await llm_client._call_anthropic(
             "claude-3-sonnet", [{"role": "user", "content": "Hi"}], 0.7, 2048
         )
         assert result == "Hello world"
@@ -239,7 +239,7 @@ class TestCallGoogle:
     async def test_basic_response(self, llm_client):
         mock_resp = _mock_google_response("Gemini says hi")
         with patch("saga.llm.client.asyncio.to_thread", new_callable=AsyncMock, return_value=mock_resp):
-            result = await llm_client._call_google(
+            result, _usage = await llm_client._call_google(
                 "gemini-1.5-pro", [{"role": "user", "content": "Hi"}], 0.7, 2048
             )
         assert result == "Gemini says hi"
@@ -294,7 +294,7 @@ class TestCallGoogle:
 
         with patch("saga.llm.client.asyncio.to_thread", side_effect=fake_to_thread), \
              patch("saga.llm.client.asyncio.sleep", new_callable=AsyncMock):
-            result = await llm_client._call_google(
+            result, _usage = await llm_client._call_google(
                 "gemini-1.5-pro", [{"role": "user", "content": "Hi"}], 0.7, 2048
             )
             assert result == "ok"
@@ -305,7 +305,7 @@ class TestCallGoogle:
         mock_resp = MagicMock()
         mock_resp.text = ""
         with patch("saga.llm.client.asyncio.to_thread", new_callable=AsyncMock, return_value=mock_resp):
-            result = await llm_client._call_google(
+            result, _usage = await llm_client._call_google(
                 "gemini-1.5-pro", [{"role": "user", "content": "Hi"}], 0.7, 2048
             )
         assert result == ""
@@ -321,7 +321,7 @@ class TestCallOpenAI:
         llm_client._openai.chat.completions.create = AsyncMock(
             return_value=_mock_openai_response("GPT says hi")
         )
-        result = await llm_client._call_openai(
+        result, _usage = await llm_client._call_openai(
             "gpt-4", [{"role": "user", "content": "Hi"}], 0.7, 2048
         )
         assert result == "GPT says hi"
@@ -360,7 +360,7 @@ class TestCallOpenAI:
         llm_client._openai.chat.completions.create = AsyncMock(
             return_value=_mock_openai_response_empty()
         )
-        result = await llm_client._call_openai(
+        result, _usage = await llm_client._call_openai(
             "gpt-4", [{"role": "user", "content": "Hi"}], 0.7, 2048
         )
         assert result == ""
@@ -392,14 +392,14 @@ class TestCallLlmDispatch:
         llm_client._anthropic.messages.create = AsyncMock(
             return_value=_mock_anthropic_response("anthropic")
         )
-        result = await llm_client.call_llm("claude-3-sonnet", [{"role": "user", "content": "Hi"}])
+        result, _usage = await llm_client.call_llm("claude-3-sonnet", [{"role": "user", "content": "Hi"}])
         assert result == "anthropic"
 
     @pytest.mark.asyncio
     async def test_dispatches_to_google(self, llm_client):
         mock_resp = _mock_google_response("google")
         with patch("saga.llm.client.asyncio.to_thread", new_callable=AsyncMock, return_value=mock_resp):
-            result = await llm_client.call_llm("gemini-1.5-pro", [{"role": "user", "content": "Hi"}])
+            result, _usage = await llm_client.call_llm("gemini-1.5-pro", [{"role": "user", "content": "Hi"}])
         assert result == "google"
 
     @pytest.mark.asyncio
@@ -407,7 +407,7 @@ class TestCallLlmDispatch:
         llm_client._openai.chat.completions.create = AsyncMock(
             return_value=_mock_openai_response("openai")
         )
-        result = await llm_client.call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
+        result, _usage = await llm_client.call_llm("gpt-4", [{"role": "user", "content": "Hi"}])
         assert result == "openai"
 
 

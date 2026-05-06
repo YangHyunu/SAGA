@@ -248,20 +248,21 @@ class LettaCuratorAdapter(CuratorAdapter):
 
     def _build_prompt(self, session_id: str, context: dict) -> str:
         # Truncate individual sections to prevent context overflow
-        MAX_SECTION = 1500  # chars per section (reduced from 3000 for token savings)
+        max_section = self.config.curator.prompt_section_char_cap
 
-        graph_summary = (context.get('graph_summary', '없음') or '없음')[:MAX_SECTION]
-        episodes_text = (context.get('episodes_text', '없음') or '없음')[:MAX_SECTION]
+        graph_summary = (context.get('graph_summary', '없음') or '없음')[:max_section]
+        episodes_text = (context.get('episodes_text', '없음') or '없음')[:max_section]
 
-        # Truncate turn logs: keep only last 5 turns, limit total size
+        # Truncate turn logs: keep only last N turns, limit total size
         turn_logs = context.get('turn_logs', [])
-        if len(turn_logs) > 5:
-            turn_logs = turn_logs[-5:]
-        turn_logs_str = json.dumps(turn_logs, ensure_ascii=False, indent=2)[:MAX_SECTION]
+        recent_cap = self.config.curator.prompt_recent_turns_cap
+        if len(turn_logs) > recent_cap:
+            turn_logs = turn_logs[-recent_cap:]
+        turn_logs_str = json.dumps(turn_logs, ensure_ascii=False, indent=2)[:max_section]
 
         contradictions_str = '없음'
         if context.get('contradictions'):
-            contradictions_str = json.dumps(context['contradictions'], ensure_ascii=False)[:MAX_SECTION]
+            contradictions_str = json.dumps(context['contradictions'], ensure_ascii=False)[:max_section]
 
         return (
             f"세션 {session_id}의 큐레이션 요청입니다. 현재 턴: {context.get('turn_number', '?')}\n\n"
@@ -342,43 +343,3 @@ class LettaCuratorAdapter(CuratorAdapter):
 
         logger.warning(f"[Curator] Could not parse JSON from response. Raw text (first 500 chars): {full_text[:500]!r}")
         return default
-
-
-class DirectLLMCuratorAdapter(CuratorAdapter):
-    """Fallback curator using direct LLM call (no Memory Block continuity)."""
-
-    def __init__(self, llm_client, config):
-        self.llm_client = llm_client
-        self.config = config
-
-    async def run(self, session_id: str, context: dict) -> dict:
-        prompt = (
-            f"그래프 상태:\n{context.get('graph_summary', '')}\n\n"
-            f"에피소드:\n{context.get('episodes_text', '')}\n\n"
-            f"턴 로그:\n{json.dumps(context.get('turn_logs', []), ensure_ascii=False)}"
-        )
-
-        try:
-            response = await self.llm_client.call_llm(
-                model=self.config.models.curator,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "당신은 RP 서사 큐레이터입니다.\n"
-                            "분석 후 JSON으로 응답하세요:\n"
-                            '{"contradictions": [...], "events": [...], "compress_story": bool, '
-                            '"compressed_summary": "...", "narrative_notes": ""}'
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-            )
-            return parse_llm_json(response) or {
-                "contradictions": [], "events": [], "compress_story": False,
-                "compressed_summary": "", "narrative_notes": ""}
-        except Exception as e:
-            logger.error(f"[Curator Fallback] Error: {e}")
-        return {"contradictions": [], "events": [], "compress_story": False,
-                "compressed_summary": "", "narrative_notes": ""}

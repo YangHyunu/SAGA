@@ -80,7 +80,10 @@ class MessageCompressor:
 
         # --- Compression needed ---
         # Calculate how many additional turns to compress
-        target_tokens = int(self.config.token_budget.total_context_max * 0.50)  # aim for 50% of max context to give ~15-20 turns of headroom
+        target_tokens = int(
+            self.config.token_budget.total_context_max
+            * self.config.prompt_caching.compress_target_ratio
+        )
         turns_to_compress = self._calculate_turns_to_compress(
             non_system, total_tokens, target_tokens, compressed_through
         )
@@ -242,14 +245,15 @@ class MessageCompressor:
                 idx += 1
                 continue
 
-            user_tokens = count_tokens(user_msg.get("content", "")) + 4
-            asst_tokens = count_tokens(asst_msg.get("content", "")) + 4
+            overhead = self.config.prompt_caching.msg_token_overhead
+            user_tokens = count_tokens(user_msg.get("content", "")) + overhead
+            asst_tokens = count_tokens(asst_msg.get("content", "")) + overhead
             freed += user_tokens + asst_tokens
             turns += 1
             idx += 2
 
-        # Don't compress all messages — keep at least 5 turns of real conversation
-        min_remaining_turns = 5
+        # Don't compress all messages — keep at least N turns of real conversation
+        min_remaining_turns = self.config.prompt_caching.min_keep_turns
         max_compressible = max(0, (len(non_system) - start_idx) // 2 - min_remaining_turns)
         turns = min(turns, max_compressible)
 

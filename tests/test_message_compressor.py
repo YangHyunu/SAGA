@@ -17,7 +17,10 @@ class FakeConfig:
     class prompt_caching:
         compress_enabled = True
         compress_threshold_ratio = 0.70  # threshold = 700 tokens
+        compress_target_ratio = 0.50
         min_compress_turns = 2
+        min_keep_turns = 5
+        msg_token_overhead = 4
 
 
 def _make_messages(num_turns: int, tokens_per_msg: int = 50) -> list[dict]:

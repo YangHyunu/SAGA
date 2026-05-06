@@ -7,7 +7,7 @@ from langsmith import traceable
 from saga.storage.sqlite_db import SQLiteDB
 from saga.storage.vector_db import VectorDB
 from saga.storage.md_cache import MdCache
-from saga.adapters.curator_adapter import LettaCuratorAdapter, DirectLLMCuratorAdapter
+from saga.adapters.curator_adapter import LettaCuratorAdapter
 from saga.cost_tracker import UsageRecord
 from saga.utils.parsers import parse_llm_json
 
@@ -31,9 +31,7 @@ class CuratorRunner:
         self.config = config
         self.cost_tracker = cost_tracker
 
-        # Try Letta first, fallback to direct LLM
         self.letta_adapter = LettaCuratorAdapter(config)
-        self.fallback_adapter = DirectLLMCuratorAdapter(llm_client, config)
         self._use_letta = False
         self._lore_tasks: set = set()  # GC protection for deferred lore tasks
         self.lore_defer_delay: float = 10.0  # seconds; set to 0 for benchmark mode
@@ -47,48 +45,43 @@ class CuratorRunner:
                 if self._use_letta:
                     logger.info("[Curator] Using Letta Memory Block curator (agents created lazily per session)")
                 else:
-                    logger.warning("[Curator] Letta client unavailable, using fallback")
+                    logger.warning(
+                        "[Curator] Letta client unavailable — curator disabled until Letta is reachable"
+                    )
             except Exception as e:
-                logger.warning(f"[Curator] Letta init failed, using fallback: {e}")
+                logger.warning(f"[Curator] Letta init failed — curator disabled: {e}")
                 self._use_letta = False
 
     @traceable(name="pipeline.curator")
     async def run(self, session_id: str, turn_number: int):
-        """Run curator. Called every N turns asynchronously."""
-        context = None
+        """Run curator. Called every N turns asynchronously.
+
+        Requires Letta to be initialized; if not, the run is skipped.
+        """
+        if not self._use_letta:
+            logger.warning(
+                f"[Curator] Skipping curation at turn {turn_number}: Letta not initialized"
+            )
+            return
+
         t_start = time.monotonic()
-        adapter_name = "letta" if self._use_letta else "fallback"
 
         try:
             context = await self._gather_context(session_id, turn_number)
+            result = await self.letta_adapter.run(session_id, context)
 
-            adapter = self.letta_adapter if self._use_letta else self.fallback_adapter
-            result = await adapter.run(session_id, context)
-
-            # Record curator cost
+            # Record curator cost (Letta doesn't expose token usage; estimate from prompt length)
             if self.cost_tracker:
-                if self._use_letta:
-                    # Letta: estimate tokens from prompt length (Letta doesn't expose usage)
-                    prompt_text = self.letta_adapter._build_prompt(session_id, context)
-                    est_input = len(prompt_text) // 3  # rough: 3 chars ≈ 1 token
-                    await self.cost_tracker.record(UsageRecord(
-                        model=self.config.curator.letta_model.split("/")[-1],
-                        input_tokens=est_input,
-                        output_tokens=500,  # estimated curator response
-                        session_id=session_id,
-                        call_type="curator_letta",
-                    ))
-                else:
-                    usage = self.llm_client._last_usage
-                    await self.cost_tracker.record(UsageRecord(
-                        model=usage.get("model", self.config.models.curator),
-                        input_tokens=usage.get("input_tokens", 0),
-                        output_tokens=usage.get("output_tokens", 0),
-                        cache_read_tokens=usage.get("cache_read", 0),
-                        cache_create_tokens=usage.get("cache_create", 0),
-                        session_id=session_id,
-                        call_type="curator",
-                    ))
+                prompt_text = self.letta_adapter._build_prompt(session_id, context)
+                chars_per_token = self.config.curator.letta_token_estimate_chars
+                est_input = len(prompt_text) // chars_per_token
+                await self.cost_tracker.record(UsageRecord(
+                    model=self.config.curator.letta_model.split("/")[-1],
+                    input_tokens=est_input,
+                    output_tokens=self.config.curator.letta_output_estimate_tokens,
+                    session_id=session_id,
+                    call_type="curator_letta",
+                ))
 
             await self._apply_results(session_id, turn_number, result)
 
@@ -117,15 +110,6 @@ class CuratorRunner:
 
         except Exception as e:
             logger.error(f"[Curator] Error: {e}", exc_info=True)
-            # Try fallback if Letta failed and context was gathered
-            if self._use_letta and context is not None:
-                try:
-                    logger.info("[Curator] Retrying with fallback adapter")
-                    result = await self.fallback_adapter.run(session_id, context)
-                    await self._apply_results(session_id, turn_number, result)
-                    self._schedule_deferred_lore(session_id, turn_number)
-                except Exception as e2:
-                    logger.error(f"[Curator] Fallback also failed: {e2}")
 
     def _schedule_deferred_lore(self, session_id: str, turn_number: int):
         """Schedule lore generation as a deferred task with delay to avoid LLM API contention."""
@@ -176,8 +160,8 @@ class CuratorRunner:
         if not entities:
             return
 
-        # Limit to 3 per curation cycle to avoid overload
-        entities = entities[:3]
+        # Limit per curation cycle to avoid overload
+        entities = entities[: self.config.curator.lore_per_curation_cap]
         logger.info(f"[Curator] Auto-generating lore for {len(entities)} entities: {[e.get('name') for e in entities]}")
 
         for entity in entities:
@@ -203,7 +187,7 @@ class CuratorRunner:
                 turn = meta.get("turn", "?")
                 source_turns.append(turn)
                 ep_lines.append(f"- [Turn {turn}] {doc[:300]}")
-            episodes_text = "\n".join(ep_lines[:8])
+            episodes_text = "\n".join(ep_lines[: self.config.curator.episodes_per_lore_cap])
 
         # Get relationships for this entity
         relationships = []
@@ -240,7 +224,7 @@ class CuratorRunner:
         )
 
         # Call LLM (use curator model for reliable structured output)
-        response = await self.llm_client.call_llm(
+        response, _lore_usage = await self.llm_client.call_llm(
             model=self.config.models.curator,
             messages=[
                 {"role": "system", "content": "당신은 RP 세계관 구축 전문가입니다. 에피소드와 관계 정보를 분석하여 일관성 있는 로어를 생성합니다. 반드시 JSON으로만 응답하세요."},
