@@ -4,6 +4,7 @@ Uses official SDKs with optional LangSmith tracing via wrap_* wrappers.
 """
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import AsyncIterator
 
 import anthropic
@@ -11,6 +12,16 @@ import openai
 from langsmith import traceable
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LLMUsage:
+    """Per-call token usage. Returned by call_llm; appended to usage_out for streams."""
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_create_tokens: int = 0
 
 
 class LLMClient:
@@ -68,8 +79,6 @@ class LLMClient:
         self._anthropic = ant_client
         self._openai = oai_client
         self._google = google_client
-        self._last_cache_stats = {"cache_read": 0, "cache_create": 0}
-        self._last_usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "cache_read": 0, "cache_create": 0}
 
     async def close(self):
         if self._anthropic and hasattr(self._anthropic, "close"):
@@ -78,8 +87,8 @@ class LLMClient:
             await self._openai.close()
 
     @traceable(name="llm.call", run_type="llm")
-    async def call_llm(self, model: str, messages: list[dict], temperature: float = 0.7, max_tokens: int = 8192, **kwargs) -> str:
-        """Call LLM API and return text response. Auto-detects provider from model name."""
+    async def call_llm(self, model: str, messages: list[dict], temperature: float = 0.7, max_tokens: int = 8192, **kwargs) -> tuple[str, LLMUsage]:
+        """Call LLM API and return (text, usage). Auto-detects provider from model name."""
         provider = self._detect_provider(model)
         if provider == "anthropic":
             return await self._call_anthropic(model, messages, temperature, max_tokens, **kwargs)
@@ -88,17 +97,30 @@ class LLMClient:
         else:
             return await self._call_openai(model, messages, temperature, max_tokens, **kwargs)
 
-    async def call_llm_stream(self, model: str, messages: list[dict], temperature: float = 0.7, max_tokens: int = 8192, **kwargs) -> AsyncIterator[str]:
-        """Streaming LLM call. Yields text chunks."""
+    async def call_llm_stream(
+        self,
+        model: str,
+        messages: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 8192,
+        usage_out: list[LLMUsage] | None = None,
+        **kwargs,
+    ) -> AsyncIterator[str]:
+        """Streaming LLM call. Yields text chunks.
+
+        If `usage_out` is provided, the final LLMUsage is appended to it after
+        the stream completes — enabling per-call usage tracking without shared
+        instance state.
+        """
         provider = self._detect_provider(model)
         if provider == "anthropic":
-            async for chunk in self._stream_anthropic(model, messages, temperature, max_tokens, **kwargs):
+            async for chunk in self._stream_anthropic(model, messages, temperature, max_tokens, usage_out=usage_out, **kwargs):
                 yield chunk
         elif provider == "google":
-            async for chunk in self._stream_google(model, messages, temperature, max_tokens, **kwargs):
+            async for chunk in self._stream_google(model, messages, temperature, max_tokens, usage_out=usage_out, **kwargs):
                 yield chunk
         else:
-            async for chunk in self._stream_openai(model, messages, temperature, max_tokens, **kwargs):
+            async for chunk in self._stream_openai(model, messages, temperature, max_tokens, usage_out=usage_out, **kwargs):
                 yield chunk
 
     def _detect_provider(self, model: str) -> str:
@@ -269,25 +291,26 @@ class LLMClient:
                 "Anthropic API 인증 실패 (401). API 키 확인: config.yaml api_keys.anthropic 또는 $ANTHROPIC_API_KEY"
             )
 
-        # Log prompt caching stats
-        usage = response.usage
-        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-        cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
-        self._last_cache_stats = {"cache_read": cache_read, "cache_create": cache_create}
-        self._last_usage = {
-            "model": model, "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read": cache_read, "cache_create": cache_create,
-        }
+        usage_raw = response.usage
+        cache_read = getattr(usage_raw, "cache_read_input_tokens", 0) or 0
+        cache_create = getattr(usage_raw, "cache_creation_input_tokens", 0) or 0
         if cache_read or cache_create:
             logger.info(
-                f"[Cache] input={usage.input_tokens} cache_read={cache_read} "
-                f"cache_create={cache_create} output={usage.output_tokens}"
+                f"[Cache] input={usage_raw.input_tokens} cache_read={cache_read} "
+                f"cache_create={cache_create} output={usage_raw.output_tokens}"
             )
 
-        return "".join(block.text for block in response.content if hasattr(block, "text"))
+        usage = LLMUsage(
+            model=model,
+            input_tokens=usage_raw.input_tokens,
+            output_tokens=usage_raw.output_tokens,
+            cache_read_tokens=cache_read,
+            cache_create_tokens=cache_create,
+        )
+        text = "".join(block.text for block in response.content if hasattr(block, "text"))
+        return text, usage
 
-    async def _stream_anthropic(self, model, messages, temperature, max_tokens, **kwargs):
+    async def _stream_anthropic(self, model, messages, temperature, max_tokens, usage_out=None, **kwargs):
         """Stream from Anthropic with 3-BP prompt caching support."""
         if not self._anthropic:
             raise RuntimeError("Anthropic API key not configured. Set api_keys.anthropic in config.yaml or $ANTHROPIC_API_KEY")
@@ -313,20 +336,22 @@ class LLMClient:
             # Get final message for cache stats after stream completes
             response = await stream.get_final_message()
 
-        usage = response.usage
-        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-        cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
-        self._last_cache_stats = {"cache_read": cache_read, "cache_create": cache_create}
-        self._last_usage = {
-            "model": model, "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read": cache_read, "cache_create": cache_create,
-        }
+        usage_raw = response.usage
+        cache_read = getattr(usage_raw, "cache_read_input_tokens", 0) or 0
+        cache_create = getattr(usage_raw, "cache_creation_input_tokens", 0) or 0
         if cache_read or cache_create:
             logger.info(
-                f"[Cache] input={usage.input_tokens} cache_read={cache_read} "
-                f"cache_create={cache_create} output={usage.output_tokens}"
+                f"[Cache] input={usage_raw.input_tokens} cache_read={cache_read} "
+                f"cache_create={cache_create} output={usage_raw.output_tokens}"
             )
+        if usage_out is not None:
+            usage_out.append(LLMUsage(
+                model=model,
+                input_tokens=usage_raw.input_tokens,
+                output_tokens=usage_raw.output_tokens,
+                cache_read_tokens=cache_read,
+                cache_create_tokens=cache_create,
+            ))
 
     # --- Google ---
 
@@ -366,16 +391,13 @@ class LLMClient:
                     contents=contents,
                     config=config_obj,
                 )
-                # Track usage for Google
                 usage_meta = getattr(response, "usage_metadata", None)
-                if usage_meta:
-                    self._last_usage = {
-                        "model": model,
-                        "input_tokens": getattr(usage_meta, "prompt_token_count", 0) or 0,
-                        "output_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
-                        "cache_read": 0, "cache_create": 0,
-                    }
-                return response.text or ""
+                usage = LLMUsage(
+                    model=model,
+                    input_tokens=(getattr(usage_meta, "prompt_token_count", 0) or 0) if usage_meta else 0,
+                    output_tokens=(getattr(usage_meta, "candidates_token_count", 0) or 0) if usage_meta else 0,
+                )
+                return response.text or "", usage
             except Exception as e:
                 if "429" in str(e) and attempt < 3:
                     wait = 2 ** attempt
@@ -383,13 +405,15 @@ class LLMClient:
                     await asyncio.sleep(wait)
                     continue
                 raise
-        return ""
+        return "", LLMUsage(model=model)
 
-    async def _stream_google(self, model, messages, temperature, max_tokens, **kwargs):
+    async def _stream_google(self, model, messages, temperature, max_tokens, usage_out=None, **kwargs):
         """Stream from Google (simplified — Gemini streaming)."""
         # For simplicity, use non-streaming and yield full result
-        result = await self._call_google(model, messages, temperature, max_tokens, **kwargs)
-        yield result
+        text, usage = await self._call_google(model, messages, temperature, max_tokens, **kwargs)
+        if usage_out is not None:
+            usage_out.append(usage)
+        yield text
 
     # --- OpenAI ---
 
@@ -418,18 +442,24 @@ class LLMClient:
 
         # Track usage for OpenAI
         if response.usage:
-            self._last_usage = {
-                "model": model,
-                "input_tokens": response.usage.prompt_tokens or 0,
-                "output_tokens": response.usage.completion_tokens or 0,
-                "cache_read": getattr(response.usage, "prompt_tokens_details", None) and getattr(response.usage.prompt_tokens_details, "cached_tokens", 0) or 0,
-                "cache_create": 0,
-            }
+            cache_read = (
+                getattr(response.usage, "prompt_tokens_details", None)
+                and getattr(response.usage.prompt_tokens_details, "cached_tokens", 0)
+            ) or 0
+            usage = LLMUsage(
+                model=model,
+                input_tokens=response.usage.prompt_tokens or 0,
+                output_tokens=response.usage.completion_tokens or 0,
+                cache_read_tokens=cache_read,
+            )
+        else:
+            usage = LLMUsage(model=model)
 
         choices = response.choices
-        return choices[0].message.content if choices else ""
+        text = choices[0].message.content if choices else ""
+        return text, usage
 
-    async def _stream_openai(self, model, messages, temperature, max_tokens, **kwargs):
+    async def _stream_openai(self, model, messages, temperature, max_tokens, usage_out=None, **kwargs):
         """Stream from OpenAI."""
         if not self._openai:
             raise RuntimeError("OpenAI API key not configured. Set api_keys.openai in config.yaml or $OPENAI_API_KEY")
@@ -450,8 +480,29 @@ class LLMClient:
             create_kwargs["presence_penalty"] = kwargs["presence_penalty"]
         if kwargs.get("stop") is not None:
             create_kwargs["stop"] = kwargs["stop"]
+        if usage_out is not None:
+            create_kwargs["stream_options"] = {"include_usage": True}
 
         stream = await self._openai.chat.completions.create(**create_kwargs)
+        last_usage_meta = None
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                last_usage_meta = chunk_usage
+
+        if usage_out is not None:
+            if last_usage_meta is not None:
+                cache_read = (
+                    getattr(last_usage_meta, "prompt_tokens_details", None)
+                    and getattr(last_usage_meta.prompt_tokens_details, "cached_tokens", 0)
+                ) or 0
+                usage_out.append(LLMUsage(
+                    model=model,
+                    input_tokens=last_usage_meta.prompt_tokens or 0,
+                    output_tokens=last_usage_meta.completion_tokens or 0,
+                    cache_read_tokens=cache_read,
+                ))
+            else:
+                usage_out.append(LLMUsage(model=model))

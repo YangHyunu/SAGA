@@ -224,7 +224,7 @@ class CuratorRunner:
         )
 
         # Call LLM (use curator model for reliable structured output)
-        response = await self.llm_client.call_llm(
+        response, _lore_usage = await self.llm_client.call_llm(
             model=self.config.models.curator,
             messages=[
                 {"role": "system", "content": "당신은 RP 세계관 구축 전문가입니다. 에피소드와 관계 정보를 분석하여 일관성 있는 로어를 생성합니다. 반드시 JSON으로만 응답하세요."},

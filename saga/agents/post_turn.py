@@ -229,7 +229,7 @@ class PostTurnExtractor:
             existing_names=", ".join(existing_names),
             new_name=new_name,
         )
-        response = await self.llm_client.call_llm(
+        response, usage = await self.llm_client.call_llm(
             messages=[{"role": "user", "content": prompt}],
             model=self.config.models.extraction,  # Flash 모델 (저비용)
             max_tokens=50,
@@ -237,13 +237,12 @@ class PostTurnExtractor:
         )
         # Record NPC dedup cost
         if self.cost_tracker:
-            usage = self.llm_client._last_usage
             await self.cost_tracker.record(UsageRecord(
-                model=usage.get("model", self.config.models.extraction),
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
-                cache_read_tokens=usage.get("cache_read", 0),
-                cache_create_tokens=usage.get("cache_create", 0),
+                model=usage.model or self.config.models.extraction,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_create_tokens=usage.cache_create_tokens,
                 session_id="",  # dedup is cross-session
                 call_type="npc_dedup",
             ))

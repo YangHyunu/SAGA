@@ -30,7 +30,7 @@ async def narrative_extract(
             c if c.isprintable() or c in '\n\r' else ' '
             for c in assistant_text
         )
-        result = await llm_client.call_llm(
+        result, usage = await llm_client.call_llm(
             model=config.models.extraction,
             messages=[
                 {
@@ -55,13 +55,12 @@ async def narrative_extract(
         )
         # Record Sub-B extraction cost
         if cost_tracker:
-            usage = llm_client._last_usage
             await cost_tracker.record(UsageRecord(
-                model=usage.get("model", config.models.extraction),
-                input_tokens=usage.get("input_tokens", 0),
-                output_tokens=usage.get("output_tokens", 0),
-                cache_read_tokens=usage.get("cache_read", 0),
-                cache_create_tokens=usage.get("cache_create", 0),
+                model=usage.model or config.models.extraction,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_create_tokens=usage.cache_create_tokens,
                 session_id=session_id,
                 call_type="sub_b",
             ))

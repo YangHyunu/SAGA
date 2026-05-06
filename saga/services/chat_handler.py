@@ -177,7 +177,7 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
     # Non-streaming
     t_llm_start = time.time()
     logger.info(f"[Trace] LLM call: model={deps.config.models.narration} temp={request.temperature or 0.7}")
-    llm_response = await deps.llm_client.call_llm(
+    llm_response, usage = await deps.llm_client.call_llm(
         model=deps.config.models.narration,
         messages=augmented_messages,
         temperature=request.temperature or 0.7,
@@ -187,12 +187,11 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
     t_llm_end = time.time()
     logger.info(f"[Trace] LLM done: {(t_llm_end - t_llm_start)*1000:.0f}ms | response={len(llm_response)}ch")
 
-    usage = deps.llm_client._last_usage
     total_ms = (t_llm_end - t_llm_start) * 1000
     await deps.cost_tracker.record(UsageRecord(
-        model=usage["model"], input_tokens=usage["input_tokens"],
-        output_tokens=usage["output_tokens"], cache_read_tokens=usage["cache_read"],
-        cache_create_tokens=usage["cache_create"], session_id=session_id, call_type="main",
+        model=usage.model, input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens, cache_read_tokens=usage.cache_read_tokens,
+        cache_create_tokens=usage.cache_create_tokens, session_id=session_id, call_type="main",
         total_ms=total_ms,
     ))
 
@@ -246,7 +245,7 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
             prompt_tokens=messages_tokens,
             completion_tokens=count_tokens(clean_response),
             total_tokens=messages_tokens + count_tokens(clean_response),
-            cache_read_input_tokens=deps.llm_client._last_cache_stats.get("cache_read", 0),
-            cache_creation_input_tokens=deps.llm_client._last_cache_stats.get("cache_create", 0),
+            cache_read_input_tokens=usage.cache_read_tokens,
+            cache_creation_input_tokens=usage.cache_create_tokens,
         )
     )
