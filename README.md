@@ -1,5 +1,9 @@
 # SAGA — Stateful Context Engine for Narrative RP
 
+> **프로젝트 상태:** 2026-04 셸브 (운영 종료, 보관 모드).
+> Plan A — Claude Cache Keeper 로 피벗했습니다. SAGA 코드와 벤치마크 결과는 회고/포트폴리오 자료로 보관됩니다.
+> 셸브 직전 정리한 코드 리뷰 결과는 [`brook-review/`](./brook-review/)에 있습니다.
+
 AI 캐릭터와의 장기 대화에서 **프롬프트 캐시를 깨지 않고** 맥락에 맞는 기억을 회상하는 리버스 프록시.
 RisuAI · SillyTavern 등 기존 롤플레이 프론트엔드 수정 없이 삽입할 수 있다.
 
