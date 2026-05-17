@@ -506,12 +506,14 @@
   <!-- TL;DR -->
   <div class="tldr">
     <div class="tldr-label">TL;DR</div>
-    AI 캐릭터 장기 대화에서 <strong>매 턴 바뀌는 기억 검색 결과는 캐시 바깥 영역</strong>에 주입하고,
-    고정 프롬프트 영역은 세션 동안 그대로 유지하도록 설계한 FastAPI 리버스 프록시.
-    용도별 <strong>3계층 저장소</strong>(SQLite · ChromaDB · 프롬프트 앞부분) 와 <strong>동기/비동기 분리</strong>로
-    캐시 적중률 <strong>84.2%</strong>, 순비용 <strong>67.1% 절감</strong>을 확보했고,
+    AI 캐릭터 장기 대화에서 매 턴 해야 하는 일과 가끔 정리해야 하는 일을 분리한 FastAPI 리버스 프록시.
+    <strong>기억 검색·컨텍스트 조립·4필드 요약</strong>은 매 턴 빠르게 처리하고,
+    모순 검증·복선 회수·서사 구간 정리처럼 <strong>이전 판단을 이어받아야 하는 일만 Curator</strong>에 맡겼다.
+    저장소는 SQLite · ChromaDB · Markdown cache로 나눴고, 응답 이후에 처리해도 되는 작업은 비동기로 뺐다.
+    매 턴 바뀌는 기억은 캐시가 걸린 앞부분에 넣지 않도록 배치해
+    캐시 적중률 <strong>84.2%</strong>, 순비용 <strong>67.1% 절감</strong>을 확보했다.
     같은 시드·시나리오 비교에서 LOCOMO judge 점수 <strong>2.02 → 3.12</strong>, LongMemEval 정답률 <strong>21.2% → 63.5%</strong>로 개선됐다.
-    RisuAI·SillyTavern 같은 롤플레이 프론트엔드 앞단에 붙는 것을 전제로 만들었다.
+  
   </div>
 
   <!-- 1. 배경 -->
@@ -537,7 +539,7 @@
     <div class="subsection-title">1.2 기존 솔루션의 한계</div>
     <div class="body-text">
       <p>
-        시장에는 HypaMemory V3, Letta, mem0 등 여러 메모리 솔루션이 있지만 공통적으로 두 가지 구조적 한계를 가진다.
+        HypaMemory V3, Letta, mem0를 비교해보면 SAGA에서 피해야 할 지점이 비교적 분명했다.
       </p>
     </div>
 
@@ -562,14 +564,14 @@
 
     <div class="body-text">
       <p>
-        검토한 범위에서는 기억 검색 품질과 프롬프트 캐시 보존을 동시에 다루는 구조가 부족하다고 봤고, SAGA에서는 두 축을 같은 설계 대상으로 묶어 풀었다.
+        그래서 SAGA에서는 기억을 잘 찾는 것과, 찾은 기억을 어디에 넣어야 캐시가 깨지지 않는지를 같이 봤다.
       </p>
     </div>
 
     <div class="callout">
 장기 대화 품질은 저장된 기억의 총량보다 <strong>현재 발화·관계 상태에 맞는 기억을 선별해 넣는 정확도</strong>에 더 크게 영향을 받았다.
-      또한 검색 정확도와 별개로 <strong>매 턴 컨텍스트를 재조립하는 비용</strong>은 운영 가능성을 직접 좌우했다.
-      그래서 SAGA는 검색 정확도와 캐시 비용을 함께 설계 대상으로 두었다.
+      검색이 맞아도 매 턴 컨텍스트를 다시 만드는 비용이 커지면 실제 세션에서는 쓰기 어렵다.
+      그래서 검색 결과의 품질뿐 아니라, 그 결과를 프롬프트 어디에 붙일지도 같은 문제로 다뤘다.
     </div>
   </div>
 
@@ -577,46 +579,95 @@
   <div class="section">
     <div class="section-title"><span class="num">2</span>아키텍처 설계</div>
 
-    <!-- B안 신규: 전제 박스 -->
+    <!-- 운영 제약: 프롬프트 캐시 -->
     <div class="prereq">
-      <span class="label">▼ 먼저 이해할 전제 · 프롬프트 캐시</span>
+      <span class="label">▼ 전제 · 프롬프트 캐시가 깨지는 위치를 피해야 했다</span>
       Anthropic API는 <strong>프롬프트의 앞부분이 이전 요청과 완전히 동일</strong>하면 그 부분을 재계산하지 않고 <strong>1/10 가격으로 재사용</strong>한다.
-      조건은 단 하나 — <strong>앞부분의 바이트가 단 1개라도 바뀌면 캐시는 무효</strong>가 된다.
-      이 제약 때문에 SAGA에서는 <strong>매 턴 바뀌는 정보를 프롬프트 앞부분에 넣지 않는 것</strong>을 기본 원칙으로 두었다. "기억을 어디에 넣을 것인가"는 결국 "프롬프트의 어디까지 바이트를 그대로 유지할 수 있는가"의 문제가 된다.
+      단, 앞부분의 바이트가 1개라도 바뀌면 캐시는 무효가 된다.
+      SAGA에서 캐싱은 따로 붙인 기능이 아니라, 매 턴 바뀌는 내용을 어디에 둘지 정하게 만든 제약이었다.
+      그래서 매 턴 바뀌는 기억은 캐시 바깥에 두고, 시간이 지나며 쌓이는 모순과 복선은 Curator가 따로 정리한다.
     </div>
 
     <div class="subsection-title">2.1 설계 원칙</div>
     <div class="body-text">
       <p>
-        고정 프롬프트 영역은 세션 내내 동일한 바이트를 유지하고, 매 턴 바뀌는 정보는 모두 사용자 발화 직전 영역에만 추가했다.
-        유저 응답 경로에는 메인 LLM 호출 1회만 두고, 요약·색인·검증은 응답 반환 이후 비동기로 처리했다.
-        저장소는 정확 조회(SQLite), 의미 검색(ChromaDB), 프롬프트 직렬화(.md prefix) 셋으로 나눠 한 저장소에 섞지 않았고,
-        매 턴 생성되는 서사 요약은 압축·색인·검색·검증 네 곳이 동일한 결과를 공유하도록 단일 진실원으로 두었다.
+        처음부터 모든 단계를 에이전트로 만들지는 않았다.
+        매 턴 반복되는 컨텍스트 조립·검색·요약·색인은 코드와 고정된 출력 형식으로 처리했다.
+        이전 판단을 이어받아야 하는 모순 검증·복선 회수·서사 구간 정리만 Memory Block을 가진 Curator에게 맡겼다.
+        고정 프롬프트 영역은 세션 내내 동일한 바이트를 유지하고, 매 턴 바뀌는 정보는 사용자 발화 직전 영역에만 추가했다.
+        저장소는 정확 조회(SQLite), 의미 검색(ChromaDB), 프롬프트 직렬화(Markdown cache)로 분리했다.
       </p>
     </div>
 
-    <div class="subsection-title">2.2 전체 파이프라인</div>
-    <div class="flow-diagram"><span class="cache">═══ 프롬프트 앞부분 · 세션 동안 바뀌지 않음 ═══════════════</span>
-  <span class="store">[System Prompt]</span> → <span class="store">[세계관·NPC·상태 요약]</span> → <span class="store">[과거 대화 요약 블록들]</span>
-<span class="cache">═════════════════════════════════════════════════════════</span>
 
-  <span class="cache">▼ 매 턴 바뀌는 뒷부분 (캐시 바깥)</span>
-  <span class="store">[관련 기억 검색 결과]</span> + <span class="store">[유저 새 발화]</span>
+    <div class="subsection-title">2.2 에이전트를 매 턴 돌리지 않은 이유</div>
+    <div class="body-text">
+      <p>
+        RP 장기 기억에서 매 턴 해야 할 일과 몇 턴에 한 번만 해도 되는 일이 섞이면 금방 비싸진다.
+        특히 Letta식 에이전트 루프를 매 턴 넣으면 조회·판단·수정·응답이 한꺼번에 돌면서 사용자가 전부 기다리게 된다.
+      </p>
+    </div>
 
-  <span class="sync">▼ 메인 LLM 1회 호출 (유저 응답 경로)</span>
-  <span class="sync">[응답 반환 → 유저]</span>
+    <table class="compare-table">
+      <tr>
+        <th style="width: 24%;">작업</th>
+        <th>처리 방식</th>
+      </tr>
+      <tr>
+        <td>컨텍스트 조립</td>
+        <td><strong>코드 로직</strong> — Recent · Important · Similar 검색 결과를 RRF로 합치고 토큰 예산 안에 넣는다. LLM 판단이 필요하지 않다.</td>
+      </tr>
+      <tr>
+        <td>서사 요약</td>
+        <td><strong>경량 LLM 1회</strong> — 매 턴 4필드 JSON만 뽑는다. 이 결과를 압축·색인·DB 갱신·검증 시드가 같이 쓴다.</td>
+      </tr>
+      <tr>
+        <td>서사 큐레이션</td>
+        <td><strong>Memory Block 에이전트</strong> — "지난번에 이건 의도된 모순으로 봤다" 같은 결정을 기억해야 하므로 Curator가 필요하다.</td>
+      </tr>
+    </table>
 
-  <span class="async">▼ 백그라운드 (응답 후, 유저는 이미 응답 받음)</span>
-  <span class="async">├─ Sub-B(서사 요약 에이전트) — 경량 모델 1회</span>
-  <span class="async">│  └─ 4필드 요약: 장면 / 관계 변화 / 사실 / 복선</span>
-  <span class="async">├─ SQLite 업데이트 (관계·이벤트·Lorebook)</span>
-  <span class="async">├─ ChromaDB 색인 (에피소드 임베딩)</span>
-  <span class="async">├─ 대화 압축 (임계치 초과 시 요약 블록 추가)</span>
-  <span class="async">└─ Curator(모순 검증 에이전트)</span>
+    <div class="result-box">
+      <strong>결론:</strong> Letta 같은 에이전트 루프 전체를 메인 응답 경로에 넣지 않았다.
+      사용자가 기다리는 경로는 메인 LLM 1회로 끝내고, Curator는 N턴마다 뒤에서 실행해
+      <em>narrative_summary</em>, <em>curation_decisions</em>, <em>contradiction_log</em>를 자기편집한다.
+    </div>
 
-<span class="note">※ 유저가 체감하는 대기 시간 = 메인 LLM 1회. 백그라운드 작업은 체감 경로 밖.</span></div>
+    <div class="subsection-title">2.3 전체 파이프라인</div>
+    <div class="flow-diagram"><span class="sync">[매 턴 · 동기 처리]</span>
+  <span class="store">User Input</span>
+    ↓
+  <span class="store">Sub-A Context Builder</span>
+    ├─ stable_prefix.md / live_state.md 읽기
+    ├─ SQLite 구조 조회
+    ├─ ChromaDB 3-stage 검색
+    └─ RRF 랭킹 + 토큰 예산 패킹
+    ↓
+  <span class="sync">Main LLM 1회 호출</span>
+    ↓
+  <span class="sync">SSE 스트리밍 응답</span>
 
-    <div class="subsection-title">2.3 저장소 3계층</div>
+<span class="async">[매 턴 · 응답 후 처리]</span>
+  <span class="store">Sub-B Post-Turn</span>
+    ├─ Flash 4필드 JSON 요약
+    ├─ SQLite 턴 로그 / NPC 갱신
+    ├─ ChromaDB 에피소드 색인
+    └─ live_state.md 갱신
+
+<span class="async">[N턴마다 · Curator 실행]</span>
+  <span class="store">Letta Curator</span>
+    ├─ narrative_summary 자기편집
+    ├─ curation_decisions 유지
+    ├─ contradiction_log 관리
+    └─ 모순 / 복선 / 서사 구간 정리
+
+<span class="cache">[캐시 경계]</span>
+  stable prefix는 세션 동안 바이트 안정성을 유지하고,
+  매 턴 바뀌는 동적 기억은 마지막 user 메시지 앞에만 붙인다.
+
+<span class="note">※ 사용자가 기다리는 구간은 Context Builder와 메인 LLM 1회까지다. Sub-B와 Curator는 응답을 보낸 뒤 돈다.</span></div>
+
+    <div class="subsection-title">2.4 저장소 3계층</div>
     <div class="storage-grid">
       <div class="storage-card">
         <div class="name">SQLite</div>
@@ -648,6 +699,24 @@
       <p>
         단일 벡터 DB로 모든 걸 처리하면 구조적 사실 조회가 느리고, 단일 구조화 DB로만 처리하면 에피소드 회상이 불가능하다.
         각 저장소는 <strong>서로 다른 쿼리 특성</strong>에 답하며, 필요에 따라 교차 결합된다 (예: ChromaDB에서 찾은 에피소드의 등장 NPC를 SQLite로 역조회).
+      </p>
+    </div>
+
+    <div class="subsection-title">2.5 Curator가 실제로 정리하는 것</div>
+    <div class="body-text">
+      <p>
+        내레이션·검색·요약·색인까지는 매 턴 처리로 충분했다. 문제는 50턴 이상 쌓인 뒤에 나왔다.
+      </p>
+      <ul>
+        <li><strong>캐릭터 동일성</strong> — "이름 모를 남성"과 "MacNamara"가 동일 인물인지 식별</li>
+        <li><strong>NPC 한·영 중복</strong> — "Johnson"과 "존슨"이 별개 카드로 등록되는 문제</li>
+        <li><strong>타임라인 모순</strong> — 같은 사건의 시각이 서로 다르게 굳어지는 경우</li>
+        <li><strong>서사 구간 정리</strong> — 누적된 복선 중 회수된 것과 진행 중인 것을 구분</li>
+      </ul>
+      <p>
+        Sub-B의 4필드 요약은 매 턴의 사실만 추출하기 때문에 이런 누적 정리는 잡지 못한다.
+        Curator는 N턴마다 전체 서사를 다시 훑고, 지난번에 내린 판단도 같이 본다.
+        그래서 같은 모순을 매번 새로 판단하지 않고, <strong>지난 큐레이션의 결론을 이어받아</strong> NPC 동일성·복선 상태·타임라인을 정리한다.
       </p>
     </div>
   </div>
@@ -725,7 +794,7 @@
         더 큰 문제는 <strong>같은 턴의 내용을 각 단계가 다르게 요약</strong>하면서 관계 업데이트와 에피소드 색인이 일치하지 않는 케이스가 나오기 시작했다는 점이었다.
       </p>
       <p>
-        Sub-B(Post-Turn Agent)에서 <strong>4필드 구조로 한 번만 생성</strong>하고,
+        Sub-B(Post-Turn)에서 <strong>4필드 구조로 한 번만 생성</strong>하고,
         <strong>네 곳이 이 요약을 공유하는 구조</strong>로 바꿨다.
         기준 요약이 하나로 통일되면서 일관성 문제가 사라졌고 LLM 호출도 1/4로 줄었다.
       </p>
@@ -740,6 +809,26 @@
 
 <span class="c"># 소비처: 대화 압축 블록 / ChromaDB 색인 /</span>
 <span class="c">#         SQLite 관계 업데이트 / Curator 모순 검증</span></pre>
+
+    <div class="subsection-title">3.4 에이전트 루프를 메인 경로에서 뺀 이유</div>
+    <div class="body-text">
+      <p>
+        초기 프로토타입에서는 매 턴 해야 하는 일과 나중에 정리해도 되는 일이 섞여 있었다.
+      </p>
+      <ul>
+        <li><strong>매 턴 작업</strong> — 컨텍스트 조립, 4필드 서사 요약. 규칙과 스키마로 처리 가능. 이전 판단을 기억할 필요 없음.</li>
+        <li><strong>N턴마다 작업</strong> — 모순 검증, 서사 구간 재정리, 로어 추출. "지난 번엔 이 모순을 의도된 거라고 결정했다"는 이력을 참조해야 일관성이 잡힘.</li>
+      </ul>
+      <p>
+        처음에는 두 작업을 같은 LLM 호출 흐름에 끼워 넣었다. 그러자 매 턴 호출 수가 늘었고, 큐레이션 판단도 매번 처음부터 다시 시작됐다. 같은 모순을 다른 결론으로 처리하는 경우도 있었다.
+      </p>
+      <p>
+        그래서 둘을 분리했다. 매 턴 작업은 메인 루프에 남기되 LLM 1회로 제한하고, 큐레이션은 별도 트랙으로 빼서 N턴마다 비동기로 실행했다. 지난 결정을 이어받기 위해 큐레이션 자리에는 <strong>Memory Block을 가진 에이전트(Letta)</strong>를 두고, 매 호출마다 <em>narrative_summary</em>·<em>curation_decisions</em>·<em>contradiction_log</em>를 자기편집하도록 했다.
+      </p>
+      <p>
+        메인 루프는 LLM 1회로 줄어 사용자가 기다리는 시간이 안정됐고, 큐레이션은 이전 판단을 보면서 결론을 이어갈 수 있었다. <strong>Letta를 메인 루프가 아니라 큐레이션 자리에만 쓴 이유가 여기 있다.</strong>
+      </p>
+    </div>
   </div>
 
   <!-- 4. 성과 -->
@@ -764,6 +853,14 @@
         <div class="detail">steady-state 86.8%<br>순비용 67.1% 절감</div>
       </div>
     </div>
+
+    <div class="result-box">
+      <strong>Curator 실제 세션 기록:</strong>
+      실제 50턴 RP 세션에서 Curator는 10턴마다 서사 구간·NPC·복선·로어를 재정리했다.
+      Turn 50 기준 서사 8구간, NPC 9명, 회수된 복선 태깅까지 누적됐고,
+      원문 메시지가 슬라이딩 윈도우 밖으로 밀려도, 큐레이션 결과는 DB에 남아 다음 컨텍스트에 다시 들어갔다.
+    </div>
+
 
     <div class="subsection-title">4.2 벤치마크 방법</div>
     <div class="body-text">
@@ -819,7 +916,7 @@
     <div class="subsection-title">5.1 v1의 도달점</div>
     <div class="body-text">
       <p>
-        SAGA는 <strong>핵심 엔진</strong>(메모리 3계층 · 캐시 보존 · 동기/비동기 분리 · 검색·요약 파이프라인)과
+        SAGA는 <strong>중앙 처리부</strong>(매 턴 컨텍스트 조립 · 비동기 Sub-B · Memory Block Curator · 메모리 3계층 · 캐시 보존)와
         <strong>벤치마크 검증</strong>(LOCOMO · LongMemEval) 단계까지 완성됐다. 본래 목표였던
         <strong>커뮤니티 플러그인 모듈로의 패키징</strong> — Docker 이미지화, 설치 경로 간소화, RisuAI·SillyTavern 통합 가이드 작성 — 단계는 진입하지 않은 상태에서 v1을 마무리했다.
       </p>
@@ -837,7 +934,7 @@
     <div class="subsection-title">5.2 포지션 변경</div>
     <div class="body-text">
       <p>
-        v1에서는 <strong>"프롬프트 캐시 보존 + 의미 검색·서사 요약 분리"</strong>라는 가설을 내부 평가로 검증하는 데 집중했다
+        v1에서는 <strong>"매 턴 작업은 가볍게 처리하고, 판단 이력이 필요한 큐레이션만 에이전트에 맡긴다"</strong>는 방향을 내부 평가로 확인하는 데 집중했다
         (캐시 적중률 84.2%, 비용 67.1% 절감). 패키징과 배포 자동화는 v1 범위에서 후속 과제로 남겼다.
       </p>
       <p>

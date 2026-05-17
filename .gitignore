@@ -38,6 +38,8 @@ tests/e2e_results/
 benchmarks/data/
 benchmarks/results/
 benchmarks/longmemeval/data/
+benchmarks/*/data/
+benchmarks/*/results/
 
 # Benchmark results & traces
 tests/bench_*_results.json
@@ -52,6 +54,8 @@ tests/e2e_cache_results/
 캐싱.md
 단순화.md
 RESEARCH.md
+README_old.md
+README3.md
 
 # Portfolio / presentation files
 *.html
