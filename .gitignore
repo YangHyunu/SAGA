@@ -38,6 +38,8 @@ tests/e2e_results/
 benchmarks/data/
 benchmarks/results/
 benchmarks/longmemeval/data/
+benchmarks/*/data/
+benchmarks/*/results/
 
 # Benchmark results & traces
 tests/bench_*_results.json
