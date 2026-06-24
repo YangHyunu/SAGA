@@ -1,8 +1,9 @@
 # SAGA — Stateful Context Engine for RP
 
-> **프로젝트 상태:** 2026-04 셸브 (운영 종료, 보관 모드).
-> Plan A — Claude Cache Keeper로 피벗했습니다.
-> SAGA 코드와 벤치마크 결과는 회고/포트폴리오 자료로 보관합니다.
+> **프로젝트 상태:** 연구 프로토타입 단계까지 완료 후 마무리 (2026-04).
+> 장기 RP 컨텍스트 문제의 가설 검증과 벤치마크까지 진행했고,
+> 후속으로 캐시 효율에 집중한 Claude Cache Keeper로 범위를 옮겼습니다.
+> 본 저장소는 설계 결정·벤치마크·회고를 정리한 기록물입니다.
 
 SAGA는 RisuAI 앞단에 두는 OpenAI-compatible Context Middleware다.  
 RP 세션의 상태와 과거 에피소드를 SQLite·ChromaDB·Markdown cache에 저장하고, 매 요청마다 필요한 기억만 검색해 프롬프트에 주입한다.
