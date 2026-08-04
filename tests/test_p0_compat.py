@@ -145,29 +145,21 @@ class TestSessionIdExtraction:
         raw = self._make_raw_request({})
         assert _extract_session_id(req, raw) == "user-field-id"
 
-    def test_system_hash_fallback(self):
+    def test_no_implicit_system_hash(self):
+        """System-hash fallback was removed: implicit identity now comes from
+        the pair ledger (conversation content), not the system prompt."""
         from saga.server import _extract_session_id
         req = self._make_request(
             messages=[ChatMessage(role="system", content="my system prompt")],
         )
         raw = self._make_raw_request({})
-        result = _extract_session_id(req, raw)
-        assert result is not None
-        assert len(result) == 16  # SHA256 hex[:16]
+        assert _extract_session_id(req, raw) is None
 
     def test_no_system_returns_none(self):
         from saga.server import _extract_session_id
         req = self._make_request()
         raw = self._make_raw_request({})
         assert _extract_session_id(req, raw) is None
-
-    def test_system_hash_stable(self):
-        """Same system message should produce the same session ID."""
-        from saga.server import _extract_session_id
-        req1 = self._make_request(messages=[ChatMessage(role="system", content="identical prompt")])
-        req2 = self._make_request(messages=[ChatMessage(role="system", content="identical prompt")])
-        raw = self._make_raw_request({})
-        assert _extract_session_id(req1, raw) == _extract_session_id(req2, raw)
 
     def test_user_field_in_model(self):
         """Verify ChatCompletionRequest accepts user field."""

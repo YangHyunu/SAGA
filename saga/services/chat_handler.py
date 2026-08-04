@@ -23,6 +23,7 @@ from saga.services.session_extractor import (
     extract_scriptstate,
     extract_gen_params,
 )
+from saga.services.pair_ledger import extract_pairs
 from saga.services.cache_marker import is_anthropic_model, build_cacheable_messages
 from saga.services.post_turn_pipeline import (
     is_continuation,
@@ -49,12 +50,18 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
         + (f" gen_params={gen_params}" if gen_params else "")
     )
 
+    raw_dicts = [{"role": m.role, "content": m.get_text_content()} for m in request.messages]
+    pairs, last_user_hash = extract_pairs(raw_dicts)
+
     session_id = extract_session_id(request, raw_request)
     session_src = "header" if raw_request.headers.get("x-saga-session-id") else \
-                  "user" if request.user else "system-hash" if session_id else "auto"
+                  "user" if request.user else None
+    if not session_id and deps.pair_ledger is not None:
+        session_id = await deps.pair_ledger.resolve_session(pairs)
+        session_src = "pair-chain" if session_id else "new"
     session = await deps.session_mgr.get_or_create_session(session_id)
     session_id = session["id"]
-    logger.info(f"[Trace] Session: {session_id} (via {session_src})")
+    logger.info(f"[Trace] Session: {session_id} (via {session_src or 'new'})")
 
     scriptstate = extract_scriptstate(raw_request)
     if scriptstate:
@@ -87,6 +94,18 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
     _is_continuation = is_continuation(messages_dicts)
     if _is_continuation:
         logger.info(f"[Trace] autoContinue detected — deferring turn increment & Sub-B")
+
+    ledger_ctx = None
+    if deps.pair_ledger is not None and not _is_continuation:
+        try:
+            verdict = await deps.pair_ledger.analyze_and_apply(session_id, pairs, last_user_hash)
+            ledger_ctx = {"verdict": verdict, "last_user_hash": last_user_hash}
+            logger.info(
+                f"[Trace] PairLedger: kind={verdict['kind']} position={verdict['position']}"
+                + (f" reroll_turn={verdict['reroll_turn_number']}" if verdict["kind"] == "reroll" else "")
+            )
+        except Exception as e:
+            logger.warning(f"[PairLedger] analyze failed (turn proceeds unledgered): {e}")
 
     stabilized_messages, lorebook_delta = await deps.system_stabilizer.stabilize(
         session_id, messages_dicts
@@ -164,6 +183,7 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
                     augmented_messages=augmented_messages,
                     request_model=request.model,
                     mode="stream",
+                    ledger_ctx=ledger_ctx,
                 )
             except Exception as e:
                 logger.error(f"[Trace] Post-stream task failed: {e}", exc_info=True)
@@ -204,6 +224,7 @@ async def handle_chat(request: ChatCompletionRequest, raw_request: Request):
         augmented_messages=augmented_messages,
         request_model=request.model,
         mode="sync",
+        ledger_ctx=ledger_ctx,
     )
 
     clean_response = strip_state_block(final_response)

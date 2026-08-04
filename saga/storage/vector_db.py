@@ -57,6 +57,7 @@ class VectorDB:
         importance: int = 10,
         entities: list[str] = None,
         npcs: list[str] = None,
+        status: str = "provisional",
     ):
         """Add a turn episode summary to the episodes collection."""
         episode_id = f"{session_id}_turn_{turn}"
@@ -68,6 +69,7 @@ class VectorDB:
             "importance": importance,
             "entities": ",".join(entities) if entities else "",
             "npcs": ",".join(npcs) if npcs else "",
+            "status": status,
             "created_at": datetime.utcnow().isoformat(),
         }
         self.episodes.upsert(
@@ -76,6 +78,68 @@ class VectorDB:
             metadatas=[metadata],
         )
         logger.debug(f"[VectorDB] upsert episode: id={episode_id} importance={importance} summary_len={len(summary)}")
+
+    def set_episode_status(self, session_id: str, turn: int, status: str):
+        """Update an episode's lifecycle status (provisional/confirmed/superseded/quarantined)."""
+        episode_id = f"{session_id}_turn_{turn}"
+        try:
+            existing = self.episodes.get(ids=[episode_id])
+            if not existing.get("ids"):
+                return
+            metadata = existing["metadatas"][0] or {}
+            metadata["status"] = status
+            self.episodes.update(ids=[episode_id], metadatas=[metadata])
+            logger.debug(f"[VectorDB] set_episode_status: id={episode_id} status={status}")
+        except Exception as e:
+            logger.warning(f"[VectorDB] set_episode_status failed: {e}")
+
+    @staticmethod
+    def _drop_inactive(result: dict) -> dict:
+        """Filter out superseded/quarantined episodes from a query/get result.
+
+        Done in Python (not a Chroma where-clause) so legacy episodes without
+        a status field keep matching.
+        """
+        ids = result.get("ids") or []
+        if not ids:
+            return result
+        nested = bool(ids and isinstance(ids[0], list))  # query returns [[...]]
+        keys = ("ids", "documents", "metadatas", "distances")
+
+        def _filter(ids_l, docs_l, metas_l, dists_l):
+            keep = [
+                i for i, m in enumerate(metas_l)
+                if (m or {}).get("status") not in ("superseded", "quarantined")
+            ]
+            return (
+                [ids_l[i] for i in keep],
+                [docs_l[i] for i in keep] if docs_l else docs_l,
+                [metas_l[i] for i in keep] if metas_l else metas_l,
+                [dists_l[i] for i in keep] if dists_l else dists_l,
+            )
+
+        if nested:
+            for batch in range(len(ids)):
+                filtered = _filter(
+                    result["ids"][batch],
+                    (result.get("documents") or [[]])[batch],
+                    (result.get("metadatas") or [[]])[batch],
+                    (result.get("distances") or [[]])[batch] if result.get("distances") else [],
+                )
+                for key, value in zip(keys, filtered):
+                    if result.get(key):
+                        result[key][batch] = value
+        else:
+            filtered = _filter(
+                result["ids"],
+                result.get("documents") or [],
+                result.get("metadatas") or [],
+                result.get("distances") or [],
+            )
+            for key, value in zip(keys, filtered):
+                if result.get(key):
+                    result[key] = value
+        return result
 
     def search_episodes(
         self, session_id: str, query: str, n_results: int = 20
@@ -90,7 +154,7 @@ class VectorDB:
         except Exception as e:
             logger.warning(f"[VectorDB] search_episodes failed: {e}")
             result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-        return result
+        return self._drop_inactive(result)
 
     def search_important_episodes(
         self, session_id: str, min_importance: int = 40, n_results: int = 10
@@ -110,7 +174,7 @@ class VectorDB:
         except Exception as e:
             logger.warning(f"[VectorDB] search_important_episodes failed: {e}")
             result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-        return result
+        return self._drop_inactive(result)
 
     def get_recent_episodes(self, session_id: str, n_results: int = 20) -> dict:
         """Get the most recent episode entries for a session, ordered by turn desc."""
@@ -138,7 +202,7 @@ class VectorDB:
         except Exception as e:
             logger.warning(f"[VectorDB] get_recent_episodes failed: {e}")
             result = {"ids": [], "documents": [], "metadatas": []}
-        return result
+        return self._drop_inactive(result)
 
     # ------------------------------------------------------------------ #
     # Cleanup

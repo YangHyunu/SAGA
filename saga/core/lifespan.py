@@ -87,6 +87,9 @@ async def lifespan(app: FastAPI):
     # Initialize session manager
     deps.session_mgr = SessionManager(deps.sqlite_db, deps.vector_db, deps.md_cache, deps.config)
 
+    from saga.services.pair_ledger import PairLedgerService
+    deps.pair_ledger = PairLedgerService(deps.sqlite_db, deps.vector_db)
+
     # Initialize system stabilizer
     deps.system_stabilizer = SystemStabilizer(deps.sqlite_db, deps.config)
 

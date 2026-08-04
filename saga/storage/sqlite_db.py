@@ -81,10 +81,24 @@ class SQLiteDB:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS pair_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                pair_index INTEGER NOT NULL,
+                user_hash TEXT NOT NULL,
+                assistant_hash TEXT,
+                status TEXT DEFAULT 'provisional',
+                turn_number INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE INDEX IF NOT EXISTS idx_characters_session ON characters(session_id);
             CREATE INDEX IF NOT EXISTS idx_relationships_session ON relationships(session_id);
 
             CREATE INDEX IF NOT EXISTS idx_lore_session ON lore(session_id);
+            CREATE INDEX IF NOT EXISTS idx_pair_ledger_session ON pair_ledger(session_id, pair_index);
+            CREATE INDEX IF NOT EXISTS idx_pair_ledger_user_hash ON pair_ledger(user_hash);
+            CREATE INDEX IF NOT EXISTS idx_pair_ledger_asst_hash ON pair_ledger(assistant_hash);
         """)
         await self._db.commit()
 
@@ -95,6 +109,8 @@ class SQLiteDB:
         """Add missing columns to tables created by older schema versions."""
         migrations = [
             ("characters", "aliases", "TEXT DEFAULT '[]'"),
+            # Legacy rows get NULL -> treated as 'confirmed' via COALESCE in reads
+            ("turn_log", "status", "TEXT"),
         ]
         for table, column, col_def in migrations:
             try:
@@ -190,6 +206,9 @@ class SQLiteDB:
         await self._db.execute(
             "DELETE FROM lore WHERE session_id = ?", (session_id,)
         )
+        await self._db.execute(
+            "DELETE FROM pair_ledger WHERE session_id = ?", (session_id,)
+        )
         await self._db.commit()
 
     # ------------------------------------------------------------------ #
@@ -240,14 +259,15 @@ class SQLiteDB:
         user_input: str = "",
         assistant_output: str = "",
         token_count: int = 0,
+        status: str = "provisional",
     ):
         state_changes_json = json.dumps(state_changes or {}, ensure_ascii=False)
         now = datetime.utcnow().isoformat()
         await self._db.execute(
             """
             INSERT OR REPLACE INTO turn_log
-                (session_id, turn_number, user_input, assistant_output, state_changes, token_count, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (session_id, turn_number, user_input, assistant_output, state_changes, token_count, timestamp, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -257,6 +277,7 @@ class SQLiteDB:
                 state_changes_json,
                 token_count,
                 now,
+                status,
             ),
         )
         await self._db.commit()
@@ -268,12 +289,17 @@ class SQLiteDB:
         session_id: str,
         from_turn: int = 0,
         to_turn: int | None = None,
+        include_inactive: bool = False,
     ) -> list[dict]:
+        # Rerolled/rolled-back turns are excluded from recall and curation
+        # by default. Legacy rows (status NULL) count as confirmed.
+        status_clause = "" if include_inactive else \
+            " AND COALESCE(status, 'confirmed') NOT IN ('superseded', 'quarantined')"
         if to_turn is None:
             async with self._db.execute(
-                """
+                f"""
                 SELECT * FROM turn_log
-                WHERE session_id = ? AND turn_number >= ?
+                WHERE session_id = ? AND turn_number >= ?{status_clause}
                 ORDER BY turn_number ASC
                 """,
                 (session_id, from_turn),
@@ -281,9 +307,9 @@ class SQLiteDB:
                 rows = await cursor.fetchall()
         else:
             async with self._db.execute(
-                """
+                f"""
                 SELECT * FROM turn_log
-                WHERE session_id = ? AND turn_number >= ? AND turn_number <= ?
+                WHERE session_id = ? AND turn_number >= ? AND turn_number <= ?{status_clause}
                 ORDER BY turn_number ASC
                 """,
                 (session_id, from_turn, to_turn),
@@ -299,6 +325,107 @@ class SQLiteDB:
                 r["state_changes"] = {}
             result.append(r)
         return result
+
+    async def set_turn_status(self, session_id: str, turn_number: int, status: str):
+        await self._db.execute(
+            "UPDATE turn_log SET status = ? WHERE session_id = ? AND turn_number = ?",
+            (status, session_id, turn_number),
+        )
+        await self._db.commit()
+        logger.debug(f"[DB] set_turn_status: session={session_id} turn={turn_number} status={status}")
+
+    # ------------------------------------------------------------------ #
+    # Pair Ledger (content-hash session identity + reroll detection)
+    # ------------------------------------------------------------------ #
+
+    async def get_pair_ledger(self, session_id: str) -> list[dict]:
+        async with self._db.execute(
+            """
+            SELECT * FROM pair_ledger
+            WHERE session_id = ?
+            ORDER BY pair_index ASC, updated_at ASC, id ASC
+            """,
+            (session_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def insert_pair(
+        self,
+        session_id: str,
+        pair_index: int,
+        user_hash: str,
+        assistant_hash: str | None = None,
+        status: str = "provisional",
+        turn_number: int | None = None,
+    ) -> int:
+        now = datetime.utcnow().isoformat()
+        cursor = await self._db.execute(
+            """
+            INSERT INTO pair_ledger
+                (session_id, pair_index, user_hash, assistant_hash, status, turn_number, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, pair_index, user_hash, assistant_hash, status, turn_number, now, now),
+        )
+        await self._db.commit()
+        return cursor.lastrowid
+
+    async def update_pair(
+        self,
+        row_id: int,
+        status: str | None = None,
+        assistant_hash: str | None = None,
+        turn_number: int | None = None,
+    ):
+        sets, params = ["updated_at = ?"], [datetime.utcnow().isoformat()]
+        if status is not None:
+            sets.append("status = ?")
+            params.append(status)
+        if assistant_hash is not None:
+            sets.append("assistant_hash = ?")
+            params.append(assistant_hash)
+        if turn_number is not None:
+            sets.append("turn_number = ?")
+            params.append(turn_number)
+        params.append(row_id)
+        await self._db.execute(
+            f"UPDATE pair_ledger SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await self._db.commit()
+
+    async def find_sessions_by_pair_hashes(
+        self, user_hashes: list[str], assistant_hashes: list[str]
+    ) -> list[dict]:
+        """Score sessions by ledger overlap with the given hashes.
+
+        Returns [{session_id, total_matches, asst_matches}] ordered by
+        (asst_matches, total_matches, session recency) descending.
+        """
+        all_hashes = list(set(user_hashes) | set(assistant_hashes))
+        if not all_hashes:
+            return []
+        u_marks = ",".join("?" * len(user_hashes)) if user_hashes else "NULL"
+        a_marks = ",".join("?" * len(assistant_hashes)) if assistant_hashes else "NULL"
+        query = f"""
+            SELECT p.session_id,
+                   COUNT(*) AS total_matches,
+                   SUM(CASE WHEN p.assistant_hash IN ({a_marks}) THEN 1 ELSE 0 END) AS asst_matches,
+                   MAX(s.updated_at) AS last_active
+            FROM pair_ledger p
+            JOIN sessions s ON s.id = p.session_id
+            WHERE p.user_hash IN ({u_marks}) OR p.assistant_hash IN ({a_marks})
+            GROUP BY p.session_id
+            ORDER BY asst_matches DESC, total_matches DESC, last_active DESC
+        """
+        params = (
+            list(assistant_hashes)
+            + list(user_hashes)
+            + list(assistant_hashes)
+        )
+        async with self._db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------ #
     # Characters

@@ -81,6 +81,7 @@ session_mgr: SessionManager | None = None
 system_stabilizer: SystemStabilizer | None = None
 cost_tracker: CostTracker | None = None
 message_compressor: MessageCompressor | None = None
+pair_ledger = None  # PairLedgerService (imported lazily in lifespan to avoid cycle)
 
 # Keep strong references to fire-and-forget tasks so GC doesn't collect them
 _background_tasks: set = set()

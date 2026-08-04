@@ -1,6 +1,5 @@
 """Session ID / scriptstate / gen params extraction from incoming requests."""
 import json
-import hashlib
 import logging
 
 from fastapi import HTTPException, Request
@@ -12,11 +11,12 @@ logger = logging.getLogger(__name__)
 
 
 def extract_session_id(request: ChatCompletionRequest, raw_request: Request) -> str | None:
-    """Extract session ID with priority: header > user field > system hash.
+    """Extract an *explicitly declared* session ID: header > user field.
 
-    1. X-SAGA-Session-ID header (explicit)
-    2. request.user field (OpenAI spec, configurable in RisuAI)
-    3. System message hash fallback (legacy, backward-compatible)
+    Implicit identity (no header/user) is resolved by the pair ledger in
+    chat_handler — conversation content is the identity, not the system
+    prompt. The old system-hash fallback conflated every chat of the same
+    character card into one session.
     """
     header_id = raw_request.headers.get("x-saga-session-id", "").strip()
     if header_id:
@@ -30,13 +30,6 @@ def extract_session_id(request: ChatCompletionRequest, raw_request: Request) -> 
             raise HTTPException(400, "Invalid user/session ID format")
         return user
 
-    for msg in request.messages:
-        if msg.role == "system":
-            first_para = msg.get_text_content().split('\n\n')[0][:300]
-            sid = hashlib.sha256(first_para.encode()).hexdigest()[:16]
-            logger.debug(f"[Session] Hash input (first 150ch): {first_para[:150]!r}")
-            logger.debug(f"[Session] Hash result: {sid}")
-            return sid
     return None
 
 

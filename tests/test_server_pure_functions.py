@@ -226,28 +226,15 @@ class TestExtractSessionId:
         result = server_module._extract_session_id(request, raw)
         assert result == "spaced-id"
 
-    def test_system_hash_fallback(self):
+    def test_no_implicit_system_hash(self):
+        """System-hash fallback removed: implicit identity is resolved by the
+        pair ledger in chat_handler, not here."""
         msg = MagicMock()
         msg.role = "system"
         msg.get_text_content.return_value = "You are a helpful assistant."
         request = self._make_request(messages=[msg])
         raw = _raw_request()
-        result = server_module._extract_session_id(request, raw)
-        # Should return an 8-char hex string
-        assert result is not None
-        assert len(result) == 16
-        assert all(c in "0123456789abcdef" for c in result)
-
-    def test_system_hash_stable_across_calls(self):
-        """Same system content must produce the same session hash."""
-        msg = MagicMock()
-        msg.role = "system"
-        msg.get_text_content.return_value = "Stable system prompt text here."
-        request = self._make_request(messages=[msg])
-        raw = _raw_request()
-        r1 = server_module._extract_session_id(request, raw)
-        r2 = server_module._extract_session_id(request, raw)
-        assert r1 == r2
+        assert server_module._extract_session_id(request, raw) is None
 
     def test_no_system_message_returns_none(self):
         msg = MagicMock()
@@ -258,16 +245,14 @@ class TestExtractSessionId:
         result = server_module._extract_session_id(request, raw)
         assert result is None
 
-    def test_empty_user_field_falls_through_to_hash(self):
-        """user='' (falsy) should fall through to system-hash."""
+    def test_empty_user_field_returns_none(self):
+        """user='' (falsy) no longer falls back to a system hash."""
         msg = MagicMock()
         msg.role = "system"
         msg.get_text_content.return_value = "Some prompt"
         request = self._make_request(user="", messages=[msg])
         raw = _raw_request()
-        result = server_module._extract_session_id(request, raw)
-        assert result is not None
-        assert len(result) == 16
+        assert server_module._extract_session_id(request, raw) is None
 
     def test_header_stripped(self):
         request = self._make_request()

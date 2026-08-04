@@ -7,6 +7,12 @@ build/
 .coverage
 .pytest_cache/
 
+# External source references (local symlinks, see AGENTS.md)
+external/
+
+# Research materials (3rd-party code w/ AGPL·CC-NC licenses + community scans — never commit)
+research/
+
 # Runtime data (recreated on server start)
 db/
 cache/

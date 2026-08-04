@@ -5,6 +5,7 @@ import time
 
 from saga.core import dependencies as deps
 from saga.services.cache_marker import is_anthropic_model
+from saga.utils.parsers import strip_state_block
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +108,13 @@ async def finalize_turn(
     augmented_messages: list,
     request_model: str | None,
     mode: str = "sync",
+    ledger_ctx: dict | None = None,
 ) -> tuple[str, int | None]:
     """Unified post-turn finalization for both streaming and non-streaming.
+
+    ledger_ctx: {"verdict": ..., "last_user_hash": ...} from the pair ledger.
+    A reroll reuses the superseded turn's number instead of incrementing, so
+    the regenerated response overwrites the discarded turn's records.
 
     Returns (final_response, turn_number):
       - turn_number=None → buffered (autoContinue in progress, no turn increment)
@@ -118,9 +124,23 @@ async def finalize_turn(
     if buffered:
         return final_response, None
 
-    turn_number = await deps.sqlite_db.increment_turn(session_id)
-    suffix = f" ({mode})" if mode != "sync" else ""
-    logger.info(f"[Trace] ━━━ DONE turn={turn_number}{suffix} ━━━")
+    reroll_turn = (ledger_ctx or {}).get("verdict", {}).get("reroll_turn_number")
+    if reroll_turn is not None:
+        turn_number = reroll_turn
+        logger.info(f"[Trace] ━━━ DONE turn={turn_number} (reroll, no increment) ━━━")
+    else:
+        turn_number = await deps.sqlite_db.increment_turn(session_id)
+        suffix = f" ({mode})" if mode != "sync" else ""
+        logger.info(f"[Trace] ━━━ DONE turn={turn_number}{suffix} ━━━")
+
+    if ledger_ctx and deps.pair_ledger is not None:
+        try:
+            await deps.pair_ledger.record_turn(
+                session_id, ledger_ctx["verdict"], ledger_ctx["last_user_hash"],
+                strip_state_block(final_response), turn_number,
+            )
+        except Exception as e:
+            logger.warning(f"[PairLedger] record_turn failed: {e}")
 
     await spawn_post_turn_tasks(
         session_id, final_response, turn_number,
