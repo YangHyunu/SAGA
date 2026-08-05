@@ -1,0 +1,34 @@
+"""dreaming/marking.py — 3-BP 캐시 마킹 (스펙 §3.1, §5).
+
+BP1 = 마지막 system (Anthropic 변환은 선두 연속 system만 병합 — anthropic.ts:209),
+BP3 = 마지막 assistant (원문 꼬리 끝).
+BP2 = 첫 청크 assistant — 청크가 생기는 Plan 4에서 추가된다.
+RisuAI는 cachePoint를 전송 직전 제거하므로(requests.ts:141) 마킹 주체는
+프록시/프로바이더인 우리다. 기존 마킹은 전부 제거 후 재마킹한다.
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import Dict, List
+
+
+def mark_cache(messages: List[Dict], ttl: str = "5m") -> List[Dict]:
+    out = [copy.deepcopy(m) for m in messages]
+    for m in out:
+        m.pop("cache_control", None)
+
+    last_system = None
+    last_assistant = None
+    for i, m in enumerate(out):
+        if m.get("role") == "system":
+            last_system = i
+        elif m.get("role") == "assistant":
+            last_assistant = i
+
+    mark = {"type": "ephemeral", "ttl": ttl}
+    if last_system is not None:
+        out[last_system]["cache_control"] = dict(mark)   # BP1
+    if last_assistant is not None:
+        out[last_assistant]["cache_control"] = dict(mark)  # BP3
+    return out
