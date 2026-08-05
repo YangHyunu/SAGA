@@ -48,7 +48,9 @@ class Settings(BaseModel):
     @classmethod
     def from_env(cls) -> "Settings":
         if load_dotenv is not None:
-            load_dotenv()        # cwd의 .env 로드 (기존 환경변수는 안 덮음)
+            # 기본 load_dotenv()는 호출 파일 기준 탐색이라 cwd를 명시한다.
+            load_dotenv(Path.cwd() / ".env")   # 기존 환경변수는 안 덮음
+
         return cls(
             data_dir=os.environ.get("DREAMING_DATA_DIR", "./dreaming_data"),
             upstream_base_url=os.environ.get(
