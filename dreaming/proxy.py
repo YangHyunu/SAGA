@@ -19,6 +19,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+try:
+    from dotenv import load_dotenv
+except ImportError:          # dotenv 없어도 동작 (환경변수 직접 export)
+    load_dotenv = None
+
 from dreaming.dreamer import Dreamer
 from dreaming.idle import IdleWatcher
 from dreaming.llm import LLMClient, OpenAICompatLLM
@@ -42,6 +47,8 @@ class Settings(BaseModel):
 
     @classmethod
     def from_env(cls) -> "Settings":
+        if load_dotenv is not None:
+            load_dotenv()        # cwd의 .env 로드 (기존 환경변수는 안 덮음)
         return cls(
             data_dir=os.environ.get("DREAMING_DATA_DIR", "./dreaming_data"),
             upstream_base_url=os.environ.get(
