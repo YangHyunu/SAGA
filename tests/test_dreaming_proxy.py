@@ -152,14 +152,14 @@ def test_health(tmp_path):
     assert TestClient(app).get("/health").json() == {"ok": True}
 
 
-def test_from_env_loads_dotenv(tmp_path, monkeypatch):
+def test_from_env_loads_dotenv_from_root(tmp_path, monkeypatch):
     import os
     (tmp_path / ".env").write_text(
         "DREAMING_UPSTREAM_KEY=from-dotenv\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("DREAMING_UPSTREAM_KEY", raising=False)
     try:
-        s = Settings.from_env()
+        s = Settings.from_env(root=tmp_path)
         assert s.upstream_api_key == "from-dotenv"
+        assert s.data_dir == str(tmp_path / "dreaming_data")   # 데이터도 root 앵커
     finally:
         os.environ.pop("DREAMING_UPSTREAM_KEY", None)   # load_dotenv 잔류 제거
