@@ -83,3 +83,21 @@ class Actor(BaseModel):
     knows: List[str] = []                   # visibility-gated Fact id
     tier: ActorTier = "support"
     last_seen: Optional[str] = None
+
+
+CommitOp = Literal["set", "add"]
+CommitStatus = Literal["applied", "pending_contradiction", "manual"]
+
+
+class StateCommit(BaseModel):
+    """WorldState 변경의 유일한 경로 (스펙 §4.3). append-only 원장."""
+
+    id: str = Field(default_factory=_new_id)
+    slot: str
+    op: CommitOp
+    value: object  # float(set/add) 또는 str(set) — replay가 타입 검증
+    turn: int
+    evidence: Optional[Evidence] = None
+    actor: Optional[str] = None
+    recorded_at: str = Field(default_factory=utc_now_iso)
+    status: CommitStatus = "applied"
