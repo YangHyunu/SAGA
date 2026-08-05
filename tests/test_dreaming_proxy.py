@@ -1,0 +1,152 @@
+"""프록시 end-to-end — 주입·마킹·기록·fail-open·캐치업 (스펙 §3.1~3.2, §8)."""
+import json
+import time
+
+from fastapi.testclient import TestClient
+
+from dreaming.proxy import Settings, create_app
+from dreaming.records import StateCommit
+from dreaming.storage import JsonDirStorage
+from dreaming.store import MemoryStore
+
+_EXTRACTION = json.dumps({
+    "facts": [{"claim": "포션은 50골드다", "evidence_turn": 0,
+               "numbers": [{"name": "가격", "value": 50}]}],
+}, ensure_ascii=False)
+
+
+class FakeUpstream:
+    def __init__(self):
+        self.payloads = []
+
+    async def complete(self, payload):
+        self.payloads.append(payload)
+        return {"choices": [{"message": {"content": "50골드다."}}]}
+
+    async def stream(self, payload):
+        self.payloads.append(payload)
+        for piece in ["50골드", "다."]:
+            data = json.dumps({"choices": [{"delta": {"content": piece}}]},
+                              ensure_ascii=False)
+            yield f"data: {data}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+
+class FakeLLM:
+    def __init__(self, response):
+        self.response = response
+
+    async def complete(self, system, user):
+        return self.response
+
+
+def _settings(tmp_path, idle=300.0):
+    return Settings(data_dir=str(tmp_path), upstream_base_url="http://up",
+                    upstream_api_key="k", idle_seconds=idle)
+
+
+def _body(*texts, stream=False):
+    roles = ["user", "assistant"]
+    msgs = [{"role": "system", "content": "너는 상인 리사다."}]
+    msgs += [{"role": roles[i % 2], "content": t} for i, t in enumerate(texts)]
+    return {"model": "anthropic/claude-sonnet-4.5", "messages": msgs,
+            "stream": stream}
+
+
+def test_non_stream_injects_marks_and_records(tmp_path):
+    up = FakeUpstream()
+    storage = JsonDirStorage(tmp_path)
+    MemoryStore(storage, "sess1").append_commit(
+        StateCommit(slot="소지금", op="set", value=450, turn=0))
+    app = create_app(_settings(tmp_path), upstream=up)
+    client = TestClient(app)
+
+    r = client.post("/v1/chat/completions", json=_body("포션 얼마야?"),
+                    headers={"x-dreaming-session-id": "sess1"})
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "50골드다."
+
+    sent = up.payloads[0]["messages"]
+    sys_part = sent[0]["content"][0]                 # BP1 → content part 변환
+    assert sys_part["cache_control"]["type"] == "ephemeral"
+    assert "<dreaming_context>" in sent[-1]["content"]
+    assert "소지금: 450" in sent[-1]["content"]
+
+    raw = storage.get("sess1/raw", "000000")         # 원본 기준으로 기록됨
+    assert raw["user_text"] == "포션 얼마야?"
+    assert raw["assistant_text"] == "50골드다."
+
+
+def test_stream_passthrough_accumulates_and_records(tmp_path):
+    up = FakeUpstream()
+    storage = JsonDirStorage(tmp_path)
+    app = create_app(_settings(tmp_path), upstream=up)
+    client = TestClient(app)
+
+    r = client.post("/v1/chat/completions", json=_body("포션 얼마야?", stream=True),
+                    headers={"x-dreaming-session-id": "sess1"})
+    assert r.status_code == 200
+    assert b"data:" in r.content and b"[DONE]" in r.content
+    raw = storage.get("sess1/raw", "000000")
+    assert raw["assistant_text"] == "50골드다."
+
+
+def test_fail_open_on_sync_error(tmp_path, monkeypatch):
+    import dreaming.proxy as proxy_mod
+    monkeypatch.setattr(proxy_mod.SyncPath, "process",
+                        lambda self, m: (_ for _ in ()).throw(RuntimeError("boom")))
+    up = FakeUpstream()
+    app = create_app(_settings(tmp_path), upstream=up)
+    client = TestClient(app)
+    r = client.post("/v1/chat/completions", json=_body("안녕"))
+    assert r.status_code == 200                       # 채팅은 안 죽는다
+    assert up.payloads[0]["messages"][-1]["content"] == "안녕"   # 원본 무가공
+
+
+def test_upstream_error_returns_502(tmp_path):
+    class DeadUpstream:
+        async def complete(self, payload):
+            raise RuntimeError("connection refused")
+    app = create_app(_settings(tmp_path), upstream=DeadUpstream())
+    client = TestClient(app)
+    r = client.post("/v1/chat/completions", json=_body("안녕"))
+    assert r.status_code == 502
+
+
+def test_sessions_are_isolated(tmp_path):
+    up = FakeUpstream()
+    app = create_app(_settings(tmp_path), upstream=up)
+    client = TestClient(app)
+    client.post("/v1/chat/completions", json=_body("안녕"),
+                headers={"x-dreaming-session-id": "sess-a"})
+    client.post("/v1/chat/completions", json=_body("반가워"),
+                headers={"x-dreaming-session-id": "sess-b"})
+    storage = JsonDirStorage(tmp_path)
+    assert storage.get("sess-a/raw", "000000")["user_text"] == "안녕"
+    assert storage.get("sess-b/raw", "000000")["user_text"] == "반가워"
+
+
+def test_catchup_dream_runs_in_background(tmp_path):
+    storage = JsonDirStorage(tmp_path)
+    storage.put("sess1/raw", "000000", {          # 이전 기동에서 밀린 턴
+        "turn_number": 0, "user_text": "포션 얼마야?",
+        "assistant_text": "50골드다.", "user_hash": "u0", "assistant_hash": "a0"})
+    up = FakeUpstream()
+    app = create_app(_settings(tmp_path), upstream=up,
+                     dream_llm=FakeLLM(_EXTRACTION))
+    with TestClient(app) as client:               # with = 루프 유지
+        r = client.post("/v1/chat/completions", json=_body("다음 질문"),
+                        headers={"x-dreaming-session-id": "sess1"})
+        assert r.status_code == 200               # 첫 요청은 즉시 통과
+        for _ in range(100):                      # 백그라운드 꿈 완료 대기
+            if storage.get("sess1/dreamer", "cursor"):
+                break
+            time.sleep(0.02)
+    assert storage.get("sess1/dreamer", "cursor") is not None
+    facts = MemoryStore(storage, "sess1").list_facts()
+    assert any(f.claim == "포션은 50골드다" for f in facts)
+
+
+def test_health(tmp_path):
+    app = create_app(_settings(tmp_path), upstream=FakeUpstream())
+    assert TestClient(app).get("/health").json() == {"ok": True}
