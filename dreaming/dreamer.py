@@ -14,7 +14,10 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
-from dreaming.records import Actor, Fact
+from dreaming.facts import dreamer_can_modify, supersede
+from dreaming.records import (Actor, Episode, Evidence, Fact, StateCommit,
+                              TypedNumber)
+from dreaming.store import MemoryStore
 
 _MAX_PROMPT_FACTS = 50
 
@@ -129,3 +132,107 @@ def build_dream_prompt(raw_turns: List[Dict], facts: List[Fact],
     user = ("[기존 지식]\n" + ("\n\n".join(known) if known else "없음")
             + "\n\n[미처리 원문]\n" + turns)
     return _SYSTEM, user
+
+
+# ------------------------------------------------------------------ #
+# B-3: 검증·적용
+# ------------------------------------------------------------------ #
+
+def verify_numbers(numbers: List[ExtractedNumber], text: str) -> bool:
+    """숫자 정규식 재검증 (스펙 §3.2 B-3): 원문에 문자 그대로 있어야 한다."""
+    plain = text.replace(",", "")
+    for n in numbers:
+        v = n.value
+        s = str(int(v)) if float(v).is_integer() else str(v)
+        if s not in plain:
+            return False
+    return True
+
+
+def _turn_text(raw: Dict) -> str:
+    return raw["user_text"] + "\n" + raw["assistant_text"]
+
+
+def _build_fact(ef: ExtractedFact, raw_by_turn: Dict[int, Dict]) -> Fact:
+    raw = raw_by_turn.get(ef.evidence_turn)
+    verified = raw is not None and verify_numbers(ef.numbers, _turn_text(raw))
+    return Fact(
+        claim=ef.claim,
+        entities=ef.entities,
+        numbers=[TypedNumber(name=n.name, value=n.value, unit=n.unit or None)
+                 for n in ef.numbers],
+        evidence=[Evidence(pair_hash=raw["user_hash"])] if raw else [],
+        learned_by=ef.learned_by,
+        status="confirmed" if verified else "provisional",
+    )
+
+
+def apply_extraction(store: MemoryStore, ext: DreamExtraction,
+                     raw_by_turn: Dict[int, Dict]) -> Dict[str, int]:
+    report = {"facts": 0, "blocked": 0, "commits": 0, "actors": 0, "episodes": 0}
+
+    for ef in ext.facts:
+        if ef.action == "NOOP":
+            continue
+        target = store.get_fact(ef.target_fact_id) if ef.target_fact_id else None
+        if ef.action == "DELETE":
+            if target is None:
+                continue
+            if not dreamer_can_modify(target):
+                report["blocked"] += 1
+                continue
+            store.save_fact(target.model_copy(update={"status": "superseded"}))
+            continue
+        new = _build_fact(ef, raw_by_turn)
+        if ef.action == "UPDATE" and target is not None:
+            if dreamer_can_modify(target):
+                old2, new = supersede(target, new)
+                store.save_fact(old2)
+            else:
+                # 유저 편집이 ground truth (스펙 §2.7) — 모순으로 관찰만
+                new = new.model_copy(update={"status": "pending_contradiction"})
+                report["blocked"] += 1
+        store.save_fact(new)
+        report["facts"] += 1
+
+    for ec in ext.commits:
+        raw = raw_by_turn.get(ec.turn)
+        status = "applied"
+        if isinstance(ec.value, (int, float)) and not isinstance(ec.value, bool):
+            text = _turn_text(raw) if raw else ""
+            probe = ExtractedNumber(name=ec.slot, value=float(ec.value))
+            if not verify_numbers([probe], text):
+                status = "pending_contradiction"
+        store.append_commit(StateCommit(
+            slot=ec.slot, op=ec.op, value=ec.value, turn=ec.turn,
+            evidence=Evidence(pair_hash=raw["user_hash"]) if raw else None,
+            status=status,
+        ))
+        report["commits"] += 1
+
+    existing = store.list_actors()
+    for ea in ext.actors:
+        match = next((a for a in existing if set(a.names) & set(ea.names)), None)
+        if match is not None:
+            names = list(match.names) + [n for n in ea.names if n not in match.names]
+            store.save_actor(match.model_copy(update={
+                "names": names,
+                "profile": ea.profile or match.profile,
+                "tier": ea.tier,
+            }))
+        else:
+            store.save_actor(Actor(names=ea.names, profile=ea.profile, tier=ea.tier))
+        report["actors"] += 1
+
+    for ep in ext.episodes:
+        start = raw_by_turn.get(ep.start_turn)
+        end = raw_by_turn.get(ep.end_turn)
+        if start is None or end is None:
+            continue
+        store.save_episode(Episode(
+            range_start=start["user_hash"], range_end=end["user_hash"],
+            title=ep.title, summary=ep.summary, open_threads=ep.open_threads,
+        ))
+        report["episodes"] += 1
+
+    return report
