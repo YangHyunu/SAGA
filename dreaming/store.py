@@ -52,6 +52,13 @@ class MemoryStore:
     def current_state(self) -> Dict[str, Union[float, str]]:
         return replay(self.list_commits())
 
+    def update_commit_status(self, commit_id: str, status: str) -> None:
+        """status는 판정 메타 — append-only 원장에서 유일하게 in-place 갱신 허용."""
+        data = self._storage.get(self._ns("commits"), commit_id)
+        if data is not None:
+            data["status"] = status
+            self._storage.put(self._ns("commits"), commit_id, data)
+
     # -- Actor --------------------------------------------------------
     def save_actor(self, a: Actor) -> None:
         self._storage.put(self._ns("actors"), a.id, a.model_dump(mode="json"))

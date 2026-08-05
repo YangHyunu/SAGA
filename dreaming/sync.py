@@ -43,6 +43,28 @@ def render_knowledge(store: MemoryStore) -> str:
     return "\n\n".join(parts)
 
 
+def demote_after(storage: Storage, session: str, from_turn: int) -> None:
+    """리롤/분기 시점 이후에서 배운 지식을 잠정화한다 (스펙 §3.1).
+
+    Fact → provisional (user_edited 보호), 해당 구간 applied commit →
+    pending_contradiction, 꿈 커서 되감기 → 다음 꿈이 대체 응답을 재추출.
+    """
+    stale_hashes = {row["user_hash"] for _, row in storage.scan(f"{session}/raw")
+                    if row["turn_number"] >= from_turn}
+    store = MemoryStore(storage, session)
+    for f in store.list_facts():
+        if f.user_edited or f.status == "provisional":
+            continue
+        if any(e.pair_hash in stale_hashes for e in f.evidence):
+            store.save_fact(f.model_copy(update={"status": "provisional"}))
+    for c in store.list_commits():
+        if c.turn >= from_turn and c.status == "applied":
+            store.update_commit_status(c.id, "pending_contradiction")
+    cursor = storage.get(f"{session}/dreamer", "cursor")
+    if cursor is not None and cursor["next_turn"] > from_turn:
+        storage.put(f"{session}/dreamer", "cursor", {"next_turn": from_turn})
+
+
 class SyncPath:
     def __init__(self, storage: Storage, session_id: str) -> None:
         self._storage = storage
@@ -54,6 +76,9 @@ class SyncPath:
     def process(self, messages: List[Dict]) -> Tuple[List[Dict], Verdict]:
         pairs, last_user_hash = extract_pairs(messages)
         verdict = self._ledger.analyze_and_apply(pairs, last_user_hash)
+        if (verdict.kind in ("reroll", "diverged")
+                and verdict.reroll_turn_number is not None):
+            demote_after(self._storage, self._session, verdict.reroll_turn_number)
         knowledge = clip_knowledge(render_knowledge(self._store))
         out = inject_knowledge(messages, knowledge)
         out = mark_cache(out)
