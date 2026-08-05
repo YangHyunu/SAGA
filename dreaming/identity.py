@@ -15,6 +15,7 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel
 
+from dreaming.resolver import SessionResolver
 from dreaming.storage import Storage
 from saga.services.pair_ledger import classify, hash_text
 
@@ -43,9 +44,11 @@ def _map_kind(raw: Dict, chain_len: int, request_pairs: List[Dict],
 
 
 class PairLedger:
-    def __init__(self, storage: Storage, session_id: str) -> None:
+    def __init__(self, storage: Storage, session_id: str,
+                 resolver: "SessionResolver | None" = None) -> None:
         self._storage = storage
         self._session = session_id
+        self._resolver = resolver
 
     def _ns(self) -> str:
         return f"{self._session}/ledger"
@@ -113,3 +116,6 @@ class PairLedger:
             "assistant_hash": asst_hash,
             "turn_number": turn_number,
         })
+        # 세션 해석 역색인 갱신 (resolver가 없으면 no-op)
+        if self._resolver is not None:
+            self._resolver.index_pair(self._session, last_user_hash, asst_hash)
