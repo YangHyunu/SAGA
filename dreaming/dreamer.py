@@ -8,16 +8,22 @@ B-4 재압축(청크 조립)은 Plan 4 — 이 모듈의 꿈은 지식 계층만
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
 from dreaming.facts import dreamer_can_modify, supersede
+from dreaming.llm import LLMClient
 from dreaming.records import (Actor, Episode, Evidence, Fact, StateCommit,
                               TypedNumber)
+from dreaming.storage import Storage
 from dreaming.store import MemoryStore
+
+logger = logging.getLogger(__name__)
 
 _MAX_PROMPT_FACTS = 50
 
@@ -236,3 +242,54 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
         report["episodes"] += 1
 
     return report
+
+
+# ------------------------------------------------------------------ #
+# 사이클 오케스트레이터 (B-0 스냅샷 → 1콜 → B-3 적용 → 커서 전진)
+# ------------------------------------------------------------------ #
+
+class Dreamer:
+    def __init__(self, storage: Storage, llm: LLMClient) -> None:
+        self._storage = storage
+        self._llm = llm
+        self._locks: Dict[str, asyncio.Lock] = {}
+
+    def _cursor(self, session: str) -> int:
+        doc = self._storage.get(f"{session}/dreamer", "cursor")
+        return doc["next_turn"] if doc else 0
+
+    def snapshot(self, session: str) -> List[Dict]:
+        cur = self._cursor(session)
+        rows = [row for _, row in self._storage.scan(f"{session}/raw")
+                if row["turn_number"] >= cur]
+        return sorted(rows, key=lambda r: r["turn_number"])
+
+    def has_backlog(self, session: str) -> bool:
+        return bool(self.snapshot(session))
+
+    async def dream(self, session: str) -> Optional[Dict]:
+        lock = self._locks.setdefault(session, asyncio.Lock())
+        if lock.locked():
+            return None
+        async with lock:
+            try:
+                return await self._cycle(session)
+            except Exception:
+                # 사이클 폐기, 커서 불변 → 다음 유휴에 재시도 (스펙 §2.6, §3.2)
+                logger.exception("[dreamer] cycle discarded: %s", session)
+                return None
+
+    async def _cycle(self, session: str) -> Optional[Dict]:
+        raw_turns = self.snapshot(session)                       # B-0
+        if not raw_turns:
+            return None
+        store = MemoryStore(self._storage, session)
+        system, user = build_dream_prompt(
+            raw_turns, store.list_facts(), store.current_state(),
+            store.list_actors())
+        ext = parse_extraction(await self._llm.complete(system, user))  # B-1+B-2
+        raw_by_turn = {r["turn_number"]: r for r in raw_turns}
+        report = apply_extraction(store, ext, raw_by_turn)       # B-3
+        self._storage.put(f"{session}/dreamer", "cursor",
+                          {"next_turn": raw_turns[-1]["turn_number"] + 1})
+        return report
