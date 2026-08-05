@@ -109,8 +109,9 @@ _SYSTEM = """너는 RP 세션 로그에서 구조화 지식을 추출하는 분�
 규칙:
 - fact 1개 = 원자 명제 1개. 복합 문장 금지.
 - numbers는 원문에 명시된 숫자만. 추측·계산 금지.
-- 기존 사실을 갱신하면 action=UPDATE + target_fact_id(기존 지식의 id).
-  기존 사실이 무효가 됐으면 DELETE. 변화 없으면 NOOP. 새 사실은 ADD.
+- 기존 사실을 갱신하면 action=UPDATE + target_fact_id(기존 지식의 [대괄호 안 id]를
+  그대로 복사, 32자 16진수). 기존 사실이 무효가 됐으면 DELETE. 변화 없으면 NOOP.
+  새 사실은 ADD이며 target_fact_id는 null. id를 지어내지 마라.
 - commits는 수치·상태 변화만 (소지금, 위치, 시각 등). 서술은 fact로.
 - episodes는 장면 경계로 나눈다. open_threads엔 미회수 복선만.
 - learned_by는 그 사실을 알게 된 인물 이름 목록."""
@@ -159,6 +160,17 @@ def _turn_text(raw: Dict) -> str:
     return raw["user_text"] + "\n" + raw["assistant_text"]
 
 
+_FACT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _lookup_target(store: MemoryStore, fact_id: Optional[str]) -> Optional[Fact]:
+    """LLM이 준 target id 안전 조회. 실카드 실측: id 자리에 문장이 온다 —
+    형식이 아니면 없는 것으로 취급 (사이클을 죽이지 않는다, 스펙 §2.6)."""
+    if not fact_id or not _FACT_ID_RE.match(fact_id):
+        return None
+    return store.get_fact(fact_id)
+
+
 def _build_fact(ef: ExtractedFact, raw_by_turn: Dict[int, Dict]) -> Fact:
     raw = raw_by_turn.get(ef.evidence_turn)
     verified = raw is not None and verify_numbers(ef.numbers, _turn_text(raw))
@@ -180,7 +192,7 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
     for ef in ext.facts:
         if ef.action == "NOOP":
             continue
-        target = store.get_fact(ef.target_fact_id) if ef.target_fact_id else None
+        target = _lookup_target(store, ef.target_fact_id)
         if ef.action == "DELETE":
             if target is None:
                 continue
