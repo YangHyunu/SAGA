@@ -57,3 +57,53 @@ def test_fact_default_lists_are_not_shared():
     a, b = Fact(claim="a"), Fact(claim="b")
     a.entities.append("리사")
     assert b.entities == []
+
+
+# ------------------------------------------------------------------ #
+# Episode (스펙 §4.2)
+# ------------------------------------------------------------------ #
+
+def test_episode_roundtrip():
+    from dreaming.records import Episode
+
+    e = Episode(
+        range_start="hash_a",
+        range_end="hash_z",
+        title="시장에서의 흥정",
+        summary="리사와 가격을 흥정해 50골드에 합의했다.",
+        causes=[],
+        open_threads=["리사가 언급한 '밀수품'의 정체"],   # 미회수 복선 (CFPG)
+    )
+    assert e.embedding is None
+    restored = type(e).model_validate(e.model_dump(mode="json"))
+    assert restored == e
+
+
+# ------------------------------------------------------------------ #
+# Actor (스펙 §4.4)
+# ------------------------------------------------------------------ #
+
+def test_actor_defaults_and_roundtrip():
+    from dreaming.records import Actor
+
+    a = Actor(names=["리사", "Lisa"], profile="시장 상인")
+    assert a.tier == "support"
+    assert a.knows == []
+    restored = type(a).model_validate(a.model_dump(mode="json"))
+    assert restored == a
+
+
+def test_actor_requires_at_least_one_name():
+    from dreaming.records import Actor
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Actor(names=[])
+
+
+def test_actor_rejects_unknown_tier():
+    from dreaming.records import Actor
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Actor(names=["리사"], tier="villain")

@@ -55,3 +55,31 @@ class Fact(BaseModel):
     supersedes: Optional[str] = None
     user_edited: bool = False
     pinned: bool = False
+
+
+class Episode(BaseModel):
+    """서사 단위 — 꿈(B-1)이 경계를 판정한다 (스펙 §4.2). 청크 조립의 재료."""
+
+    id: str = Field(default_factory=_new_id)
+    range_start: str  # 시작 pair_hash
+    range_end: str    # 끝 pair_hash
+    title: str
+    summary: str
+    causes: List[str] = []        # 선행 에피소드 id
+    open_threads: List[str] = []  # 미회수 복선 (스펙 §4.2, CFPG)
+    embedding: Optional[List[float]] = None
+    recorded_at: str = Field(default_factory=utc_now_iso)
+
+
+ActorTier = Literal["main", "support", "extra"]
+
+
+class Actor(BaseModel):
+    """등장인물 — knows[]로 POV 격리 (스펙 §4.4). extra는 주입 제외."""
+
+    id: str = Field(default_factory=_new_id)
+    names: List[str] = Field(min_length=1)  # 한/영 별칭 통합
+    profile: str = ""
+    knows: List[str] = []                   # visibility-gated Fact id
+    tier: ActorTier = "support"
+    last_seen: Optional[str] = None
