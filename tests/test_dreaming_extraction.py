@@ -137,6 +137,21 @@ def test_actor_upsert_merges_aliases(tmp_path):
     assert actors[0].tier == "main"
 
 
+def test_garbage_target_fact_id_degrades_to_add(tmp_path):
+    # 실카드 실측: Flash가 target_fact_id에 id 대신 문장을 넣음 —
+    # 사이클을 죽이지 말고 ADD로 강등해야 한다 (fail-open)
+    store = _store(tmp_path)
+    ext = DreamExtraction.model_validate({"facts": [
+        {"claim": "개선문은 석조 건축물이다", "evidence_turn": 0,
+         "action": "UPDATE",
+         "target_fact_id": "개선문은 하늘을 가로지르는 거대한 석조 건축물이다."},
+        {"claim": "지울 수 없는 대상", "evidence_turn": 0,
+         "action": "DELETE", "target_fact_id": "존재하지/않는 아이디"}]})
+    report = apply_extraction(store, ext, _RAW_BY_TURN)   # 예외 없이 통과
+    assert report["facts"] == 1
+    assert store.list_facts()[0].claim == "개선문은 석조 건축물이다"
+
+
 def test_episode_range_from_raw_hashes(tmp_path):
     store = _store(tmp_path)
     ext = DreamExtraction.model_validate({"episodes": [

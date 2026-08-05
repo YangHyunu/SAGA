@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 
 _SESSION_SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
+# 리포 루트 (dreaming/의 부모) — .env·데이터 기본 경로의 앵커.
+# cwd 기준이면 실행 위치마다 달라져서 못 쓴다.
+_ROOT = Path(__file__).resolve().parent.parent
+
 
 class Settings(BaseModel):
     data_dir: str
@@ -46,13 +50,13 @@ class Settings(BaseModel):
     dream_model: str = ""                # 비면 Dreamer 비활성
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls, root: Optional[Path] = None) -> "Settings":
+        root = root or _ROOT
         if load_dotenv is not None:
-            # 기본 load_dotenv()는 호출 파일 기준 탐색이라 cwd를 명시한다.
-            load_dotenv(Path.cwd() / ".env")   # 기존 환경변수는 안 덮음
-
+            load_dotenv(root / ".env")   # 기존 환경변수는 안 덮음
         return cls(
-            data_dir=os.environ.get("DREAMING_DATA_DIR", "./dreaming_data"),
+            data_dir=os.environ.get("DREAMING_DATA_DIR",
+                                    str(root / "dreaming_data")),
             upstream_base_url=os.environ.get(
                 "DREAMING_UPSTREAM_BASE", "https://openrouter.ai/api/v1"),
             upstream_api_key=os.environ.get("DREAMING_UPSTREAM_KEY", ""),

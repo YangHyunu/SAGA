@@ -81,3 +81,6 @@ plugins/
 .DS_Store
 
 brook-review/
+
+# Dreaming runtime data
+dreaming_data/
