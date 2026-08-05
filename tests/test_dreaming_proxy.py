@@ -150,3 +150,16 @@ def test_catchup_dream_runs_in_background(tmp_path):
 def test_health(tmp_path):
     app = create_app(_settings(tmp_path), upstream=FakeUpstream())
     assert TestClient(app).get("/health").json() == {"ok": True}
+
+
+def test_from_env_loads_dotenv(tmp_path, monkeypatch):
+    import os
+    (tmp_path / ".env").write_text(
+        "DREAMING_UPSTREAM_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DREAMING_UPSTREAM_KEY", raising=False)
+    try:
+        s = Settings.from_env()
+        assert s.upstream_api_key == "from-dotenv"
+    finally:
+        os.environ.pop("DREAMING_UPSTREAM_KEY", None)   # load_dotenv 잔류 제거
