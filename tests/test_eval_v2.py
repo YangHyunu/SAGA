@@ -215,3 +215,66 @@ def test_agreement_counts_and_lists_disagreements():
     assert r["n"] == 3 and r["agree"] == 1
     assert r["disagrees"] == [1, 2]
     assert abs(r["rate"] - 1 / 3) < 1e-9
+
+
+# ---- preset2wire (뮈토스 6.2 조립) ----
+
+def test_resolve_when_tis_tisnot_else_and_nesting():
+    from benchmarks.eval.preset2wire import resolve_when
+    t = "A{{#when::mode::tis::0}}RP{{:else}}소설{{/when}}B"
+    assert resolve_when(t, {"mode": "0"}) == "ARPB"
+    assert resolve_when(t, {"mode": "2"}) == "A소설B"
+    nested = ("{{#when::a::tis::1}}X{{#when::b::tisnot::0}}Y{{/when}}Z{{/when}}")
+    assert resolve_when(nested, {"a": "1", "b": "1"}) == "XYZ"
+    assert resolve_when(nested, {"a": "1", "b": "0"}) == "XZ"
+    assert resolve_when(nested, {"a": "0", "b": "1"}) == ""
+
+
+def _mini_preset():
+    return {"promptTemplate": [
+        {"type": "plain", "role": "system", "text": "규칙."},
+        {"type": "plain", "role": "system",
+         "text": "{{#when::nsfw::tis::1}}성인 지침{{/when}}"},
+        {"type": "description", "role": "system",
+         "innerFormat": "### 캐릭터\n{{slot}}"},
+        {"type": "chat", "role": "system", "rangeStart": 0, "rangeEnd": -2},
+        {"type": "memory", "role": "system", "innerFormat": "### 기억\n{{slot}}"},
+        {"type": "chat", "role": "system", "rangeStart": -2, "rangeEnd": "end"},
+        {"type": "plain", "role": "user", "text": "프리필 선언"},
+        {"type": "plain", "role": "bot", "text": "프리필 승인"},
+        {"type": "plain", "role": "user", "text": "렌더링 기준 {{char}}"},
+    ]}
+
+
+def _hist(n=3):
+    out = []
+    for i in range(n):
+        out.append({"role": "user", "content": f"u{i}"})
+        out.append({"role": "assistant", "content": f"a{i}"})
+    return out[:-1] + [{"role": "user", "content": f"u{n-1}"}] if False else out
+
+
+def test_assemble_merges_systems_and_splices_history():
+    from benchmarks.eval.preset2wire import assemble
+    hist = _hist(3)
+    hist[-1] = {"role": "user", "content": "u-last"}      # 마지막은 user
+    msgs = assemble(_mini_preset(), {"nsfw": "1"}, hist,
+                    card={"description": "소연"}, char_name="소연")
+    assert msgs[0]["role"] == "system"
+    assert "규칙." in msgs[0]["content"] and "성인 지침" in msgs[0]["content"]
+    assert "### 캐릭터\n소연" in msgs[0]["content"]      # 선두 병합
+    # 히스토리 splice: 앞 4개 + 뒤 2개 사이에 memory 없음(빈 슬롯 드랍)
+    roles = [m["role"] for m in msgs]
+    assert roles.count("system") == 1                     # memory 드랍 + 병합
+    assert msgs[-1]["content"] == "렌더링 기준 소연"     # bot→assistant 프리필 체인
+    assert msgs[-2]["role"] == "assistant"
+
+
+def test_assemble_nsfw_off_drops_section_and_memory_injects_mid():
+    from benchmarks.eval.preset2wire import assemble
+    hist = _hist(3)
+    hist[-1] = {"role": "user", "content": "u-last"}
+    msgs = assemble(_mini_preset(), {"nsfw": "0"}, hist, memory="과거 요약")
+    assert "성인 지침" not in msgs[0]["content"]
+    mems = [m for m in msgs if "### 기억" in m["content"]]
+    assert len(mems) == 1 and mems[0]["role"] == "system"
