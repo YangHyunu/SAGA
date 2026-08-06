@@ -48,10 +48,25 @@ def retrieve_turns(history: List[Dict], query: str, k: int = 3) -> List[str]:
     return [t for s, _, t in scored[:k] if s > 0]
 
 
+def _merge_leading_systems(msgs: List[Dict]) -> List[Dict]:
+    """선두 system 연쇄를 하나로 병합 — 실제 RisuAI 와이어 형태 (corpus 실측).
+
+    분리 전송하면 lore_shift(첫 system만 처리)가 keyed를 못 걷어내
+    프리픽스가 keyed churn마다 깨진다.
+    """
+    i = 0
+    while i < len(msgs) and msgs[i]["role"] == "system":
+        i += 1
+    if i <= 1:
+        return msgs
+    merged = "\n\n".join(m["content"] for m in msgs[:i])
+    return [{"role": "system", "content": merged}] + msgs[i:]
+
+
 def prepare_request(variant: str, card: Card, history: List[Dict]) -> List[Dict]:
     window = history if variant == "vanilla" else trim_window(history)
     actives = activate(card, window)
-    msgs = build_messages(card, actives, window)
+    msgs = _merge_leading_systems(build_messages(card, actives, window))
     if variant == "retrieval":
         query = history[-1]["content"]
         excerpts = retrieve_turns(history, query)

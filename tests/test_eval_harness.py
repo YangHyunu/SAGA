@@ -110,6 +110,21 @@ def test_prepare_request_variants_differ():
     assert prepare_request("dreaming", card, h) == trimmed  # 전송분 동일, 차이는 프록시
 
 
+def test_prepare_request_merges_leading_systems():
+    # 실제 RisuAI 와이어는 선두 system 하나에 설명+로어를 병합한다 (corpus 실측).
+    # 분리 전송하면 lore_shift(첫 system만 처리)가 keyed를 못 걷어낸다.
+    from benchmarks.cardsim.lorebook import Card, LoreEntry
+    card = Card(name="리사", description="너는 리사다.", post_history="",
+                greeting="어서 와요.",
+                lore=[LoreEntry(name="l1", keys=[], content="상시 설정.",
+                                order=0, constant=True, tokens=3)])
+    out = prepare_request("trim", card, _hist(2))
+    assert out[0]["role"] == "system"
+    assert out[1]["role"] != "system"                  # 선두 system은 정확히 1개
+    assert "너는 리사다." in out[0]["content"]
+    assert "상시 설정." in out[0]["content"]
+
+
 # ------------------------------------------------------------------ #
 # 드라이버 — 결과 조립 (네트워크 없는 순수 함수만)
 # ------------------------------------------------------------------ #
