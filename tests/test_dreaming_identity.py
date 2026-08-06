@@ -117,3 +117,65 @@ def test_fail_open_on_garbage_input(tmp_path):
     v = ledger.analyze_and_apply([], None)
     assert isinstance(v, Verdict)
     assert v.kind == "new_session"
+
+
+# ------------------------------------------------------------------ #
+# 트림 정상상태 (corpus3·4 재생으로 실증된 붕괴의 재발 방지)
+# ------------------------------------------------------------------ #
+
+def _window(start, count, current):
+    """트림된 윈도우 시뮬레이션: u{start}..u{start+count-1} pair + 현재 user."""
+    pairs = [{"index": i, "user_hash": f"u{start + i}",
+              "assistant_hash": f"a{start + i}"} for i in range(count)]
+    return pairs, f"u{current}"
+
+
+def test_trimmed_session_baseline_is_padded(tmp_path):
+    # corpus3 실증: 트림된 대화 중간 합류 — 이후 윈도우가 앞으로 자라도
+    # (maxContext 상향) 음수 오프셋이 안 나게 베이스라인을 띄운다
+    from dreaming.identity import _BASELINE_PAD
+    ledger = _ledger(tmp_path)
+    pairs, cur = _window(7, 18, 25)
+    v = ledger.analyze_and_apply(pairs, cur)
+    assert v.position == _BASELINE_PAD + 18
+
+
+def test_trim_steady_state_alignment(tmp_path):
+    # corpus3 실증 붕괴: 턴 18 기록 후 다음 턴이 턴 1로 기록되던 버그
+    from dreaming.identity import _BASELINE_PAD
+    ledger = _ledger(tmp_path)
+    pairs, cur = _window(7, 18, 25)
+    v1 = ledger.analyze_and_apply(pairs, cur)
+    ledger.record_turn(v1, cur, "턴25 유저", "턴25 응답",
+                       turn_number=v1.position)
+
+    pairs2 = [{"index": i, "user_hash": f"u{8 + i}",
+               "assistant_hash": f"a{8 + i}"} for i in range(17)]
+    pairs2.append({"index": 17, "user_hash": "u25",
+                   "assistant_hash": hash_text("턴25 응답")})
+    v2 = ledger.analyze_and_apply(pairs2, "u26")
+    assert v2.aligned
+    assert v2.position == _BASELINE_PAD + 19      # ← 버그 시절엔 1
+    assert v2.offset == _BASELINE_PAD + 1         # 윈도우 첫 pair(u8)의 턴
+
+
+def test_trimmed_reroll_rewinds_correct_turn(tmp_path):
+    # 리롤 = 같은 윈도우 재전송 (마지막 assistant pop) — 트림 상태에서도
+    # 방금 기록한 턴을 정확히 되감아야 한다 (corpus4의 "*says nothing*"
+    # 3중 기록 재발 방지)
+    from dreaming.identity import _BASELINE_PAD
+    ledger = _ledger(tmp_path)
+    pairs, cur = _window(7, 18, 25)
+    v1 = ledger.analyze_and_apply(pairs, cur)
+    ledger.record_turn(v1, cur, "턴25 유저", "턴25 응답",
+                       turn_number=v1.position)
+    v2 = ledger.analyze_and_apply(pairs, cur)      # 동일 재전송
+    assert v2.kind == "reroll"
+    assert v2.reroll_turn_number == _BASELINE_PAD + 18
+
+
+def test_fresh_session_positions_unchanged(tmp_path):
+    # 신규 세션(pair 없는 첫 메시지)은 패드 없음 — 기존 번호 체계 그대로
+    ledger = _ledger(tmp_path)
+    v = ledger.analyze_and_apply([], "u0")
+    assert v.position == 0

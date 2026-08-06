@@ -21,6 +21,11 @@ from saga.services.pair_ledger import classify, hash_text
 
 ACTIVE_STATUSES = ("provisional", "confirmed")
 
+# 트림된 대화 중간에 합류하면 윈도우 앞이 몇 턴인지 알 수 없다.
+# 베이스라인을 띄워 두면 나중에 윈도우가 앞으로 자라도(maxContext 상향,
+# corpus3 실측) 음수 오프셋 없이 앞 턴 번호를 배정할 수 있다.
+_BASELINE_PAD = 1024
+
 VerdictKind = Literal["new_session", "next_turn", "continuation", "reroll", "diverged"]
 
 
@@ -29,6 +34,8 @@ class Verdict(BaseModel):
     position: int
     reroll_turn_number: Optional[int] = None
     aligned: bool = False
+    offset: Optional[int] = None      # 윈도우 첫 pair의 세션 턴 번호
+    quarantine: bool = False          # 판정 불확실 — 격리 버퍼로 (스펙 §3.1)
 
 
 def _map_kind(raw: Dict, chain_len: int, request_pairs: List[Dict],
@@ -63,20 +70,41 @@ class PairLedger:
             rows = [r for r in rows if r["status"] in ACTIVE_STATUSES]
         return rows
 
+    def _dense_chain(self) -> List[Dict]:
+        """저장 index를 리스트 위치로 복원한 밀집 뷰 — classify의 전제.
+
+        트림 정상상태에서 원장은 index 1042 하나로 시작할 수 있다. active
+        리스트를 그대로 넘기면 위치 0 == index 1042가 되어 _align_offset이
+        음수 오프셋으로 실패한다 (corpus3 재생으로 실증). 갭은 어떤
+        user_hash와도 매칭되지 않는 자리표시자로 채운다.
+        """
+        rows = {r["index"]: r for r in self.chain()}
+        if not rows:
+            return []
+        gap = {"user_hash": None, "assistant_hash": None,
+               "status": "gap", "turn_number": None}
+        return [rows.get(i, {**gap, "index": i})
+                for i in range(max(rows) + 1)]
+
     def analyze_and_apply(self, pairs: List[Dict],
                           last_user_hash: Optional[str]) -> Verdict:
-        chain = self.chain()
-        raw = classify(chain, pairs, last_user_hash)
-        kind = _map_kind(raw, len(chain), pairs, last_user_hash)
+        dense = self._dense_chain()
+        raw = classify(dense, pairs, last_user_hash)
+        kind = _map_kind(raw, len(dense), pairs, last_user_hash)
+        if not dense and pairs:
+            # 트림된 대화 중간 합류 — 베이스라인 패드 (모듈 주석 참조)
+            raw["position"] += _BASELINE_PAD
+            if raw["offset"] is not None:
+                raw["offset"] += _BASELINE_PAD
 
-        # index → 저장 키 매핑: chain은 active만이라 위치가 곧 index가 아님.
-        # classify가 주는 인덱스는 chain 리스트 기준 → 실제 row의 index 필드 사용.
         for ci in raw["superseded_indices"]:
-            self._transition(chain[ci], "superseded")
+            if dense[ci]["status"] != "gap":
+                self._transition(dense[ci], "superseded")
         for ci in raw["quarantined_indices"]:
-            self._transition(chain[ci], "quarantined")
+            if dense[ci]["status"] != "gap":
+                self._transition(dense[ci], "quarantined")
         for ci, client_asst_hash in raw["confirm"]:
-            row = dict(chain[ci])
+            row = dict(dense[ci])
             row["status"] = "confirmed"
             if client_asst_hash:
                 # display script가 본문을 바꿨을 수 있음 — 클라이언트 버전이 정본
@@ -88,6 +116,10 @@ class PairLedger:
             position=raw["position"],
             reroll_turn_number=raw["reroll_turn_number"],
             aligned=raw["aligned"],
+            offset=raw["offset"],
+            # 리롤은 정렬이 깨져도 trailing user가 출처를 확정한 것 — 격리 제외
+            quarantine=(bool(dense) and bool(pairs)
+                        and not raw["aligned"] and raw["kind"] != "reroll"),
         )
 
     def _transition(self, row: Dict, status: str) -> None:
