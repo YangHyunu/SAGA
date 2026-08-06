@@ -87,3 +87,48 @@ def test_process_never_raises_on_weird_input(tmp_path):
     sp = SyncPath(JsonDirStorage(tmp_path), "sess1")
     out, verdict = sp.process([{"role": "system", "content": "x"}])
     assert out[-1]["content"] == "x"
+
+
+# ------------------------------------------------------------------ #
+# 격리 버퍼 (스펙 §3.1: 판정 불확실 → fail-open, 기록은 격리 버퍼에)
+# ------------------------------------------------------------------ #
+
+def test_stranger_history_is_quarantined(tmp_path):
+    # 원장 있는 세션에 전혀 무관한 히스토리 — 본원장 오염 금지 (스펙 §3.1)
+    import json
+    from dreaming.storage import JsonDirStorage
+    from dreaming.sync import SyncPath
+    storage = JsonDirStorage(tmp_path)
+    sp = SyncPath(storage, "s")
+    m1 = [{"role": "system", "content": "너는 리사다."},
+          {"role": "user", "content": "안녕"}]
+    _, v1 = sp.process(m1)
+    sp.record_response(v1, m1, "어서 와.")
+    assert storage.get("s/raw", "000000") is not None
+
+    stranger = [{"role": "system", "content": "너는 리사다."},
+                {"role": "user", "content": "전혀 다른 이야기"},
+                {"role": "assistant", "content": "낯선 응답"},
+                {"role": "user", "content": "다음 질문"}]
+    out, v = sp.process(stranger)
+    assert v.quarantine
+    assert out == stranger                       # 무가공 passthrough
+    assert "cache_control" not in json.dumps(out, ensure_ascii=False)
+    sp.record_response(v, stranger, "응답")
+    assert storage.get("s/quarantine", "000000") is not None
+    raws = [k for k, _ in storage.scan("s/raw")]
+    assert raws == ["000000"]                    # 본원장 무오염
+
+
+def test_trimmed_reroll_is_not_quarantined(tmp_path):
+    # 트림 직후 리롤: 정렬은 실패해도 trailing user가 출처를 확정 → 격리 금지
+    from dreaming.identity import PairLedger
+    from dreaming.storage import JsonDirStorage
+    ledger = PairLedger(JsonDirStorage(tmp_path), "s")
+    pairs = [{"index": i, "user_hash": f"u{7 + i}",
+              "assistant_hash": f"a{7 + i}"} for i in range(18)]
+    v1 = ledger.analyze_and_apply(pairs, "u25")
+    ledger.record_turn(v1, "u25", "유저", "응답", turn_number=v1.position)
+    v2 = ledger.analyze_and_apply(pairs, "u25")  # 동일 재전송 = 리롤
+    assert v2.kind == "reroll"
+    assert not v2.quarantine

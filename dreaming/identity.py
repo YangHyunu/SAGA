@@ -35,6 +35,7 @@ class Verdict(BaseModel):
     reroll_turn_number: Optional[int] = None
     aligned: bool = False
     offset: Optional[int] = None      # 윈도우 첫 pair의 세션 턴 번호
+    quarantine: bool = False          # 판정 불확실 — 격리 버퍼로 (스펙 §3.1)
 
 
 def _map_kind(raw: Dict, chain_len: int, request_pairs: List[Dict],
@@ -116,6 +117,9 @@ class PairLedger:
             reroll_turn_number=raw["reroll_turn_number"],
             aligned=raw["aligned"],
             offset=raw["offset"],
+            # 리롤은 정렬이 깨져도 trailing user가 출처를 확정한 것 — 격리 제외
+            quarantine=(bool(dense) and bool(pairs)
+                        and not raw["aligned"] and raw["kind"] != "reroll"),
         )
 
     def _transition(self, row: Dict, status: str) -> None:

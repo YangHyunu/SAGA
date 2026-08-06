@@ -91,6 +91,10 @@ class SyncPath:
         if (verdict.kind in ("reroll", "diverged")
                 and verdict.reroll_turn_number is not None):
             demote_after(self._storage, self._session, verdict.reroll_turn_number)
+        if verdict.quarantine:
+            # 판정 불확실 — 주입·압축·마킹 없이 무가공 passthrough,
+            # 기록은 격리 버퍼로 (스펙 §3.1)
+            return messages, verdict
         out, _ = shift_keyed(messages, self._keyed_lore)   # 1안 (스펙 §5)
         knowledge = clip_knowledge(render_knowledge(self._store))
         bp2 = None
@@ -109,6 +113,15 @@ class SyncPath:
             if m.get("role") == "user":
                 user_text = m.get("content", "")
                 break
+        if verdict.quarantine:
+            if last_user_hash:
+                ns = f"{self._session}/quarantine"
+                n = len(list(self._storage.scan(ns)))
+                self._storage.put(ns, f"{n:06d}", {
+                    "user_text": user_text, "assistant_text": assistant_text,
+                    "user_hash": last_user_hash, "kind": verdict.kind,
+                })
+            return
         self._ledger.record_turn(
             verdict, last_user_hash, user_text, assistant_text,
             turn_number=verdict.position,
