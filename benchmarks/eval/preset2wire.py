@@ -18,6 +18,11 @@ from typing import Dict, List, Optional
 
 RPACK_MAP = ("external/risuai/src/ts/rpack/rpack_map.bin")
 
+# 미설정 전역변수의 값. getGlobalChatVar는 `?? 'null'`이고(chatVar.svelte.ts:36)
+# tis/tisnot·toggle도 전부 이 전역을 읽는다(parser.svelte.ts:1256,1286,1296) —
+# templateDefaultVariables 폴백은 getChatVar 전용이라 여기엔 적용되지 않는다.
+UNSET = "null"
+
 _WHEN = re.compile(r"\{\{#when::([^{}]*)\}\}", re.S)
 _SCALAR = re.compile(
     r"\{\{(getglobalvar|equal|notequal|and|or|any|not|greater|less|length)"
@@ -38,7 +43,7 @@ def _reduce_scalars(text: str, toggles: Dict[str, str]) -> str:
         if fn == "getglobalvar":
             name = args[0]
             name = name[len("toggle_"):] if name.startswith("toggle_") else name
-            val = str(toggles.get(name, "0"))
+            val = str(toggles.get(name, UNSET))
         elif fn == "equal":
             val = "1" if len(args) == 2 and args[0] == args[1] else "0"
         elif fn == "notequal":
@@ -69,9 +74,9 @@ def _cond(cond: str, toggles: Dict[str, str]) -> bool:
     if len(args) == 1:
         hit = _truthy(args[0])
     elif len(args) == 2 and args[0] == "toggle":
-        hit = _truthy(str(toggles.get(args[1], "0")))
+        hit = _truthy(str(toggles.get(args[1], UNSET)))
     elif len(args) == 3 and args[1] in ("tis", "tisnot"):
-        hit = str(toggles.get(args[0], "0")) == args[2]
+        hit = str(toggles.get(args[0], UNSET)) == args[2]
         if args[1] == "tisnot":
             hit = not hit
     else:

@@ -52,7 +52,12 @@ UPDATE_EVENTS = (12, 28)      # 지식갱신 강제 턴 (진행 구간)
 MAX_TOKENS = 1000             # 실사용 응답 길이 근사 (EVAL2 충실도 보강)
 
 # 확정 토글: RP 모드·한국어·성인 지침 ON·중립 렌더링 프리필 ON, 나머지 기본
+# select은 옵션 인덱스 문자열: response_language 1=🇰🇷 한국어, execution_mode 0=💬 RP.
+# 나머지는 불리언. 미설정 전역변수는 "null"이라(preset2wire.UNSET) 실행 모드는
+# 반드시 명시해야 tis:: 분기가 걸린다.
 TOGGLES = {"mythos_response_language": "1",
+           "mythos_execution_mode": "0",
+           "mythos_genre_ero": "1",
            "mythos_mature_content_guidance": "1",
            "mythos_domain_neutral_rendering_prefill": "1"}
 
