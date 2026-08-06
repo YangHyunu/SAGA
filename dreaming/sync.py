@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from dreaming.assembly import clip_knowledge, inject_knowledge
+from dreaming.chunks import apply_compression
 from dreaming.identity import PairLedger, Verdict
 from dreaming.lore_shift import shift_keyed
 from dreaming.marking import mark_cache
@@ -61,6 +62,14 @@ def demote_after(storage: Storage, session: str, from_turn: int) -> None:
     for c in store.list_commits():
         if c.turn >= from_turn and c.status == "applied":
             store.update_commit_status(c.id, "pending_contradiction")
+    # 분기점이 압축 구간 안이면 플랜 폐기 + 걸친 에피소드 삭제 —
+    # 다음 꿈이 재조립한다 (TTL 창구라 캐시 비용 0, 스펙 §6.3)
+    plan = storage.get(f"{session}/compression", "plan")
+    if plan is not None and plan["covers_until_turn"] > from_turn:
+        storage.delete(f"{session}/compression", "plan")
+    for e in store.list_episodes():
+        if e.end_turn is not None and e.end_turn >= from_turn:
+            storage.delete(f"{session}/episodes", e.id)
     cursor = storage.get(f"{session}/dreamer", "cursor")
     if cursor is not None and cursor["next_turn"] > from_turn:
         storage.put(f"{session}/dreamer", "cursor", {"next_turn": from_turn})
@@ -84,8 +93,12 @@ class SyncPath:
             demote_after(self._storage, self._session, verdict.reroll_turn_number)
         out, _ = shift_keyed(messages, self._keyed_lore)   # 1안 (스펙 §5)
         knowledge = clip_knowledge(render_knowledge(self._store))
+        bp2 = None
+        plan = self._storage.get(f"{self._session}/compression", "plan")
+        if plan is not None:
+            out, bp2 = apply_compression(out, plan)
         out = inject_knowledge(out, knowledge)
-        out = mark_cache(out)
+        out = mark_cache(out, bp2_index=bp2)
         return out, verdict
 
     def record_response(self, verdict: Verdict, messages: List[Dict],

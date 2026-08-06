@@ -10,10 +10,11 @@ RisuAI는 cachePoint를 전송 직전 제거하므로(requests.ts:141) 마킹 �
 from __future__ import annotations
 
 import copy
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
-def mark_cache(messages: List[Dict], ttl: str = "5m") -> List[Dict]:
+def mark_cache(messages: List[Dict], ttl: str = "5m",
+               bp2_index: Optional[int] = None) -> List[Dict]:
     out = [copy.deepcopy(m) for m in messages]
     for m in out:
         m.pop("cache_control", None)
@@ -25,11 +26,10 @@ def mark_cache(messages: List[Dict], ttl: str = "5m") -> List[Dict]:
     # 매 턴 전체 프롬프트가 재작성된다. 업스트림 변환도 선두 밖 system은
     # user로 강등하므로(anthropic.ts:233) 어차피 system 블록이 아니다.
     last_system = None
-    for i, m in enumerate(out):
-        if m.get("role") != "system":
+    for i, m in enumerate(out):          # BP1 후보는 선두 연속 system만 —
+        if m.get("role") != "system":    # 꼬리 PHI(globalNote)는 캐시 밖
             break
         last_system = i
-
     last_assistant = None
     for i, m in enumerate(out):
         if m.get("role") == "assistant":
@@ -37,7 +37,9 @@ def mark_cache(messages: List[Dict], ttl: str = "5m") -> List[Dict]:
 
     mark = {"type": "ephemeral", "ttl": ttl}
     if last_system is not None:
-        out[last_system]["cache_control"] = dict(mark)   # BP1
+        out[last_system]["cache_control"] = dict(mark)     # BP1
     if last_assistant is not None:
         out[last_assistant]["cache_control"] = dict(mark)  # BP3
+    if bp2_index is not None and 0 <= bp2_index < len(out):
+        out[bp2_index]["cache_control"] = dict(mark)       # BP2 = 첫 청크
     return out

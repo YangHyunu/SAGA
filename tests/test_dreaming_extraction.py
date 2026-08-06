@@ -64,6 +64,18 @@ def test_verify_numbers_literal_match_with_comma():
     assert not verify_numbers([ExtractedNumber(name="가격", value=999)], text)
 
 
+def test_verify_numbers_korean_numerals():
+    # 실카드 실측: 원문이 한글 수사면 아라비아 검증이 실패해 과잉 격리됐다
+    assert verify_numbers([ExtractedNumber(name="개수", value=3)],
+                          "육포 세 개를 건넸다")
+    assert verify_numbers([ExtractedNumber(name="나이", value=27)],
+                          "저는 스물일곱입니다")
+    assert verify_numbers([ExtractedNumber(name="소지금", value=300)],
+                          "삼백 푼이 전부요")
+    assert not verify_numbers([ExtractedNumber(name="가격", value=40)],
+                              "쉰 골드다")
+
+
 def test_add_verified_fact_becomes_confirmed(tmp_path):
     store = _store(tmp_path)
     ext = DreamExtraction.model_validate({"facts": [
@@ -152,6 +164,78 @@ def test_garbage_target_fact_id_degrades_to_add(tmp_path):
     assert store.list_facts()[0].claim == "개선문은 석조 건축물이다"
 
 
+def test_duplicate_add_is_skipped(tmp_path):
+    # 실카드 실측: 같은 claim이 confirmed로 공존 (NOOP 위반, HANDOFF §2) —
+    # 프롬프트 지시는 무시될 수 있으니 apply가 결정론 멱등 가드로 막는다
+    store = _store(tmp_path)
+    ext = DreamExtraction.model_validate({"facts": [
+        {"claim": "포션은 50골드다", "evidence_turn": 0,
+         "numbers": [{"name": "가격", "value": 50}]}]})
+    r1 = apply_extraction(store, ext, _RAW_BY_TURN)
+    r2 = apply_extraction(store, ext, _RAW_BY_TURN)
+    assert len(store.list_facts()) == 1
+    assert r1["facts"] == 1 and r2["facts"] == 0
+    assert r2["deduped"] == 1
+
+
+def test_scene_fact_is_dropped(tmp_path):
+    # 실카드 실측: "날씨는 맑다"·표정 묘사가 [확정 사실]로 영구 주입됐다
+    store = _store(tmp_path)
+    ext = DreamExtraction.model_validate({"facts": [
+        {"claim": "리사가 씩 웃었다", "evidence_turn": 0, "kind": "scene"},
+        {"claim": "날씨는 맑다", "evidence_turn": 0, "kind": "scene"},
+        {"claim": "포션은 50골드다", "evidence_turn": 0,
+         "numbers": [{"name": "가격", "value": 50}]}]})
+    report = apply_extraction(store, ext, _RAW_BY_TURN)
+    assert report["scene_dropped"] == 2
+    assert [f.claim for f in store.list_facts()] == ["포션은 50골드다"]
+
+
+def test_update_target_miss_logs_warning(tmp_path, caplog):
+    import logging
+    store = _store(tmp_path)
+    ext = DreamExtraction.model_validate({"facts": [
+        {"claim": "포션은 50골드다", "evidence_turn": 0, "action": "UPDATE",
+         "target_fact_id": "0" * 32}]})
+    with caplog.at_level(logging.WARNING, logger="dreaming.dreamer"):
+        apply_extraction(store, ext, _RAW_BY_TURN)
+    assert any("UPDATE target miss" in r.message for r in caplog.records)
+
+
+def test_prompt_rules_for_quality():
+    system, _ = build_dream_prompt(_RAW, [], {}, [])
+    assert "kind" in system                 # scene 게이트 스키마
+    assert "op=set" in system               # add-델타 선호 규칙 (결함 E)
+    assert "NOOP" in system
+
+
+def test_negative_add_delta_verifies_by_abs(tmp_path):
+    # "50을 치렀다" → add -50: 원문엔 양수 50만 있다 — abs로 대조해야
+    # add-델타 유도(결함 E 수정)가 격리당하지 않는다
+    store = _store(tmp_path)
+    ext = DreamExtraction.model_validate({"commits": [
+        {"slot": "소지금", "op": "add", "value": -50, "turn": 0}]})
+    raw = {0: {"turn_number": 0, "user_text": "50 골드를 치렀다.",
+               "assistant_text": "받았소.", "user_hash": "u0",
+               "assistant_hash": "a0"}}
+    apply_extraction(store, ext, raw)
+    assert store.list_commits()[0].status == "applied"
+
+
+def test_invalid_evidence_turn_logs_and_stays_provisional(tmp_path, caplog):
+    # 실측 4% (HANDOFF §1.2): 스냅샷 밖 evidence_turn — 조용한 누락 금지, 관측만
+    import logging
+    store = _store(tmp_path)
+    ext = DreamExtraction.model_validate({"facts": [
+        {"claim": "포션은 50골드다", "evidence_turn": 99,
+         "numbers": [{"name": "가격", "value": 50}]}]})
+    with caplog.at_level(logging.WARNING, logger="dreaming.dreamer"):
+        apply_extraction(store, ext, _RAW_BY_TURN)
+    f = store.list_facts()[0]
+    assert f.status == "provisional" and f.evidence == []
+    assert any("evidence_turn" in r.message for r in caplog.records)
+
+
 def test_episode_range_from_raw_hashes(tmp_path):
     store = _store(tmp_path)
     ext = DreamExtraction.model_validate({"episodes": [
@@ -162,3 +246,4 @@ def test_episode_range_from_raw_hashes(tmp_path):
     eps = store.list_episodes()
     assert len(eps) == 1
     assert eps[0].range_start == "u0" and eps[0].range_end == "u0"
+    assert eps[0].start_turn == 0 and eps[0].end_turn == 0

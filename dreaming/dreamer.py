@@ -8,7 +8,6 @@ B-4 재압축(청크 조립)은 Plan 4 — 이 모듈의 꿈은 지식 계층만
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -16,8 +15,10 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
+from dreaming.chunks import build_compression
 from dreaming.facts import dreamer_can_modify, supersede
 from dreaming.llm import LLMClient
+from dreaming.numerals import korean_spellings
 from dreaming.records import (Actor, Episode, Evidence, Fact, StateCommit,
                               TypedNumber)
 from dreaming.storage import Storage
@@ -46,6 +47,7 @@ class ExtractedFact(BaseModel):
     action: Literal["ADD", "UPDATE", "DELETE", "NOOP"] = "ADD"   # mem0 4분류
     target_fact_id: Optional[str] = None
     learned_by: List[str] = []
+    kind: Literal["persistent", "scene"] = "persistent"
 
 
 class ExtractedCommit(BaseModel):
@@ -98,7 +100,7 @@ _SYSTEM = """너는 RP 세션 로그에서 구조화 지식을 추출하는 분�
 스키마:
 {
   "episodes": [{"start_turn": int, "end_turn": int, "title": str, "summary": str, "open_threads": [str]}],
-  "facts": [{"claim": str, "entities": [str],
+  "facts": [{"claim": str, "kind": "persistent|scene", "entities": [str],
              "numbers": [{"name": str, "value": number, "unit": str}],
              "evidence_turn": int, "action": "ADD|UPDATE|DELETE|NOOP",
              "target_fact_id": str|null, "learned_by": [str]}],
@@ -114,7 +116,14 @@ _SYSTEM = """너는 RP 세션 로그에서 구조화 지식을 추출하는 분�
   새 사실은 ADD이며 target_fact_id는 null. id를 지어내지 마라.
 - commits는 수치·상태 변화만 (소지금, 위치, 시각 등). 서술은 fact로.
 - episodes는 장면 경계로 나눈다. open_threads엔 미회수 복선만.
-- learned_by는 그 사실을 알게 된 인물 이름 목록."""
+- learned_by는 그 사실을 알게 된 인물 이름 목록.
+- fact는 시간이 지나도 참인 지속 정보만 (신상·관계·약속·소유·세계 설정).
+  일회성 장면 묘사·순간 동작·감정 표현·표정 변화, 그리고 날씨·온도 같은
+  일시적 환경 상태는 kind="scene"으로 표시하라.
+- [기존 사실]에 이미 있는 내용을 다시 ADD 하지 마라 — action=NOOP.
+- commits는 op=add 우선: 원문에 증감량이 명시되면 그 숫자를 그대로 쓴다
+  (지출·차감은 음수). op=set은 원문에 최종값 자체가 적힌 경우만.
+  계산해서 얻은 값을 넣지 마라 — 누적 계산은 리플레이가 한다."""
 
 
 def build_dream_prompt(raw_turns: List[Dict], facts: List[Fact],
@@ -146,13 +155,18 @@ def build_dream_prompt(raw_turns: List[Dict], facts: List[Fact],
 # ------------------------------------------------------------------ #
 
 def verify_numbers(numbers: List[ExtractedNumber], text: str) -> bool:
-    """숫자 정규식 재검증 (스펙 §3.2 B-3): 원문에 문자 그대로 있어야 한다."""
+    """숫자 재검증 (스펙 §3.2 B-3): 원문에 아라비아 표기 또는
+    한글 수사(정수 1~9999)로 문자 그대로 있어야 한다."""
     plain = text.replace(",", "")
     for n in numbers:
         v = n.value
         s = str(int(v)) if float(v).is_integer() else str(v)
-        if s not in plain:
-            return False
+        if s in plain:
+            continue
+        if float(v).is_integer() and any(
+                k in plain for k in korean_spellings(int(v))):
+            continue
+        return False
     return True
 
 
@@ -173,6 +187,10 @@ def _lookup_target(store: MemoryStore, fact_id: Optional[str]) -> Optional[Fact]
 
 def _build_fact(ef: ExtractedFact, raw_by_turn: Dict[int, Dict]) -> Fact:
     raw = raw_by_turn.get(ef.evidence_turn)
+    if raw is None:
+        # 실측 4%: LLM이 스냅샷 밖 evidence_turn을 준다 — 조용한 누락 금지
+        logger.warning("[dreamer] invalid evidence_turn=%s: %r",
+                       ef.evidence_turn, ef.claim[:40])
     verified = raw is not None and verify_numbers(ef.numbers, _turn_text(raw))
     return Fact(
         claim=ef.claim,
@@ -187,10 +205,16 @@ def _build_fact(ef: ExtractedFact, raw_by_turn: Dict[int, Dict]) -> Fact:
 
 def apply_extraction(store: MemoryStore, ext: DreamExtraction,
                      raw_by_turn: Dict[int, Dict]) -> Dict[str, int]:
-    report = {"facts": 0, "blocked": 0, "commits": 0, "actors": 0, "episodes": 0}
+    report = {"facts": 0, "blocked": 0, "deduped": 0, "scene_dropped": 0,
+              "commits": 0, "actors": 0, "episodes": 0}
 
+    live_claims = {f.claim.strip() for f in store.list_facts()}
     for ef in ext.facts:
         if ef.action == "NOOP":
+            continue
+        if ef.kind == "scene":
+            # 일회성 묘사는 에피소드 summary의 재료 — fact로 저장하지 않는다
+            report["scene_dropped"] += 1
             continue
         target = _lookup_target(store, ef.target_fact_id)
         if ef.action == "DELETE":
@@ -200,6 +224,13 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
                 report["blocked"] += 1
                 continue
             store.save_fact(target.model_copy(update={"status": "superseded"}))
+            continue
+        if ef.action == "UPDATE" and target is None and ef.target_fact_id:
+            logger.warning("[dreamer] UPDATE target miss: %r — ADD 강등",
+                           ef.target_fact_id[:60])
+        if target is None and ef.claim.strip() in live_claims:
+            # 실카드 실측: NOOP 지시 무시로 재-ADD — 결정론 멱등 가드
+            report["deduped"] += 1
             continue
         new = _build_fact(ef, raw_by_turn)
         if ef.action == "UPDATE" and target is not None:
@@ -211,6 +242,7 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
                 new = new.model_copy(update={"status": "pending_contradiction"})
                 report["blocked"] += 1
         store.save_fact(new)
+        live_claims.add(new.claim.strip())
         report["facts"] += 1
 
     for ec in ext.commits:
@@ -218,7 +250,8 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
         status = "applied"
         if isinstance(ec.value, (int, float)) and not isinstance(ec.value, bool):
             text = _turn_text(raw) if raw else ""
-            probe = ExtractedNumber(name=ec.slot, value=float(ec.value))
+            # add 음수 델타의 원문 표기는 양수("50을 치렀다") — abs로 대조
+            probe = ExtractedNumber(name=ec.slot, value=abs(float(ec.value)))
             if not verify_numbers([probe], text):
                 status = "pending_contradiction"
         store.append_commit(StateCommit(
@@ -249,6 +282,7 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
             continue
         store.save_episode(Episode(
             range_start=start["user_hash"], range_end=end["user_hash"],
+            start_turn=ep.start_turn, end_turn=ep.end_turn,
             title=ep.title, summary=ep.summary, open_threads=ep.open_threads,
         ))
         report["episodes"] += 1
@@ -264,7 +298,7 @@ class Dreamer:
     def __init__(self, storage: Storage, llm: LLMClient) -> None:
         self._storage = storage
         self._llm = llm
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self._active: set = set()
 
     def _cursor(self, session: str) -> int:
         doc = self._storage.get(f"{session}/dreamer", "cursor")
@@ -280,16 +314,18 @@ class Dreamer:
         return bool(self.snapshot(session))
 
     async def dream(self, session: str) -> Optional[Dict]:
-        lock = self._locks.setdefault(session, asyncio.Lock())
-        if lock.locked():
+        # 체크와 점유 사이 await 없음 — 이벤트 루프 단일 스레드에서 원자
+        if session in self._active:
             return None
-        async with lock:
-            try:
-                return await self._cycle(session)
-            except Exception:
-                # 사이클 폐기, 커서 불변 → 다음 유휴에 재시도 (스펙 §2.6, §3.2)
-                logger.exception("[dreamer] cycle discarded: %s", session)
-                return None
+        self._active.add(session)
+        try:
+            return await self._cycle(session)
+        except Exception:
+            # 사이클 폐기, 커서 불변 → 다음 유휴에 재시도 (스펙 §2.6, §3.2)
+            logger.exception("[dreamer] cycle discarded: %s", session)
+            return None
+        finally:
+            self._active.discard(session)
 
     async def _cycle(self, session: str) -> Optional[Dict]:
         raw_turns = self.snapshot(session)                       # B-0
@@ -304,4 +340,9 @@ class Dreamer:
         report = apply_extraction(store, ext, raw_by_turn)       # B-3
         self._storage.put(f"{session}/dreamer", "cursor",
                           {"next_turn": raw_turns[-1]["turn_number"] + 1})
+        plan = build_compression(                                # B-4 (§6.3)
+            store, last_turn=raw_turns[-1]["turn_number"])
+        if plan is not None:
+            self._storage.put(f"{session}/compression", "plan", plan)
+        report["chunks"] = len(plan["messages"]) if plan else 0
         return report
