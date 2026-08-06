@@ -147,6 +147,27 @@ def test_catchup_dream_runs_in_background(tmp_path):
     assert any(f.claim == "포션은 50골드다" for f in facts)
 
 
+def test_stored_plan_compresses_outbound_but_records_original(tmp_path):
+    storage = JsonDirStorage(tmp_path)
+    storage.put("sess1/compression", "plan", {
+        "covers_until_turn": 1,
+        "messages": [{"role": "assistant", "content": "[지난 이야기 · 초반]"}]})
+    up = FakeUpstream()
+    app = create_app(_settings(tmp_path), upstream=up)
+    client = TestClient(app)
+    r = client.post("/v1/chat/completions",
+                    json=_body("질문0", "답0", "질문1"),
+                    headers={"x-dreaming-session-id": "sess1"})
+    assert r.status_code == 200
+    sent = up.payloads[0]["messages"]
+    joined = json.dumps(sent, ensure_ascii=False)
+    assert "[지난 이야기" in joined and "질문0" not in joined
+    chunk = sent[1]                                    # system 다음 = 첫 청크
+    assert chunk["content"][0]["cache_control"]["type"] == "ephemeral"  # BP2
+    raw = storage.get("sess1/raw", "000001")
+    assert raw["user_text"] == "질문1"                  # 기록은 원본 기준
+
+
 def test_health(tmp_path):
     app = create_app(_settings(tmp_path), upstream=FakeUpstream())
     assert TestClient(app).get("/health").json() == {"ok": True}

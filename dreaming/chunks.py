@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import copy
+from typing import Dict, List, Optional, Tuple
 
 from dreaming.records import Episode
 from dreaming.store import MemoryStore
@@ -70,3 +71,32 @@ def build_compression(store: MemoryStore, last_turn: int) -> Optional[Dict]:
     for e in chain[idx:]:
         messages.append({"role": "assistant", "content": assemble_tier1(e)})
     return {"covers_until_turn": next_turn, "messages": messages}
+
+
+def apply_compression(messages: List[Dict],
+                      plan: Dict) -> Tuple[List[Dict], Optional[int]]:
+    """히스토리 선두 K pair를 청크로 위치 기반 치환 (스펙 §5 레이아웃).
+
+    선두 system 블록과 인사(첫 user 이전 assistant)는 보존한다.
+    히스토리가 플랜보다 짧으면(리롤 직후·낯선 요청) 원본 그대로 — fail-open.
+    반환: (메시지, 첫 청크 인덱스 | None).
+    """
+    k = plan["covers_until_turn"]
+    i = 0
+    while i < len(messages) and messages[i].get("role") != "user":
+        i += 1                             # 첫 user 앞(system·인사)은 보존
+    pairs, j = 0, i
+    while j < len(messages) and pairs < k:
+        if messages[j].get("role") == "user":
+            if (j + 1 < len(messages)
+                    and messages[j + 1].get("role") == "assistant"):
+                j += 2
+                pairs += 1
+            else:
+                break                      # 미완 pair(현재 턴) — 압축 불가
+        else:
+            j += 1
+    if pairs < k:
+        return messages, None
+    out = messages[:i] + copy.deepcopy(plan["messages"]) + messages[j:]
+    return out, i

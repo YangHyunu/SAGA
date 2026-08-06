@@ -103,3 +103,55 @@ def test_plan_is_deterministic(tmp_path):
     a = build_compression(store, last_turn=20)
     b = build_compression(store, last_turn=20)
     assert json.dumps(a, ensure_ascii=False) == json.dumps(b, ensure_ascii=False)
+
+
+# ------------------------------------------------------------------ #
+# 압축 적용 (동기 경로)
+# ------------------------------------------------------------------ #
+
+from dreaming.chunks import apply_compression
+
+_PLAN = {"covers_until_turn": 2,
+         "messages": [{"role": "assistant", "content": "[지난 이야기 · 초반]"}]}
+
+
+def _msgs(pairs, greeting=True):
+    out = [{"role": "system", "content": "너는 리사다."}]
+    if greeting:
+        out.append({"role": "assistant", "content": "어서 와요."})
+    for i in range(pairs):
+        out.append({"role": "user", "content": f"질문{i}"})
+        out.append({"role": "assistant", "content": f"답{i}"})
+    out.append({"role": "user", "content": "새 질문"})
+    return out
+
+
+def test_apply_replaces_first_k_pairs_keeps_system_and_greeting():
+    msgs = _msgs(4)
+    out, bp2 = apply_compression(msgs, _PLAN)
+    assert out[0]["content"] == "너는 리사다."
+    assert out[1]["content"] == "어서 와요."               # 인사 보존
+    assert out[2]["content"] == "[지난 이야기 · 초반]"      # 청크
+    assert bp2 == 2
+    texts = [m["content"] for m in out]
+    assert "질문0" not in texts and "질문2" in texts        # 꼬리 보존
+    assert out[-1]["content"] == "새 질문"
+    assert msgs[2]["content"] == "질문0"                    # 원본 불변
+
+
+def test_apply_short_history_fails_open():
+    msgs = _msgs(1)                                        # pair 1 < K=2
+    out, bp2 = apply_compression(msgs, _PLAN)
+    assert out is msgs and bp2 is None
+
+
+def test_mark_cache_bp2():
+    from dreaming.marking import mark_cache
+    out, bp2 = apply_compression(_msgs(4), _PLAN)
+    marked = mark_cache(out, bp2_index=bp2)
+    assert marked[0]["cache_control"]["type"] == "ephemeral"   # BP1
+    assert marked[bp2]["cache_control"]["type"] == "ephemeral"  # BP2
+    last_asst = max(i for i, m in enumerate(marked)
+                    if m["role"] == "assistant")
+    assert marked[last_asst]["cache_control"]["type"] == "ephemeral"  # BP3
+    assert sum(1 for m in marked if "cache_control" in m) == 3

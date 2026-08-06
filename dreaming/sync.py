@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 from dreaming.assembly import clip_knowledge, inject_knowledge
+from dreaming.chunks import apply_compression
 from dreaming.identity import PairLedger, Verdict
 from dreaming.marking import mark_cache
 from dreaming.resolver import SessionResolver
@@ -80,8 +81,12 @@ class SyncPath:
                 and verdict.reroll_turn_number is not None):
             demote_after(self._storage, self._session, verdict.reroll_turn_number)
         knowledge = clip_knowledge(render_knowledge(self._store))
-        out = inject_knowledge(messages, knowledge)
-        out = mark_cache(out)
+        out, bp2 = messages, None
+        plan = self._storage.get(f"{self._session}/compression", "plan")
+        if plan is not None:
+            out, bp2 = apply_compression(out, plan)
+        out = inject_knowledge(out, knowledge)
+        out = mark_cache(out, bp2_index=bp2)
         return out, verdict
 
     def record_response(self, verdict: Verdict, messages: List[Dict],
