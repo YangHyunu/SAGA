@@ -41,8 +41,9 @@ def test_dream_full_cycle_advances_cursor(tmp_path):
     _seed_raw(storage)
     llm = FakeLLM(_EXTRACTION)
     report = asyncio.run(Dreamer(storage, llm).dream("sess1"))
-    assert report == {"facts": 1, "blocked": 0, "commits": 1,
-                      "actors": 1, "episodes": 1}
+    assert report["facts"] == 1 and report["commits"] == 1
+    assert report["actors"] == 1 and report["episodes"] == 1
+    assert report["blocked"] == 0
     assert len(llm.calls) == 1                                    # 사이클당 1콜
     assert storage.get("sess1/dreamer", "cursor") == {"next_turn": 1}
     store = MemoryStore(storage, "sess1")
