@@ -34,7 +34,10 @@ ev1(30턴/프로브 6/단일 실행)은 하네스 배관 검증용으로 강등.
   뒤집힘 = 16.7%p 요동이라 비교 무의미.
 - 규모: 공인 최소축 LOCOMO ~300턴/35세션. 30턴은 최소 공인 벤치의 1/10.
 - **스펙 §9 인용 교정**: 2511.17208은 EMem(EDU 표현법) 논문. turn-retrieval
-  베이스라인의 정확한 출처는 **2604.11628 (Turn Isolation Retrieval)**.
+  베이스라인의 정확한 출처는 **2604.11628 "Back to Basics: Let Conversational
+  Agents Remember with Just Retrieval and Generation"** (TIR은 논문 내 기법명).
+- 주의: The Seed 글 제목의 "Letta"는 실제 Letta(MemGPT)사와 무관한 코히바블랙
+  본인의 프로젝트 코드명 (© CohibaBlack) — 인용 시 혼동 방지.
 
 ### 커뮤니티 신뢰 포맷 (아카)
 
