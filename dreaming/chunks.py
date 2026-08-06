@@ -6,9 +6,14 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List, Optional
 
 from dreaming.records import Episode
+from dreaming.store import MemoryStore
+
+TAIL_KEEP = 6      # 원문 꼬리로 남길 최근 pair 수 (스펙 §5)
+T1_MAX = 8         # Tier1 청크 상한 — 초과분은 챕터로 승격 (§6.2)
+CHAPTER_SIZE = 5   # 챕터 1개로 묶을 에피소드 수 — 고정 블록이라 승격이 안정
 
 
 def _one_line(text: str) -> str:
@@ -29,3 +34,39 @@ def assemble_tier2(episodes: List[Episode]) -> str:
     for ep in episodes:
         lines.append(f"- {ep.title}: {_one_line(ep.summary)[:100]}")
     return "\n".join(lines)
+
+
+def build_compression(store: MemoryStore, last_turn: int) -> Optional[Dict]:
+    """에피소드 → 압축 플랜 (B-4, 꿈 안에서만 호출 — §6.3 TTL 창구).
+
+    턴 0부터의 연속 구간만 압축한다 (치환이 위치 기반이라 프리픽스 연속성이
+    전제). 갭·꼬리(최근 TAIL_KEEP pair)에서 중단, 재드림 중복 구간은 스킵.
+    """
+    eps = [e for e in store.list_episodes()
+           if e.start_turn is not None and e.end_turn is not None]
+    eps.sort(key=lambda e: (e.start_turn, e.recorded_at))
+    cutoff = last_turn - TAIL_KEEP
+    chain: List[Episode] = []
+    next_turn = 0
+    for e in eps:
+        if e.start_turn < next_turn:
+            continue                      # 이미 덮인 구간 (재드림 중복)
+        if e.start_turn > next_turn or e.end_turn > cutoff:
+            break                         # 갭 또는 꼬리 진입
+        chain.append(e)
+        next_turn = e.end_turn + 1
+    if not chain:
+        return None
+
+    n_chapters = 0
+    if len(chain) > T1_MAX:
+        n_chapters = -(-(len(chain) - T1_MAX) // CHAPTER_SIZE)  # ceil
+    messages: List[Dict] = []
+    idx = 0
+    for _ in range(n_chapters):
+        group = chain[idx: idx + CHAPTER_SIZE]
+        messages.append({"role": "assistant", "content": assemble_tier2(group)})
+        idx += len(group)
+    for e in chain[idx:]:
+        messages.append({"role": "assistant", "content": assemble_tier1(e)})
+    return {"covers_until_turn": next_turn, "messages": messages}

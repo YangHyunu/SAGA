@@ -44,6 +44,8 @@ def test_dream_full_cycle_advances_cursor(tmp_path):
     assert report["facts"] == 1 and report["commits"] == 1
     assert report["actors"] == 1 and report["episodes"] == 1
     assert report["blocked"] == 0
+    assert report["chunks"] == 0                          # 전부 꼬리 안 → 플랜 없음
+    assert storage.get("sess1/compression", "plan") is None
     assert len(llm.calls) == 1                                    # 사이클당 1콜
     assert storage.get("sess1/dreamer", "cursor") == {"next_turn": 1}
     store = MemoryStore(storage, "sess1")
@@ -92,6 +94,19 @@ def test_concurrent_dream_skips(tmp_path):
 
     assert asyncio.run(scenario()) is None
     assert asyncio.run(d.dream("sess1")) is not None   # 해제 후 정상 진행
+
+
+def test_dream_writes_compression_plan(tmp_path):
+    storage = JsonDirStorage(tmp_path)
+    _seed_raw(storage, turns=10)
+    ext = json.dumps({"episodes": [
+        {"start_turn": 0, "end_turn": 3, "title": "초반",
+         "summary": "만남과 흥정.", "open_threads": []}]}, ensure_ascii=False)
+    report = asyncio.run(Dreamer(storage, FakeLLM(ext)).dream("sess1"))
+    assert report["chunks"] == 1
+    plan = storage.get("sess1/compression", "plan")
+    assert plan["covers_until_turn"] == 4
+    assert "초반" in plan["messages"][0]["content"]
 
 
 def test_has_backlog_and_snapshot_respect_cursor(tmp_path):

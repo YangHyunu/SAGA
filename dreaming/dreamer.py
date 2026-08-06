@@ -15,6 +15,7 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
+from dreaming.chunks import build_compression
 from dreaming.facts import dreamer_can_modify, supersede
 from dreaming.llm import LLMClient
 from dreaming.numerals import korean_spellings
@@ -339,4 +340,9 @@ class Dreamer:
         report = apply_extraction(store, ext, raw_by_turn)       # B-3
         self._storage.put(f"{session}/dreamer", "cursor",
                           {"next_turn": raw_turns[-1]["turn_number"] + 1})
+        plan = build_compression(                                # B-4 (§6.3)
+            store, last_turn=raw_turns[-1]["turn_number"])
+        if plan is not None:
+            self._storage.put(f"{session}/compression", "plan", plan)
+        report["chunks"] = len(plan["messages"]) if plan else 0
         return report
