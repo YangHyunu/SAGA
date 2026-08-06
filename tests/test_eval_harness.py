@@ -132,3 +132,23 @@ def test_build_result_scores_probes_and_totals():
     assert p21["hit"] == "full" and "한결" in p21["reply"]
     recall = next(p for p in r["probes"] if p["turn"] == 29)
     assert recall["matched"] == 0 and recall["total"] == 5
+
+
+# ------------------------------------------------------------------ #
+# 비교 리포트
+# ------------------------------------------------------------------ #
+
+from benchmarks.eval.report import render_report
+
+
+def test_render_report_table_and_audit_section():
+    res = [{"variant": "dreaming", "session": "a", "model": "m",
+            "turns": [],
+            "probes": [{"label": "이름·나이", "hit": "full", "matched": 2,
+                        "total": 2, "turn": 21, "reply": "한결님이시죠"}],
+            "totals": {"cost": 0.21, "avg_hit_t2": 93.0, "avg_sec": 2.1,
+                       "oracle_full": 1, "oracle_partial": 0,
+                       "recall": "4/5"}}]
+    md = render_report(res)
+    assert "| dreaming |" in md and "4/5" in md and "93.0" in md
+    assert "한결님이시죠" in md                     # 수동 감사용 원문 병기
