@@ -8,6 +8,18 @@ from dreaming.proxy import Settings, create_app
 from dreaming.records import StateCommit
 from dreaming.storage import JsonDirStorage
 from dreaming.store import MemoryStore
+from saga.services.pair_ledger import hash_text
+
+
+def _seed_ledger(storage, session, texts):
+    """(user, assistant) 텍스트 쌍을 원장에 시드 — 크래시 복구 상태는
+    raw뿐 아니라 원장도 남아 있다 (같은 storage). 원장 없이 플랜만 있는
+    픽스처는 베이스라인 패드가 들어간 뒤로는 비현실 상태다."""
+    for t, (u, a) in enumerate(texts):
+        storage.put(f"{session}/ledger", f"{t:06d}", {
+            "index": t, "user_hash": hash_text(u),
+            "assistant_hash": hash_text(a), "status": "confirmed",
+            "turn_number": t})
 
 _EXTRACTION = json.dumps({
     "facts": [{"claim": "포션은 50골드다", "evidence_turn": 0,
@@ -149,6 +161,7 @@ def test_catchup_dream_runs_in_background(tmp_path):
 
 def test_stored_plan_compresses_outbound_but_records_original(tmp_path):
     storage = JsonDirStorage(tmp_path)
+    _seed_ledger(storage, "sess1", [("질문0", "답0")])
     storage.put("sess1/compression", "plan", {
         "covers_until_turn": 1,
         "messages": [{"role": "assistant", "content": "[지난 이야기 · 초반]"}]})
@@ -176,6 +189,8 @@ _E2E_EXTRACTION = json.dumps({"episodes": [
 
 def test_full_loop_dream_then_compressed_prefix(tmp_path):
     storage = JsonDirStorage(tmp_path)
+    _seed_ledger(storage, "sess1",
+                 [(f"질문{t}", f"답{t}") for t in range(10)])
     for t in range(10):
         storage.put("sess1/raw", f"{t:06d}", {
             "turn_number": t, "user_text": f"질문{t}",
