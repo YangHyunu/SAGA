@@ -9,6 +9,8 @@ from benchmarks.eval.director import (
     make_false_premise,
     probe_plan,
 )
+from benchmarks.eval.judge_check import agreement
+from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
 from benchmarks.eval.fidelity import (
     check_wire_shape,
     compare_with_corpus,
@@ -171,3 +173,45 @@ def test_false_premise_corrupts_value():
         _fake_llm("질문: 그때 350골드 남았댔지?\n오염값: 350골드"),
         DirFact(fid="x", kind="exact", value="250골드", text="잔액", turn=1))
     assert "350" in q and wrong == "350골드"
+
+
+def test_oracle_pass_ignores_whitespace():
+    assert oracle_pass("이백 오십 골드 남았죠", "이백오십")
+    assert not oracle_pass("기억 안 나요", "250")
+
+
+def test_judge_false_premise_inverts():
+    ok = judge_pass(_fake_llm("N"), "false", "잔액 250", "250골드",
+                    "350골드 남았댔지?", "아뇨, 250골드였어요.",
+                    wrong_value="350골드")
+    assert ok["pass"] is True                  # 오염값 단정 안 함 = 통과
+    bad = judge_pass(_fake_llm("Y"), "false", "잔액 250", "250골드",
+                     "350골드 남았댔지?", "맞아요 350골드.",
+                     wrong_value="350골드")
+    assert bad["pass"] is False
+
+
+def test_decompose_miss_checks_dreaming_storage(tmp_path):
+    d = tmp_path / "sess" / "facts"
+    d.mkdir(parents=True)
+    (d / "a.json").write_text(json.dumps(
+        {"claim": "한결의 잔액은 250골드"}, ensure_ascii=False))
+    f_in = DirFact(fid="a", kind="exact", value="250골드", text="잔액", turn=1)
+    f_out = DirFact(fid="b", kind="exact", value="은반지", text="선물", turn=2)
+    assert decompose_miss(tmp_path, "sess", f_in) == "utilization_fail"
+    assert decompose_miss(tmp_path, "sess", f_out) == "storage_fail"
+
+
+def test_agreement_counts_and_lists_disagreements():
+    rows = [
+        {"ptype": "recall", "fact_text": "잔액 250", "expected_value": "250",
+         "question": "얼마 남았지?", "reply": "250이요", "human": True},
+        {"ptype": "recall", "fact_text": "잔액 250", "expected_value": "250",
+         "question": "얼마 남았지?", "reply": "몰라요", "human": False},
+        {"ptype": "recall", "fact_text": "잔액 250", "expected_value": "250",
+         "question": "얼마 남았지?", "reply": "500이요", "human": False},
+    ]
+    r = agreement(rows, judge=_fake_llm("Y"))     # 전부 Y로 판정하는 가짜 judge
+    assert r["n"] == 3 and r["agree"] == 1
+    assert r["disagrees"] == [1, 2]
+    assert abs(r["rate"] - 1 / 3) < 1e-9
