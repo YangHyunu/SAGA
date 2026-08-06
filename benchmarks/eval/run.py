@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import shutil
 import time
@@ -30,7 +31,7 @@ from benchmarks.eval.variants import prepare_request
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DATA = ROOT / "dreaming_data"
 EVAL_DIR = DATA / "eval"
-PROXY = "http://127.0.0.1:8787"
+PROXY = os.environ.get("DREAMING_EVAL_PROXY", "http://127.0.0.1:8787")
 UPSTREAM = "https://openrouter.ai/api/v1"
 MODEL = "anthropic/claude-haiku-4.5"
 SIM_MODEL = "google/gemini-2.5-flash"
