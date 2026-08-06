@@ -27,3 +27,35 @@ def test_freeze_and_load_roundtrip(tmp_path):
     freeze_script(p, turns)
     assert load_script(p) == turns
     assert json.loads(p.read_text())           # 평문 JSON
+
+
+# ------------------------------------------------------------------ #
+# 결정론 오라클
+# ------------------------------------------------------------------ #
+
+from benchmarks.eval.oracle import score_reply
+from benchmarks.eval.script import Probe
+
+
+def test_score_full_partial_miss():
+    p = Probe(0, "이름·나이", [["한결"], ["27", "스물일곱", "이십칠"]])
+    assert score_reply("한결님, 스물일곱이시죠.", p)["hit"] == "full"
+    r = score_reply("한결님이라는 건 기억해요.", p)
+    assert r["hit"] == "partial" and r["matched"] == 1 and r["total"] == 2
+    assert score_reply("글쎄요, 기억나지 않네요.", p)["hit"] == "miss"
+
+
+def test_score_ignores_whitespace():
+    p = Probe(0, "선물", [["세 개"]])
+    assert score_reply("사과를 세\n개 주셨죠.", p)["hit"] == "full"
+
+
+def test_score_recall_counts_groups():
+    p = Probe(0, "회상", [["한결"], ["왼손잡이"], ["보름달"]], recall=True)
+    r = score_reply("한결님은 왼손잡이시고...", p)
+    assert r["hit"] == "partial" and r["matched"] == 2 and r["total"] == 3
+
+
+def test_korean_numeral_expectation_matches():
+    p = Probe(0, "잔액", [["250", "이백오십"]])
+    assert score_reply("이백오십 남으셨을 거예요.", p)["hit"] == "full"
