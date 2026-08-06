@@ -55,8 +55,12 @@ MAX_TOKENS = 1000             # 실사용 응답 길이 근사 (EVAL2 충실도 
 # select은 옵션 인덱스 문자열: response_language 1=🇰🇷 한국어, execution_mode 0=💬 RP.
 # 나머지는 불리언. 미설정 전역변수는 "null"이라(preset2wire.UNSET) 실행 모드는
 # 반드시 명시해야 tis:: 분기가 걸린다.
-TOGGLES = {"mythos_response_language": "1",
-           "mythos_execution_mode": "0",
+TOGGLES = {"mythos_response_language": "1",           # 🇰🇷 한국어
+           "mythos_execution_mode": "0",              # 💬 RP
+           "mythos_user_persona_usage": "0",          # 🙋 사용 — 안 켜면 슬롯이 통째로 빈다
+           "mythos_bot_structure": "0",               # 💬 캐릭터 중심
+           "mythos_user_character_authorship": "1",   # 프리셋 templateDefaultVariables
+           "mythos_input_authority": "0",             # 프리셋 templateDefaultVariables
            "mythos_genre_ero": "1",
            "mythos_mature_content_guidance": "1",
            "mythos_domain_neutral_rendering_prefill": "1"}
