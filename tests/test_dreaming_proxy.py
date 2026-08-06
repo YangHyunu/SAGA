@@ -19,11 +19,11 @@ class FakeUpstream:
     def __init__(self):
         self.payloads = []
 
-    async def complete(self, payload):
+    async def complete(self, payload, auth=None):
         self.payloads.append(payload)
         return {"choices": [{"message": {"content": "50골드다."}}]}
 
-    async def stream(self, payload):
+    async def stream(self, payload, auth=None):
         self.payloads.append(payload)
         for piece in ["50골드", "다."]:
             data = json.dumps({"choices": [{"delta": {"content": piece}}]},
@@ -105,7 +105,7 @@ def test_fail_open_on_sync_error(tmp_path, monkeypatch):
 
 def test_upstream_error_returns_502(tmp_path):
     class DeadUpstream:
-        async def complete(self, payload):
+        async def complete(self, payload, auth=None):
             raise RuntimeError("connection refused")
     app = create_app(_settings(tmp_path), upstream=DeadUpstream())
     client = TestClient(app)
@@ -232,3 +232,32 @@ def test_from_env_loads_dotenv_from_root(tmp_path, monkeypatch):
         assert s.data_dir == str(tmp_path / "dreaming_data")   # 데이터도 root 앵커
     finally:
         os.environ.pop("DREAMING_UPSTREAM_KEY", None)   # load_dotenv 잔류 제거
+
+
+def test_deepseek_thinking_translation(tmp_path):
+    """RisuAI의 thinking_tokens를 딥시크 공식 thinking 스위치로 번역한다."""
+    up = FakeUpstream()
+    st = Settings(data_dir=str(tmp_path),
+                  upstream_base_url="https://api.deepseek.com",
+                  upstream_api_key="k")
+    client = TestClient(create_app(st, upstream=up))
+    body = _body("안녕")
+    body["thinking_tokens"] = 0
+    client.post("/v1/chat/completions", json=body)
+    sent = up.payloads[0]
+    assert "thinking_tokens" not in sent
+    assert sent["thinking"] == {"type": "disabled"}
+
+
+def test_thinking_untouched_for_other_upstreams(tmp_path):
+    up = FakeUpstream()
+    st = Settings(data_dir=str(tmp_path),
+                  upstream_base_url="https://openrouter.ai/api/v1",
+                  upstream_api_key="k")
+    client = TestClient(create_app(st, upstream=up))
+    body = _body("안녕")
+    body["thinking_tokens"] = 0
+    client.post("/v1/chat/completions", json=body)
+    sent = up.payloads[0]
+    assert sent["thinking_tokens"] == 0
+    assert "thinking" not in sent

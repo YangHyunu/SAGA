@@ -27,6 +27,7 @@ except ImportError:          # dotenv 없어도 동작 (환경변수 직접 expo
 from dreaming.dreamer import Dreamer
 from dreaming.idle import IdleWatcher
 from dreaming.llm import LLMClient, OpenAICompatLLM
+from dreaming.lore_shift import load_keyed
 from dreaming.storage import JsonDirStorage
 from dreaming.sync import SyncPath
 from dreaming.upstream import OpenAIUpstream, to_wire
@@ -48,6 +49,8 @@ class Settings(BaseModel):
     dream_base_url: str = ""
     dream_api_key: str = ""
     dream_model: str = ""                # 비면 Dreamer 비활성
+    card_path: str = ""                  # .charx 경로 — 있으면 1안 활성 (스펙 §5)
+    card_user: str = ""                  # RisuAI 페르소나 이름 ({{user}} 치환용)
 
     @classmethod
     def from_env(cls, root: Optional[Path] = None) -> "Settings":
@@ -64,6 +67,8 @@ class Settings(BaseModel):
             dream_base_url=os.environ.get("DREAMING_DREAM_BASE", ""),
             dream_api_key=os.environ.get("DREAMING_DREAM_KEY", ""),
             dream_model=os.environ.get("DREAMING_DREAM_MODEL", ""),
+            card_path=os.environ.get("DREAMING_CARD_PATH", ""),
+            card_user=os.environ.get("DREAMING_CARD_USER", ""),
         )
 
 
@@ -90,6 +95,15 @@ def create_app(settings: Settings, *,
     up = upstream or OpenAIUpstream(
         settings.upstream_base_url, settings.upstream_api_key)
 
+    keyed_lore: List[str] = []
+    if settings.card_path and settings.card_user:
+        try:
+            keyed_lore = load_keyed(settings.card_path, settings.card_user)
+            logger.info("[proxy] 1안 활성 — keyed 로어 %d개 (%s)",
+                        len(keyed_lore), settings.card_path)
+        except Exception:
+            logger.exception("[proxy] card load failed (1안 비활성, fail-open)")
+
     llm = dream_llm
     if llm is None and settings.dream_model:
         llm = OpenAICompatLLM(
@@ -113,7 +127,8 @@ def create_app(settings: Settings, *,
 
     def _sync(session: str) -> SyncPath:
         if session not in syncpaths:
-            syncpaths[session] = SyncPath(storage, session)
+            syncpaths[session] = SyncPath(storage, session,
+                                          keyed_lore=keyed_lore)
         return syncpaths[session]
 
     def _finish(session: str, verdict, original_messages: List[Dict],
@@ -153,12 +168,28 @@ def create_app(settings: Settings, *,
         payload = dict(body)
         payload["messages"] = to_wire(out)
 
+        # 파라미터 번역: RisuAI의 thinking_tokens는 자체 발명 이름이라
+        # DeepSeek 본가가 무시한다 → v4는 기본 thinking이라 0을 보내도
+        # CoT가 content를 갉아먹는다 (실측: content가 빈 응답 재현).
+        # 본가 공식 스위치로 번역한다.
+        if "deepseek" in settings.upstream_base_url:
+            tt = payload.pop("thinking_tokens", None)
+            if tt is not None:
+                payload["thinking"] = {
+                    "type": "disabled" if tt == 0 else "enabled"}
+
+        # 키 pass-through: RisuAI 키 필드의 진짜 키를 우선한다 (키 무보관 구조).
+        # 더미 키(짧은 토큰)는 무시하고 .env 폴백 — RisuAI 기본값이 더미라서.
+        auth = request.headers.get("authorization") or ""
+        token = auth.removeprefix("Bearer ").strip()
+        auth = auth if len(token) >= 20 else None
+
         if body.get("stream"):
             async def relay():
                 parts: List[str] = []
                 buf = b""
                 try:
-                    async for chunk in up.stream(payload):
+                    async for chunk in up.stream(payload, auth=auth):
                         buf += chunk
                         while b"\n" in buf:
                             line, buf = buf.split(b"\n", 1)
@@ -181,7 +212,7 @@ def create_app(settings: Settings, *,
             return StreamingResponse(relay(), media_type="text/event-stream")
 
         try:
-            resp = await up.complete(payload)
+            resp = await up.complete(payload, auth=auth)
         except Exception:
             logger.exception("[proxy] upstream failed")
             return JSONResponse(status_code=502, content={

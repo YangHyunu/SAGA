@@ -7,11 +7,12 @@ main actor 결정론 템플릿이다.
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from dreaming.assembly import clip_knowledge, inject_knowledge
 from dreaming.chunks import apply_compression
 from dreaming.identity import PairLedger, Verdict
+from dreaming.lore_shift import shift_keyed
 from dreaming.marking import mark_cache
 from dreaming.resolver import SessionResolver
 from dreaming.storage import Storage
@@ -75,12 +76,14 @@ def demote_after(storage: Storage, session: str, from_turn: int) -> None:
 
 
 class SyncPath:
-    def __init__(self, storage: Storage, session_id: str) -> None:
+    def __init__(self, storage: Storage, session_id: str,
+                 keyed_lore: Optional[List[str]] = None) -> None:
         self._storage = storage
         self._session = session_id
         self._resolver = SessionResolver(storage)
         self._ledger = PairLedger(storage, session_id, resolver=self._resolver)
         self._store = MemoryStore(storage, session_id)
+        self._keyed_lore = keyed_lore or []
 
     def process(self, messages: List[Dict]) -> Tuple[List[Dict], Verdict]:
         pairs, last_user_hash = extract_pairs(messages)
@@ -88,8 +91,9 @@ class SyncPath:
         if (verdict.kind in ("reroll", "diverged")
                 and verdict.reroll_turn_number is not None):
             demote_after(self._storage, self._session, verdict.reroll_turn_number)
+        out, _ = shift_keyed(messages, self._keyed_lore)   # 1안 (스펙 §5)
         knowledge = clip_knowledge(render_knowledge(self._store))
-        out, bp2 = messages, None
+        bp2 = None
         plan = self._storage.get(f"{self._session}/compression", "plan")
         if plan is not None:
             out, bp2 = apply_compression(out, plan)

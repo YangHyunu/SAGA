@@ -19,6 +19,12 @@ def mark_cache(messages: List[Dict], ttl: str = "5m",
     for m in out:
         m.pop("cache_control", None)
 
+    # BP1 후보는 **선두 연속 system 구간**뿐이다. RisuAI 기본 템플릿은
+    # globalNote/PHI를 히스토리 뒤에 두므로(prompt.ts:427, charx PHI→globalNote는
+    # characterCards.ts:992) 전체에서 마지막 system을 잡으면 꼬리에 찍힌다.
+    # 그러면 마지막 user에 prepend한 지식(assembly.py)이 캐시 span 안으로 들어가
+    # 매 턴 전체 프롬프트가 재작성된다. 업스트림 변환도 선두 밖 system은
+    # user로 강등하므로(anthropic.ts:233) 어차피 system 블록이 아니다.
     last_system = None
     for i, m in enumerate(out):          # BP1 후보는 선두 연속 system만 —
         if m.get("role") != "system":    # 꼬리 PHI(globalNote)는 캐시 밖
