@@ -276,3 +276,34 @@ def test_thinking_untouched_for_other_upstreams(tmp_path):
     sent = up.payloads[0]
     assert sent["thinking_tokens"] == 0
     assert "thinking" not in sent
+
+
+def test_lore_shift_and_compression_together(tmp_path):
+    # PR#5 lore_shift(1안)와 Plan 4 압축 동시 가동 — 지금까지 수동 스모크로만
+    # 확인했던 교차 케이스의 정식 회귀
+    storage = JsonDirStorage(tmp_path)
+    _seed_ledger(storage, "sess1",
+                 [("질문0", "답0"), ("질문1", "답1")])
+    storage.put("sess1/compression", "plan", {
+        "covers_until_turn": 1,
+        "messages": [{"role": "assistant", "content": "[지난 이야기 · 초반]"}]})
+    keyed = ("성문 경비는 해가 지면 두 배로 늘어나며, 통행증 없는 외지인은 "
+             "동문 초소에서 하룻밤 억류된 뒤 아침에 심문을 받는다.")
+    from dreaming.sync import SyncPath
+    sp = SyncPath(storage, "sess1", keyed_lore=[keyed])
+    msgs = [{"role": "system", "content": f"너는 리사다.\n\n{keyed}"},
+            {"role": "user", "content": "질문0"},
+            {"role": "assistant", "content": "답0"},
+            {"role": "user", "content": "질문1"},
+            {"role": "assistant", "content": "답1"},
+            {"role": "user", "content": "질문2"}]
+    out, v = sp.process(msgs)
+    texts = [str(m.get("content")) for m in out]
+    assert keyed not in texts[0]                          # 프리픽스에서 제거
+    chunk_i = next(i for i, t in enumerate(texts) if "[지난 이야기" in t)
+    marks = [i for i, m in enumerate(out) if "cache_control" in m]
+    last_user = max(i for i, m in enumerate(out) if m["role"] == "user")
+    assert "질문0" not in "".join(texts) and "질문1" in "".join(texts)
+    assert marks == [0, chunk_i, len(out) - 2]            # BP1·BP2·BP3
+    assert max(marks) < last_user                         # mutable 존은 캐시 밖
+    assert any("<active_lorebook>" in t for t in texts)
