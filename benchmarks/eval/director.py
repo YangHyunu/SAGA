@@ -64,3 +64,60 @@ class Ledger:
         led = cls()
         led.facts = [DirFact(**r) for r in rows]
         return led
+
+
+_PROBE_SYS = (
+    "너는 RP 유저 대사 작가다. 주어진 과거 사실을 캐릭터가 기억하는지 확인하는 "
+    "자연스러운 유저 발화 하나를 만든다. 사실의 답 자체를 말하지 말고, 반드시 "
+    "구체적으로 되묻는 직접 의문문 포함. 1~2문장. 발화만 출력.")
+
+_FALSE_SYS = (
+    "너는 RP 유저 대사 작가다. 주어진 사실의 핵심값을 그럴듯하게 틀린 값으로 "
+    "바꿔서, 그 틀린 값을 사실인 양 전제하는 유저 발화를 만든다. 출력 형식:\n"
+    "질문: <발화>\n오염값: <틀린 값>")
+
+
+def eligible(ledger: Ledger, window_start_turn: int,
+             kind: Optional[str] = None) -> List[DirFact]:
+    """가시 창 밖으로 evict된 사실만 (The Seed: outside-visible-window)."""
+    return [f for f in ledger.unprobed(kind)
+            if f.turn < window_start_turn]
+
+
+def make_probe(llm: LlmFn, fact: DirFact) -> str:
+    return llm(_PROBE_SYS, f"[과거 사실]\n{fact.text} (핵심값: {fact.value})").strip()
+
+
+def make_false_premise(llm: LlmFn, fact: DirFact) -> Tuple[str, str]:
+    raw = llm(_FALSE_SYS, f"[사실]\n{fact.text} (핵심값: {fact.value})")
+    q, wrong = "", ""
+    for line in raw.splitlines():
+        if line.startswith("질문:"):
+            q = line[3:].strip()
+        elif line.startswith("오염값:"):
+            wrong = line[4:].strip()
+    return q, wrong
+
+
+_PTYPE_KIND = {"recall": "exact", "relation": "relation",
+               "false": None, "update": "exact", "recent": None}
+
+
+def probe_plan(ledger: Ledger, window_start_turn: int,
+               want: Dict[str, int]) -> List[Tuple[str, DirFact]]:
+    """유형별 수만큼 뽑고 probed 마킹.
+
+    recent만 창 안(단기 대조군), 나머지는 전부 창 밖(evict)에서 뽑는다.
+    """
+    plan: List[Tuple[str, DirFact]] = []
+    for ptype, n in want.items():
+        if ptype == "recent":
+            pool = [f for f in ledger.unprobed(_PTYPE_KIND[ptype])
+                    if f.turn >= window_start_turn]
+        else:
+            pool = eligible(ledger, window_start_turn, kind=_PTYPE_KIND[ptype])
+        pool.sort(key=lambda f: f.turn)
+        for f in pool[:n]:
+            f.probed = True
+            plan.append((ptype, f))
+    return plan

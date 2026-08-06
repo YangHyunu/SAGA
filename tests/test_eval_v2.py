@@ -1,7 +1,14 @@
 """평가 v2 — 충실도/디렉터 순수 함수 (EVAL2.md, 실캡처 형태 기준)."""
 import json
 
-from benchmarks.eval.director import DirFact, Ledger, extract_facts
+from benchmarks.eval.director import (
+    DirFact,
+    Ledger,
+    eligible,
+    extract_facts,
+    make_false_premise,
+    probe_plan,
+)
 from benchmarks.eval.fidelity import (
     check_wire_shape,
     compare_with_corpus,
@@ -126,3 +133,41 @@ def test_corpus_signature_and_compare(tmp_path):
     bad = [dict(m) for m in ok]
     bad[0]["content"] = "다른 선두"
     assert any("leading" in v for v in compare_with_corpus(bad, sig))
+
+
+def _led():
+    led = Ledger()
+    led.add([DirFact(fid=f"f{i}", kind=k, value=f"v{i}", text=f"사실{i}", turn=t)
+             for i, (k, t) in enumerate([("exact", 2), ("exact", 30),
+                                         ("relation", 4), ("event", 6)])])
+    return led
+
+
+def test_eligible_only_outside_window():
+    led = _led()
+    got = [f.fid for f in eligible(led, window_start_turn=10)]
+    assert got == ["f0", "f2", "f3"]          # turn 30(f1)은 창 안
+    assert [f.fid for f in eligible(led, 10, kind="relation")] == ["f2"]
+
+
+def test_probe_plan_marks_probed_and_respects_want():
+    led = _led()
+    plan = probe_plan(led, window_start_turn=10,
+                      want={"recall": 1, "relation": 1, "false": 1})
+    types = [t for t, _ in plan]
+    assert types == ["recall", "relation", "false"]
+    assert len({f.fid for _, f in plan}) == 3          # 사실 중복 출제 없음
+    assert len(eligible(led, 10)) == 0                 # 전부 probed 처리
+
+
+def test_probe_plan_recent_uses_in_window_facts():
+    led = _led()
+    plan = probe_plan(led, window_start_turn=10, want={"recent": 2})
+    assert [f.fid for _, f in plan] == ["f1"]          # 창 안(turn 30)만
+
+
+def test_false_premise_corrupts_value():
+    q, wrong = make_false_premise(
+        _fake_llm("질문: 그때 350골드 남았댔지?\n오염값: 350골드"),
+        DirFact(fid="x", kind="exact", value="250골드", text="잔액", turn=1))
+    assert "350" in q and wrong == "350골드"
