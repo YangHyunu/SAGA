@@ -316,3 +316,37 @@ def test_probe_schedule_covers_five_types():
     for t in ("relation", "false", "update", "recent"):
         assert sched.count(t) >= 2
     assert sched.count(None) >= 10                     # 필러 존재
+
+
+# ---- report2 ----
+
+def _res(variant, run, ok):
+    return {"variant": variant, "run": run, "session": "s", "model": "m",
+            "turns": [{"turn": 0, "cost": 0.01, "sec": 1.0,
+                       "sec_director": 0.5, "sec_extract": 0.3,
+                       "ptype": None, "user": "u", "reply": "r",
+                       "prompt": 100, "cached": 50}],
+            "ledger": [],
+            "probes": [{"turn": 41, "ptype": "recall", "fact": "f",
+                        "value": "v", "question": "q", "reply": "r",
+                        "oracle": ok, "judge": ok, "miss_cause":
+                        "-" if ok else "storage_fail",
+                        "distance_turns": 39}],
+            "totals": {"probes": 1, "judge_pass": int(ok), "cost": 0.01}}
+
+
+def test_aggregate_mean_std_over_runs():
+    from benchmarks.eval.report2 import aggregate
+    agg = aggregate([_res("dreaming", 0, True), _res("dreaming", 1, False),
+                     _res("dreaming", 2, True)])
+    row = agg["dreaming"]["by_type"]["recall"]
+    assert abs(row["mean"] - 2 / 3) < 1e-9 and row["std"] > 0
+    assert agg["dreaming"]["miss_causes"]["storage_fail"] == 1
+
+
+def test_render_contains_blocks():
+    from benchmarks.eval.report2 import aggregate, render
+    results = [_res("dreaming", 0, True)]
+    md = render(aggregate(results), results)
+    assert "dreaming" in md and "recall" in md and "부록" in md
+    assert "30~39" in md                                # 거리 구간
