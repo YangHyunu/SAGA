@@ -33,14 +33,25 @@ class OpenAIUpstream:
             headers={"Authorization": f"Bearer {api_key}"},
         )
 
-    async def complete(self, payload: Dict) -> Dict:
-        r = await self._client.post("/chat/completions", json=payload)
+    def _headers(self, auth: Optional[str]) -> Optional[Dict]:
+        """클라이언트(RisuAI)가 보낸 Authorization을 우선한다 (pass-through).
+
+        키를 우리가 보관하지 않는 제품형 구조 — 없으면 .env 키로 폴백.
+        """
+        return {"Authorization": auth} if auth else None
+
+    async def complete(self, payload: Dict,
+                       auth: Optional[str] = None) -> Dict:
+        r = await self._client.post("/chat/completions", json=payload,
+                                    headers=self._headers(auth))
         r.raise_for_status()
         return r.json()
 
-    async def stream(self, payload: Dict) -> AsyncIterator[bytes]:
+    async def stream(self, payload: Dict,
+                     auth: Optional[str] = None) -> AsyncIterator[bytes]:
         async with self._client.stream(
-                "POST", "/chat/completions", json=payload) as r:
+                "POST", "/chat/completions", json=payload,
+                headers=self._headers(auth)) as r:
             r.raise_for_status()
             async for chunk in r.aiter_bytes():
                 yield chunk
