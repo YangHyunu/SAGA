@@ -16,7 +16,7 @@ def to_wire(messages: List[Dict]) -> List[Dict]:
     for m in messages:
         cc = m.get("cache_control")
         if cc is None:
-            out.append(m)
+            out.append(dict(m))
             continue
         mm = {k: v for k, v in m.items() if k != "cache_control"}
         mm["content"] = [{"type": "text", "text": m["content"],

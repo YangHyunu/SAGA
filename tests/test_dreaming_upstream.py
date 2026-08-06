@@ -23,6 +23,13 @@ def test_to_wire_moves_cache_control_into_content_part():
     assert "cache_control" in msgs[0]              # 원본 불변
 
 
+def test_to_wire_returns_copies_for_unmarked_messages():
+    src = [{"role": "user", "content": "hi"}]
+    wired = to_wire(src)
+    wired[0]["content"] = "changed"
+    assert src[0]["content"] == "hi"               # 원본 별칭 반환 금지
+
+
 def _upstream(handler):
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler),
                                base_url="http://up")

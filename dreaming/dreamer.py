@@ -8,7 +8,6 @@ B-4 재압축(청크 조립)은 Plan 4 — 이 모듈의 꿈은 지식 계층만
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -297,7 +296,7 @@ class Dreamer:
     def __init__(self, storage: Storage, llm: LLMClient) -> None:
         self._storage = storage
         self._llm = llm
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self._active: set = set()
 
     def _cursor(self, session: str) -> int:
         doc = self._storage.get(f"{session}/dreamer", "cursor")
@@ -313,16 +312,18 @@ class Dreamer:
         return bool(self.snapshot(session))
 
     async def dream(self, session: str) -> Optional[Dict]:
-        lock = self._locks.setdefault(session, asyncio.Lock())
-        if lock.locked():
+        # 체크와 점유 사이 await 없음 — 이벤트 루프 단일 스레드에서 원자
+        if session in self._active:
             return None
-        async with lock:
-            try:
-                return await self._cycle(session)
-            except Exception:
-                # 사이클 폐기, 커서 불변 → 다음 유휴에 재시도 (스펙 §2.6, §3.2)
-                logger.exception("[dreamer] cycle discarded: %s", session)
-                return None
+        self._active.add(session)
+        try:
+            return await self._cycle(session)
+        except Exception:
+            # 사이클 폐기, 커서 불변 → 다음 유휴에 재시도 (스펙 §2.6, §3.2)
+            logger.exception("[dreamer] cycle discarded: %s", session)
+            return None
+        finally:
+            self._active.discard(session)
 
     async def _cycle(self, session: str) -> Optional[Dict]:
         raw_turns = self.snapshot(session)                       # B-0

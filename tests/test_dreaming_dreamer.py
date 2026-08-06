@@ -84,11 +84,14 @@ def test_concurrent_dream_skips(tmp_path):
     d = Dreamer(storage, FakeLLM(_EXTRACTION))
 
     async def scenario():
-        lock = d._locks.setdefault("sess1", asyncio.Lock())
-        async with lock:                      # 꿈꾸는 중 시뮬레이션
+        d._active.add("sess1")                # 꿈꾸는 중 시뮬레이션
+        try:
             return await d.dream("sess1")
+        finally:
+            d._active.discard("sess1")
 
     assert asyncio.run(scenario()) is None
+    assert asyncio.run(d.dream("sess1")) is not None   # 해제 후 정상 진행
 
 
 def test_has_backlog_and_snapshot_respect_cursor(tmp_path):
