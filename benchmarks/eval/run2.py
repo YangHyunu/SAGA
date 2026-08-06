@@ -167,7 +167,7 @@ def _call_upstream(variant: str, session: str, key: str,
             "cost": u.get("cost", 0.0), "sec": round(time.time() - t0, 1)}
 
 
-_DIRECT_SYS = ("너는 RP에서 유저(1인칭, 이름 {user}) 역할을 연기한다. 작품 "
+_DIRECT_SYS = ("너는 RP에서 유저(1인칭{user}) 역할을 연기한다. 작품 "
                "설정과 직전 장면에 자연스럽게 이어지는 유저 발화 하나만 출력. "
                "3문장 이내, 반말 채팅체, 메타 발언 금지.")
 _UPDATE_BEAT = ("이번 발화에서 이전에 언급된 수치나 소지품 상태를 명확히 바꾸는 "
@@ -192,7 +192,8 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         history.append({"role": "assistant", "content": card["greeting"]})
     last_reply = card.get("greeting") or "(첫 장면)"
     few_shot = "\n".join(f"- {s}" for s in card.get("style_examples", [])[:8])
-    dir_sys = _DIRECT_SYS.format(user=card.get("user_name", "유저"))
+    uname = card.get("user_name", "")
+    dir_sys = _DIRECT_SYS.format(user=f", 이름 {uname}" if uname else "·무명")
     if few_shot:
         dir_sys += f"\n[실제 유저 발화 예시 — 문체 참고]\n{few_shot}"
     turns, probes = [], []
