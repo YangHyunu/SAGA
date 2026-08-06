@@ -61,6 +61,14 @@ def demote_after(storage: Storage, session: str, from_turn: int) -> None:
     for c in store.list_commits():
         if c.turn >= from_turn and c.status == "applied":
             store.update_commit_status(c.id, "pending_contradiction")
+    # 분기점이 압축 구간 안이면 플랜 폐기 + 걸친 에피소드 삭제 —
+    # 다음 꿈이 재조립한다 (TTL 창구라 캐시 비용 0, 스펙 §6.3)
+    plan = storage.get(f"{session}/compression", "plan")
+    if plan is not None and plan["covers_until_turn"] > from_turn:
+        storage.delete(f"{session}/compression", "plan")
+    for e in store.list_episodes():
+        if e.end_turn is not None and e.end_turn >= from_turn:
+            storage.delete(f"{session}/episodes", e.id)
     cursor = storage.get(f"{session}/dreamer", "cursor")
     if cursor is not None and cursor["next_turn"] > from_turn:
         storage.put(f"{session}/dreamer", "cursor", {"next_turn": from_turn})

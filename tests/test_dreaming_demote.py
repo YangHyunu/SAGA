@@ -1,5 +1,5 @@
 """리롤/분기 시 지식 강등 + 꿈 커서 되감기 (스펙 §3.1)."""
-from dreaming.records import Evidence, Fact, StateCommit
+from dreaming.records import Episode, Evidence, Fact, StateCommit
 from dreaming.storage import JsonDirStorage
 from dreaming.store import MemoryStore
 from dreaming.sync import SyncPath, demote_after
@@ -41,6 +41,38 @@ def test_demote_keeps_earlier_cursor(tmp_path):
     storage.put("sess1/dreamer", "cursor", {"next_turn": 0})   # 아직 안 꿈꿈
     demote_after(storage, "sess1", 1)
     assert storage.get("sess1/dreamer", "cursor") == {"next_turn": 0}  # 그대로
+
+
+def test_deep_divergence_invalidates_plan_and_stale_episodes(tmp_path):
+    storage = JsonDirStorage(tmp_path)
+    store = MemoryStore(storage, "sess1")
+    storage.put("sess1/compression", "plan",
+                {"covers_until_turn": 4, "messages": [
+                    {"role": "assistant", "content": "청크"}]})
+    store.save_episode(Episode(range_start="u0", range_end="u1",
+                               start_turn=0, end_turn=1,
+                               title="보존", summary="분기 전"))
+    store.save_episode(Episode(range_start="u2", range_end="u3",
+                               start_turn=2, end_turn=3,
+                               title="무효", summary="분기 걸침"))
+    demote_after(storage, "sess1", from_turn=2)
+    assert storage.get("sess1/compression", "plan") is None
+    assert [e.title for e in store.list_episodes()] == ["보존"]
+
+
+def test_late_reroll_keeps_plan_and_episodes(tmp_path):
+    # 흔한 케이스: 마지막 턴 리롤 — 압축 구간(0~3) 밖이라 무손상
+    storage = JsonDirStorage(tmp_path)
+    store = MemoryStore(storage, "sess1")
+    plan = {"covers_until_turn": 4,
+            "messages": [{"role": "assistant", "content": "청크"}]}
+    storage.put("sess1/compression", "plan", plan)
+    store.save_episode(Episode(range_start="u0", range_end="u3",
+                               start_turn=0, end_turn=3,
+                               title="보존", summary="압축 구간"))
+    demote_after(storage, "sess1", from_turn=9)
+    assert storage.get("sess1/compression", "plan") == plan
+    assert len(store.list_episodes()) == 1
 
 
 def test_syncpath_reroll_triggers_demotion(tmp_path):
