@@ -179,6 +179,10 @@ def _lookup_target(store: MemoryStore, fact_id: Optional[str]) -> Optional[Fact]
 
 def _build_fact(ef: ExtractedFact, raw_by_turn: Dict[int, Dict]) -> Fact:
     raw = raw_by_turn.get(ef.evidence_turn)
+    if raw is None:
+        # 실측 4%: LLM이 스냅샷 밖 evidence_turn을 준다 — 조용한 누락 금지
+        logger.warning("[dreamer] invalid evidence_turn=%s: %r",
+                       ef.evidence_turn, ef.claim[:40])
     verified = raw is not None and verify_numbers(ef.numbers, _turn_text(raw))
     return Fact(
         claim=ef.claim,
@@ -224,7 +228,8 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
         status = "applied"
         if isinstance(ec.value, (int, float)) and not isinstance(ec.value, bool):
             text = _turn_text(raw) if raw else ""
-            probe = ExtractedNumber(name=ec.slot, value=float(ec.value))
+            # add 음수 델타의 원문 표기는 양수("50을 치렀다") — abs로 대조
+            probe = ExtractedNumber(name=ec.slot, value=abs(float(ec.value)))
             if not verify_numbers([probe], text):
                 status = "pending_contradiction"
         store.append_commit(StateCommit(

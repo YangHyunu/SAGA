@@ -164,6 +164,33 @@ def test_garbage_target_fact_id_degrades_to_add(tmp_path):
     assert store.list_facts()[0].claim == "개선문은 석조 건축물이다"
 
 
+def test_negative_add_delta_verifies_by_abs(tmp_path):
+    # "50을 치렀다" → add -50: 원문엔 양수 50만 있다 — abs로 대조해야
+    # add-델타 유도(결함 E 수정)가 격리당하지 않는다
+    store = _store(tmp_path)
+    ext = DreamExtraction.model_validate({"commits": [
+        {"slot": "소지금", "op": "add", "value": -50, "turn": 0}]})
+    raw = {0: {"turn_number": 0, "user_text": "50 골드를 치렀다.",
+               "assistant_text": "받았소.", "user_hash": "u0",
+               "assistant_hash": "a0"}}
+    apply_extraction(store, ext, raw)
+    assert store.list_commits()[0].status == "applied"
+
+
+def test_invalid_evidence_turn_logs_and_stays_provisional(tmp_path, caplog):
+    # 실측 4% (HANDOFF §1.2): 스냅샷 밖 evidence_turn — 조용한 누락 금지, 관측만
+    import logging
+    store = _store(tmp_path)
+    ext = DreamExtraction.model_validate({"facts": [
+        {"claim": "포션은 50골드다", "evidence_turn": 99,
+         "numbers": [{"name": "가격", "value": 50}]}]})
+    with caplog.at_level(logging.WARNING, logger="dreaming.dreamer"):
+        apply_extraction(store, ext, _RAW_BY_TURN)
+    f = store.list_facts()[0]
+    assert f.status == "provisional" and f.evidence == []
+    assert any("evidence_turn" in r.message for r in caplog.records)
+
+
 def test_episode_range_from_raw_hashes(tmp_path):
     store = _store(tmp_path)
     ext = DreamExtraction.model_validate({"episodes": [
