@@ -53,10 +53,39 @@ def test_replay_string_slots_set_only():
     assert state == {"현재_장소": "여관"}
 
 
-def test_replay_add_to_string_raises():
-    with pytest.raises(TypeError):
-        replay([_c("현재_장소", "set", "시장", turn=1),
-                _c("현재_장소", "add", 1, turn=2)])
+def test_replay_add_to_string_skipped():
+    # 나쁜 커밋 하나가 파이프라인 전체를 fail-open시키면 안 된다 —
+    # raise 대신 skip하고 기존 값을 보존한다
+    state = replay([_c("현재_장소", "set", "시장", turn=1),
+                    _c("현재_장소", "add", 1, turn=2)])
+    assert state == {"현재_장소": "시장"}
+
+
+def test_replay_skips_add_on_nonnumeric_slot(caplog):
+    # 코퍼스 #1 재현: Dreamer가 문자열 슬롯 '반S2.소지품'에 add를 기록
+    with caplog.at_level("WARNING", logger="dreaming.worldstate"):
+        state = replay([
+            _c("반S2.소지품", "set", "반S2의 페르소나 소지품", turn=0),
+            _c("반S2.소지품", "add", "300 세스테르티우스 (쓸모없음)", turn=9),
+        ])
+    assert state == {"반S2.소지품": "반S2의 페르소나 소지품"}
+    assert any("반S2.소지품" in r.message for r in caplog.records)
+
+
+def test_replay_skips_nonnumeric_add_value_on_missing_slot():
+    # 슬롯이 없어도 add 값이 비숫자면 skip — 0 + str 시도 금지
+    assert replay([_c("소지품", "add", "단검", turn=1)]) == {}
+
+
+def test_replay_bad_commit_does_not_block_later_commits():
+    # 오염 커밋 뒤의 정상 커밋은 계속 적용된다
+    state = replay([
+        _c("소지품", "set", "단검", turn=1),
+        _c("소지품", "add", "물약", turn=2),
+        _c("소지금", "set", 500, turn=3),
+        _c("소지금", "add", -50, turn=4),
+    ])
+    assert state == {"소지품": "단검", "소지금": 450}
 
 
 def test_replay_manual_commits_apply():

@@ -7,11 +7,18 @@ pending_contradiction 커밋은 확정 전까지 제외한다.
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Iterable, Union
 
 from dreaming.records import StateCommit
 
+logger = logging.getLogger(__name__)
+
 Value = Union[float, str]
+
+
+def _numeric(v: object) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 def replay(commits: Iterable[StateCommit]) -> Dict[str, Value]:
@@ -23,10 +30,12 @@ def replay(commits: Iterable[StateCommit]) -> Dict[str, Value]:
         if c.op == "set":
             state[c.slot] = c.value
         elif c.op == "add":
+            # 나쁜 커밋 하나가 리플레이 전체를 죽이면 안 된다 (스펙 §2.6 fail-open)
             current = state.get(c.slot, 0)
-            if not isinstance(current, (int, float)) or isinstance(current, bool):
-                raise TypeError(f"cannot add to non-numeric slot {c.slot!r}")
-            if not isinstance(c.value, (int, float)) or isinstance(c.value, bool):
-                raise TypeError(f"add value must be numeric for slot {c.slot!r}")
+            if not _numeric(current) or not _numeric(c.value):
+                logger.warning(
+                    "[worldstate] skip bad add commit %s: slot %r "
+                    "current=%r value=%r", c.id, c.slot, current, c.value)
+                continue
             state[c.slot] = current + c.value
     return state
