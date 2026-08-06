@@ -61,6 +61,15 @@ def test_korean_numeral_expectation_matches():
     assert score_reply("이백오십 남으셨을 거예요.", p)["hit"] == "full"
 
 
+def test_statbar_header_does_not_score():
+    # 카드 스탯바([<img=..> | 한결 | 27세 ...])가 모든 응답에 붙어
+    # 이름·나이 프로브를 공짜 적중시킨다 — 선두 브래킷 블록은 채점 제외
+    p = Probe(0, "이름·나이", [["한결"], ["27", "스물일곱"]])
+    bar = '[<img="Land"> | 한결 | 27세 여행자 | 무소속 ] --- '
+    assert score_reply(bar + "글쎄요, 기억나지 않네요.", p)["hit"] == "miss"
+    assert score_reply(bar + "한결님, 스물일곱이시죠.", p)["hit"] == "full"
+
+
 # ------------------------------------------------------------------ #
 # 변형별 조립
 # ------------------------------------------------------------------ #
