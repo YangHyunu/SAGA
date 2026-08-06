@@ -59,3 +59,52 @@ def test_score_recall_counts_groups():
 def test_korean_numeral_expectation_matches():
     p = Probe(0, "잔액", [["250", "이백오십"]])
     assert score_reply("이백오십 남으셨을 거예요.", p)["hit"] == "full"
+
+
+# ------------------------------------------------------------------ #
+# 변형별 조립
+# ------------------------------------------------------------------ #
+
+from benchmarks.eval.variants import prepare_request, retrieve_turns, trim_window
+
+
+def _hist(pairs):
+    h = []
+    for i in range(pairs):
+        h.append({"role": "user", "content": f"질문{i} 사과 이야기"})
+        h.append({"role": "assistant", "content": f"답{i}"})
+    h.append({"role": "user", "content": "마지막 질문"})
+    return h
+
+
+def test_trim_window_keeps_last_pairs_and_trailing_user():
+    out = trim_window(_hist(12), w=8)
+    assert out[0]["content"] == "질문4 사과 이야기"    # 앞 4 pair 잘림
+    assert out[-1]["content"] == "마지막 질문"
+    assert trim_window(_hist(3), w=8) == _hist(3)      # 짧으면 그대로
+
+
+def test_retrieve_turns_is_deterministic_topk():
+    h = _hist(12)
+    h[0]["content"] = "질문0 보름달 축제 약속"
+    got = retrieve_turns(h, "보름달 약속 기억해?", k=2)
+    assert got == retrieve_turns(h, "보름달 약속 기억해?", k=2)
+    assert any("보름달" in g for g in got)
+    assert len(got) <= 2
+    # 윈도우 안 pair는 검색 대상 아님 (원문이 이미 있음)
+    assert not any("질문11" in g for g in got)
+
+
+def test_prepare_request_variants_differ():
+    from benchmarks.cardsim.lorebook import Card
+    card = Card(name="리사", description="너는 리사다.", post_history="",
+                greeting="어서 와요.")
+    h = _hist(12)
+    full = prepare_request("vanilla", card, h)
+    trimmed = prepare_request("trim", card, h)
+    retr = prepare_request("retrieval", card, h)
+    assert len(full) > len(trimmed)
+    assert "질문0" in json.dumps(full, ensure_ascii=False)
+    assert "질문0" not in json.dumps(trimmed, ensure_ascii=False)
+    assert "[과거 대화 발췌]" in retr[-1]["content"]
+    assert prepare_request("dreaming", card, h) == trimmed  # 전송분 동일, 차이는 프록시
