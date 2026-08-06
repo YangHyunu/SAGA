@@ -16,6 +16,7 @@ from dreaming.lore_shift import shift_keyed
 from dreaming.marking import mark_cache
 from dreaming.resolver import SessionResolver
 from dreaming.storage import Storage
+from dreaming import scaffold
 from dreaming.store import MemoryStore
 from saga.services.pair_ledger import extract_pairs
 
@@ -85,7 +86,25 @@ class SyncPath:
         self._store = MemoryStore(storage, session_id)
         self._keyed_lore = keyed_lore or []
 
+    def _wire_state(self) -> Dict:
+        return self._storage.get(f"{self._session}/wire", "scaffold") or {}
+
+    def _split(self, messages: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+        """프리셋 프리필 꼬리를 벗긴다 (dreaming/scaffold.py).
+
+        꼬리를 달고 처리하면 쌍 판정·주입 위치·BP3가 전부 프리필을 가리킨다.
+        """
+        return scaffold.split(messages, self._wire_state().get("tail_fp"))
+
     def process(self, messages: List[Dict]) -> Tuple[List[Dict], Verdict]:
+        state = self._wire_state()
+        tail_fp = state.get("tail_fp") or scaffold.learn(messages,
+                                                         state.get("prev_fp"))
+        self._storage.put(f"{self._session}/wire", "scaffold",
+                          {"prev_fp": scaffold.fingerprint(messages),
+                           "tail_fp": tail_fp})
+        messages, tail = scaffold.split(messages, tail_fp)
+
         pairs, last_user_hash = extract_pairs(messages)
         verdict = self._ledger.analyze_and_apply(pairs, last_user_hash)
         if (verdict.kind in ("reroll", "diverged")
@@ -94,7 +113,7 @@ class SyncPath:
         if verdict.quarantine:
             # 판정 불확실 — 주입·압축·마킹 없이 무가공 passthrough,
             # 기록은 격리 버퍼로 (스펙 §3.1)
-            return messages, verdict
+            return messages + tail, verdict
         out, _ = shift_keyed(messages, self._keyed_lore)   # 1안 (스펙 §5)
         knowledge = clip_knowledge(render_knowledge(self._store))
         bp2 = None
@@ -105,10 +124,11 @@ class SyncPath:
                                          window_start_turn=verdict.offset)
         out = inject_knowledge(out, knowledge)
         out = mark_cache(out, bp2_index=bp2)
-        return out, verdict
+        return out + tail, verdict
 
     def record_response(self, verdict: Verdict, messages: List[Dict],
                         assistant_text: str) -> None:
+        messages, _ = self._split(messages)
         pairs, last_user_hash = extract_pairs(messages)
         user_text = ""
         for m in reversed(messages):
