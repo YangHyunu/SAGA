@@ -278,3 +278,41 @@ def test_assemble_nsfw_off_drops_section_and_memory_injects_mid():
     assert "성인 지침" not in msgs[0]["content"]
     mems = [m for m in msgs if "### 기억" in m["content"]]
     assert len(mems) == 1 and mems[0]["role"] == "system"
+
+
+# ---- run2 순수 함수 ----
+
+def test_token_trim_cuts_at_pair_boundary_and_reports_start_turn():
+    from benchmarks.eval.run2 import token_trim
+    h = []
+    for i in range(10):
+        h.append({"role": "user", "content": "가" * 100})
+        h.append({"role": "assistant", "content": "나" * 100})
+    h.append({"role": "user", "content": "새 질문"})
+    win, start = token_trim(h, budget=300, count_fn=lambda t: len(t))
+    assert win[0]["role"] == "user"                    # pair 경계 절단
+    assert start == 10 - (len(win) - 1) // 2           # 남은 pair 수로 역산
+    full, s0 = token_trim(h, budget=10**9, count_fn=len)
+    assert full == h and s0 == 0
+
+
+def test_token_trim_drops_greeting_once_trimming():
+    from benchmarks.eval.run2 import token_trim
+    h = [{"role": "assistant", "content": "인사" * 50}]
+    for i in range(5):
+        h.append({"role": "user", "content": "가" * 100})
+        h.append({"role": "assistant", "content": "나" * 100})
+    win, start = token_trim(h, budget=450, count_fn=len)
+    assert all(m["content"] != "인사" * 50 for m in win)   # 인사 소멸
+    assert win[0]["role"] == "user" and start == 3
+
+
+def test_probe_schedule_covers_five_types():
+    from benchmarks.eval.run2 import probe_schedule
+    sched = probe_schedule(40)
+    types = [t for t in sched if t]
+    assert len(sched) == 40
+    assert types.count("recall") >= 8
+    for t in ("relation", "false", "update", "recent"):
+        assert sched.count(t) >= 2
+    assert sched.count(None) >= 10                     # 필러 존재
