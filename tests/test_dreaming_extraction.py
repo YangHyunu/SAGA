@@ -64,6 +64,18 @@ def test_verify_numbers_literal_match_with_comma():
     assert not verify_numbers([ExtractedNumber(name="가격", value=999)], text)
 
 
+def test_verify_numbers_korean_numerals():
+    # 실카드 실측: 원문이 한글 수사면 아라비아 검증이 실패해 과잉 격리됐다
+    assert verify_numbers([ExtractedNumber(name="개수", value=3)],
+                          "육포 세 개를 건넸다")
+    assert verify_numbers([ExtractedNumber(name="나이", value=27)],
+                          "저는 스물일곱입니다")
+    assert verify_numbers([ExtractedNumber(name="소지금", value=300)],
+                          "삼백 푼이 전부요")
+    assert not verify_numbers([ExtractedNumber(name="가격", value=40)],
+                              "쉰 골드다")
+
+
 def test_add_verified_fact_becomes_confirmed(tmp_path):
     store = _store(tmp_path)
     ext = DreamExtraction.model_validate({"facts": [

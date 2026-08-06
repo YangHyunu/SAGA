@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from dreaming.facts import dreamer_can_modify, supersede
 from dreaming.llm import LLMClient
+from dreaming.numerals import korean_spellings
 from dreaming.records import (Actor, Episode, Evidence, Fact, StateCommit,
                               TypedNumber)
 from dreaming.storage import Storage
@@ -146,13 +147,18 @@ def build_dream_prompt(raw_turns: List[Dict], facts: List[Fact],
 # ------------------------------------------------------------------ #
 
 def verify_numbers(numbers: List[ExtractedNumber], text: str) -> bool:
-    """숫자 정규식 재검증 (스펙 §3.2 B-3): 원문에 문자 그대로 있어야 한다."""
+    """숫자 재검증 (스펙 §3.2 B-3): 원문에 아라비아 표기 또는
+    한글 수사(정수 1~9999)로 문자 그대로 있어야 한다."""
     plain = text.replace(",", "")
     for n in numbers:
         v = n.value
         s = str(int(v)) if float(v).is_integer() else str(v)
-        if s not in plain:
-            return False
+        if s in plain:
+            continue
+        if float(v).is_integer() and any(
+                k in plain for k in korean_spellings(int(v))):
+            continue
+        return False
     return True
 
 
