@@ -168,6 +168,54 @@ def test_stored_plan_compresses_outbound_but_records_original(tmp_path):
     assert raw["user_text"] == "질문1"                  # 기록은 원본 기준
 
 
+_E2E_EXTRACTION = json.dumps({"episodes": [
+    {"start_turn": 0, "end_turn": 3, "title": "포션 흥정",
+     "summary": "리사와 가격을 흥정했다.", "open_threads": []}]},
+    ensure_ascii=False)
+
+
+def test_full_loop_dream_then_compressed_prefix(tmp_path):
+    storage = JsonDirStorage(tmp_path)
+    for t in range(10):
+        storage.put("sess1/raw", f"{t:06d}", {
+            "turn_number": t, "user_text": f"질문{t}",
+            "assistant_text": f"답{t}", "user_hash": f"u{t}",
+            "assistant_hash": f"a{t}"})
+    up = FakeUpstream()
+    app = create_app(_settings(tmp_path), upstream=up,
+                     dream_llm=FakeLLM(_E2E_EXTRACTION))
+    history = []
+    for t in range(10):
+        history += [f"질문{t}", f"답{t}"]
+
+    with TestClient(app) as client:
+        r = client.post("/v1/chat/completions",
+                        json=_body(*history, "새 질문"),
+                        headers={"x-dreaming-session-id": "sess1"})
+        assert r.status_code == 200                    # 첫 요청 즉시 통과
+        first = json.dumps(up.payloads[0]["messages"], ensure_ascii=False)
+        assert "질문0" in first                        # 꿈 전엔 무압축
+        for _ in range(100):                           # 캐치업 꿈 대기
+            if storage.get("sess1/compression", "plan"):
+                break
+            time.sleep(0.02)
+        r2 = client.post("/v1/chat/completions",
+                         json=_body(*history, "새 질문", "50골드다.", "다음 질문"),
+                         headers={"x-dreaming-session-id": "sess1"})
+        assert r2.status_code == 200
+
+    plan = storage.get("sess1/compression", "plan")
+    assert plan["covers_until_turn"] == 4
+    sent = up.payloads[1]["messages"]
+    joined = json.dumps(sent, ensure_ascii=False)
+    assert "포션 흥정" in joined                       # 청크 등장
+    assert "질문0" not in joined and "질문4" in joined  # 선두 치환, 꼬리 보존
+    marks = sum(1 for m in sent
+                if isinstance(m.get("content"), list)
+                and "cache_control" in m["content"][0])
+    assert marks == 3                                  # BP1 + BP2 + BP3
+
+
 def test_health(tmp_path):
     app = create_app(_settings(tmp_path), upstream=FakeUpstream())
     assert TestClient(app).get("/health").json() == {"ok": True}
