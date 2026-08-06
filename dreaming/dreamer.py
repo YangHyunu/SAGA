@@ -281,6 +281,7 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
             continue
         store.save_episode(Episode(
             range_start=start["user_hash"], range_end=end["user_hash"],
+            start_turn=ep.start_turn, end_turn=ep.end_turn,
             title=ep.title, summary=ep.summary, open_threads=ep.open_threads,
         ))
         report["episodes"] += 1

@@ -246,3 +246,4 @@ def test_episode_range_from_raw_hashes(tmp_path):
     eps = store.list_episodes()
     assert len(eps) == 1
     assert eps[0].range_start == "u0" and eps[0].range_end == "u0"
+    assert eps[0].start_turn == 0 and eps[0].end_turn == 0

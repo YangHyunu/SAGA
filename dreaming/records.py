@@ -67,6 +67,8 @@ class Episode(BaseModel):
     summary: str
     causes: List[str] = []        # 선행 에피소드 id
     open_threads: List[str] = []  # 미회수 복선 (스펙 §4.2, CFPG)
+    start_turn: Optional[int] = None   # 압축 선택용 턴 범위 (Plan 4) —
+    end_turn: Optional[int] = None     # 구버전 레코드는 None → 압축 제외
     embedding: Optional[List[float]] = None
     recorded_at: str = Field(default_factory=utc_now_iso)
 
