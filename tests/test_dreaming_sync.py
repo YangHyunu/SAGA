@@ -132,3 +132,27 @@ def test_trimmed_reroll_is_not_quarantined(tmp_path):
     v2 = ledger.analyze_and_apply(pairs, "u25")  # 동일 재전송 = 리롤
     assert v2.kind == "reroll"
     assert not v2.quarantine
+
+
+def test_compression_uses_window_offset(tmp_path):
+    # 트림 합류 세션(패드 베이스라인)에서 플랜이 구간을 못 덮으면
+    # 드롭 없이 청크만 prepend — 위치 오치환(재생으로 실증된 결함 ②) 금지
+    import json
+    from dreaming.identity import _BASELINE_PAD
+    from dreaming.storage import JsonDirStorage
+    from dreaming.sync import SyncPath
+    storage = JsonDirStorage(tmp_path)
+    storage.put("s/compression", "plan", {
+        "covers_until_turn": _BASELINE_PAD,        # 패드 이전 구간만 커버
+        "messages": [{"role": "assistant", "content": "[지난 이야기 · 복원]"}]})
+    sp = SyncPath(storage, "s")
+    msgs = [{"role": "system", "content": "너는 리사다."}]
+    for i in range(3):
+        msgs += [{"role": "user", "content": f"질문{i}"},
+                 {"role": "assistant", "content": f"답{i}"}]
+    msgs.append({"role": "user", "content": "현재 질문"})
+    out, v = sp.process(msgs)
+    joined = json.dumps(out, ensure_ascii=False)
+    assert v.aligned and v.offset == _BASELINE_PAD
+    assert "[지난 이야기 · 복원]" in joined        # 청크 복원
+    assert "질문0" in joined                       # 윈도우 pair는 무드롭

@@ -73,20 +73,26 @@ def build_compression(store: MemoryStore, last_turn: int) -> Optional[Dict]:
     return {"covers_until_turn": next_turn, "messages": messages}
 
 
-def apply_compression(messages: List[Dict],
-                      plan: Dict) -> Tuple[List[Dict], Optional[int]]:
-    """히스토리 선두 K pair를 청크로 위치 기반 치환 (스펙 §5 레이아웃).
+def apply_compression(messages: List[Dict], plan: Dict,
+                      window_start_turn: int = 0
+                      ) -> Tuple[List[Dict], Optional[int]]:
+    """히스토리 선두의 압축 대상 pair를 청크로 치환 (스펙 §5 레이아웃).
 
+    window_start_turn = 요청 첫 pair의 세션 턴 번호 (트림 시 0이 아님).
+    드롭 수 = 압축 구간 중 윈도우에 아직 남아 있는 pair 수 — 트림이 이미
+    구간을 지나갔으면 0이고, 그때 청크 prepend는 사라진 컨텍스트의 복원이다.
     선두 system 블록과 인사(첫 user 이전 assistant)는 보존한다.
-    히스토리가 플랜보다 짧으면(리롤 직후·낯선 요청) 원본 그대로 — fail-open.
+    히스토리가 드롭 수보다 짧으면 원본 그대로 — fail-open.
     반환: (메시지, 첫 청크 인덱스 | None).
     """
-    k = plan["covers_until_turn"]
+    to_drop = plan["covers_until_turn"] - window_start_turn
+    if to_drop < 0:
+        to_drop = 0
     i = 0
     while i < len(messages) and messages[i].get("role") != "user":
         i += 1                             # 첫 user 앞(system·인사)은 보존
     pairs, j = 0, i
-    while j < len(messages) and pairs < k:
+    while j < len(messages) and pairs < to_drop:
         if messages[j].get("role") == "user":
             if (j + 1 < len(messages)
                     and messages[j + 1].get("role") == "assistant"):
@@ -96,7 +102,7 @@ def apply_compression(messages: List[Dict],
                 break                      # 미완 pair(현재 턴) — 압축 불가
         else:
             j += 1
-    if pairs < k:
+    if pairs < to_drop:
         return messages, None
     out = messages[:i] + copy.deepcopy(plan["messages"]) + messages[j:]
     return out, i

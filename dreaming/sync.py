@@ -99,8 +99,10 @@ class SyncPath:
         knowledge = clip_knowledge(render_knowledge(self._store))
         bp2 = None
         plan = self._storage.get(f"{self._session}/compression", "plan")
-        if plan is not None:
-            out, bp2 = apply_compression(out, plan)
+        if (plan is not None and verdict.aligned
+                and verdict.offset is not None):
+            out, bp2 = apply_compression(out, plan,
+                                         window_start_turn=verdict.offset)
         out = inject_knowledge(out, knowledge)
         out = mark_cache(out, bp2_index=bp2)
         return out, verdict

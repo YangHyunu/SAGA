@@ -155,3 +155,35 @@ def test_mark_cache_bp2():
                     if m["role"] == "assistant")
     assert marked[last_asst]["cache_control"]["type"] == "ephemeral"  # BP3
     assert sum(1 for m in marked if "cache_control" in m) == 3
+
+
+# ------------------------------------------------------------------ #
+# 윈도우 앵커 — 트림 정상상태 (corpus3 실증 결함 ②)
+# ------------------------------------------------------------------ #
+
+def test_window_past_covers_restores_chunks_without_drop():
+    # 트림이 이미 압축 구간을 지나감 (window_start 5 ≥ covers 2) —
+    # 드롭 0 + 청크 prepend = 사라진 컨텍스트 복원 (이 기능의 본래 가치)
+    msgs = _msgs(3)
+    out, bp2 = apply_compression(msgs, _PLAN, window_start_turn=5)
+    texts = [m["content"] for m in out]
+    assert "[지난 이야기 · 초반]" in texts
+    assert all(f"질문{i}" in "".join(texts) for i in range(3))   # 전량 보존
+    assert bp2 == 2                                # system+인사 다음
+    assert len(out) == len(msgs) + 1
+
+
+def test_window_inside_covers_drops_remainder_only():
+    # 윈도우 시작 1, covers 2 → 윈도우에 남은 압축 대상은 1 pair뿐
+    msgs = _msgs(4)
+    out, bp2 = apply_compression(msgs, _PLAN, window_start_turn=1)
+    texts = [m["content"] for m in out]
+    assert "질문0" not in "".join(texts)           # 첫 pair(턴1)만 드롭
+    assert "질문1" in "".join(texts)               # 턴2부터 보존
+    assert bp2 == 2
+
+
+def test_default_window_start_keeps_existing_behavior():
+    msgs = _msgs(4)
+    assert apply_compression(msgs, _PLAN) == \
+        apply_compression(msgs, _PLAN, window_start_turn=0)
