@@ -108,3 +108,27 @@ def test_prepare_request_variants_differ():
     assert "질문0" not in json.dumps(trimmed, ensure_ascii=False)
     assert "[과거 대화 발췌]" in retr[-1]["content"]
     assert prepare_request("dreaming", card, h) == trimmed  # 전송분 동일, 차이는 프록시
+
+
+# ------------------------------------------------------------------ #
+# 드라이버 — 결과 조립 (네트워크 없는 순수 함수만)
+# ------------------------------------------------------------------ #
+
+from benchmarks.eval.run import build_result
+
+
+def test_build_result_scores_probes_and_totals():
+    turns = []
+    for i in range(30):
+        reply = "기억해요, 한결님. 스물일곱이시죠." if i == 21 else f"응답{i}"
+        turns.append({"turn": i, "user": f"발화{i}", "reply": reply,
+                      "prompt": 100, "cached": 90 if i else 0, "write": 0,
+                      "cost": 0.001, "sec": 1.0})
+    r = build_result("trim", "s1", "m", turns)
+    assert r["totals"]["oracle_full"] == 1            # 21번 프로브만 적중
+    assert r["totals"]["cost"] == 0.03
+    assert abs(r["totals"]["avg_hit_t2"] - 90.0) < 1e-6
+    p21 = next(p for p in r["probes"] if p["turn"] == 21)
+    assert p21["hit"] == "full" and "한결" in p21["reply"]
+    recall = next(p for p in r["probes"] if p["turn"] == 29)
+    assert recall["matched"] == 0 and recall["total"] == 5
