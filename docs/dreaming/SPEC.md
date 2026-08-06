@@ -322,8 +322,12 @@ HypaV3의 편집 UI(textarea 수정, Important 토글, 재요약 diff 리뷰)를
   - 서사: LLM judge (NARRA-Gym 3-judge 평균 참고).
   - 10~20% 수동 감사 (챈 신뢰 포맷).
 - **대조군 (의무)**: Risu 순정 / HypaV3 / **단순 turn-retrieval 베이스라인**
-  (2511.17208 — 4타입 스키마는 이 베이스라인을 ablation으로 이겨야 정당화) / Dreaming.
+  (2604.11628 Turn Isolation Retrieval — 4타입 스키마는 이 베이스라인을 ablation으로
+  이겨야 정당화. 단순-베이스라인 논지의 원 인용이던 2511.17208은 EMem/EDU 표현법
+  논문으로 확인돼 교정) / Dreaming.
 - **병기 지표**: $ / 캐시율 / 턴 준비시간 (The Seed 표 포맷 — 55점 수동채점과 비교 가능하게).
+- **상세 프로토콜**: [EVAL2.md](EVAL2.md) — 80턴 3단계 대본, 프로브 5유형 ~40체크,
+  이중 오라클(결정론+LLM judge), 3회 반복 mean±std (2026-08-06 딥리서치 종합).
 
 ---
 
