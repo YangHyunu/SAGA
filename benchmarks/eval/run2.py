@@ -359,7 +359,8 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             if j["pass"] is False and variant == "dreaming":
                 miss = decompose_miss(DATA, session, fact)
             probes.append({"turn": i, "ptype": ptype, "fact": fact.text,
-                           "value": fact.value, "question": utext,
+                           "value": fact.value, "wrong": wrong,
+                           "question": utext,
                            "reply": st["reply"], "oracle": o,
                            "judge": j["pass"], "why": j["why"],
                            "miss_cause": miss,

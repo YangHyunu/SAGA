@@ -37,6 +37,12 @@ def test_extract_facts_parses_lines_and_skips_garbage():
     assert all(not f.probed for f in out)
 
 
+def test_extract_prompt_demands_noun_values():
+    # 파일럿 50턴: 값 "시장에 가기로 함"(문장형)이 recent 대조군을 오판시킴
+    from benchmarks.eval.director import _EXTRACT_SYS
+    assert "명사형" in _EXTRACT_SYS and "문장형" in _EXTRACT_SYS
+
+
 def test_ledger_roundtrip_and_unprobed_filter():
     led = Ledger()
     led.add([DirFact(fid="f1", kind="exact", value="250", text="잔액", turn=3),
