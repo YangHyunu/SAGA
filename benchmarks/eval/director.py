@@ -68,12 +68,15 @@ class Ledger:
 
 _PROBE_SYS = (
     "너는 RP 유저 대사 작가다. 주어진 과거 사실을 캐릭터가 기억하는지 확인하는 "
-    "자연스러운 유저 발화 하나를 만든다. 사실의 답 자체를 말하지 말고, 반드시 "
-    "구체적으로 되묻는 직접 의문문 포함. 1~2문장. 발화만 출력.")
+    "유저 발화 하나를 만든다. 기억력 퀴즈처럼 보이면 실패다 — 직전 장면에서 "
+    "그 사실이 지금 필요해진 계기(행동·상황 한 문장)를 먼저 깔고, 그 흐름에서 "
+    "구체적으로 되묻는 직접 의문문으로 잇는다. 사실의 답 자체는 절대 말하지 "
+    "않는다. 2~3문장, 발화만 출력.")
 
 _FALSE_SYS = (
     "너는 RP 유저 대사 작가다. 주어진 사실의 핵심값을 그럴듯하게 틀린 값으로 "
-    "바꿔서, 그 틀린 값을 사실인 양 전제하는 유저 발화를 만든다. 출력 형식:\n"
+    "바꿔서, 그 틀린 값을 사실인 양 전제하는 유저 발화를 만든다. 직전 장면에서 "
+    "자연스럽게 이어지는 말이어야 한다 — 뜬금없는 회상 금지. 출력 형식:\n"
     "질문: <발화>\n오염값: <틀린 값>")
 
 
@@ -84,12 +87,24 @@ def eligible(ledger: Ledger, window_start_turn: int,
             if f.turn < window_start_turn]
 
 
-def make_probe(llm: LlmFn, fact: DirFact) -> str:
-    return llm(_PROBE_SYS, f"[과거 사실]\n{fact.text} (핵심값: {fact.value})").strip()
+def _probe_user(fact: DirFact, scene: str, style: str) -> str:
+    parts = []
+    if scene:
+        parts.append(f"[직전 캐릭터 응답 — 여기에 이어서 말한다]\n{scene[-800:]}")
+    if style:
+        parts.append(f"[유저 문체 예시]\n{style}")
+    parts.append(f"[과거 사실]\n{fact.text} (핵심값: {fact.value})")
+    return "\n".join(parts)
 
 
-def make_false_premise(llm: LlmFn, fact: DirFact) -> Tuple[str, str]:
-    raw = llm(_FALSE_SYS, f"[사실]\n{fact.text} (핵심값: {fact.value})")
+def make_probe(llm: LlmFn, fact: DirFact, scene: str = "",
+               style: str = "") -> str:
+    return llm(_PROBE_SYS, _probe_user(fact, scene, style)).strip()
+
+
+def make_false_premise(llm: LlmFn, fact: DirFact, scene: str = "",
+                       style: str = "") -> Tuple[str, str]:
+    raw = llm(_FALSE_SYS, _probe_user(fact, scene, style))
     q, wrong = "", ""
     for line in raw.splitlines():
         if line.startswith("질문:"):

@@ -7,6 +7,7 @@ from benchmarks.eval.director import (
     eligible,
     extract_facts,
     make_false_premise,
+    make_probe,
     probe_plan,
 )
 from benchmarks.eval.judge_check import agreement
@@ -625,3 +626,18 @@ def test_assembly_is_byte_identical_to_real_capture():
         window = [{"role": m["role"], "content": m["content"]}
                   for m in cap[1:tail] if m["role"] != "system"]
         assert build_wire(preset, card, window) == cap, cap_path
+
+
+def test_probe_gets_scene_and_style_context():
+    """프로브 발화 생성이 직전 장면·문체를 받는다 — 뜬금없는 퀴즈 방지."""
+    seen = {}
+
+    def spy(sys, user):
+        seen["sys"], seen["user"] = sys, user
+        return "발화"
+
+    make_probe(spy, DirFact(fid="x", kind="exact", value="250골드",
+                            text="잔액", turn=1),
+               scene="객잔 카운터 앞이다.", style="- 반말 예시")
+    assert "객잔 카운터" in seen["user"] and "반말 예시" in seen["user"]
+    assert "계기" in seen["sys"]                        # 퀴즈 금지 지침

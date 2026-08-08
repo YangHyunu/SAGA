@@ -249,9 +249,11 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             if plan:
                 _, fact = plan[0]
         if fact is not None and ptype == "false":
-            utext, wrong = make_false_premise(director, fact)
+            utext, wrong = make_false_premise(director, fact,
+                                              scene=last_reply, style=few_shot)
         elif fact is not None:
-            utext = make_probe(director, fact)
+            utext = make_probe(director, fact,
+                               scene=last_reply, style=few_shot)
         else:
             ptype = None                       # eligible 없으면 필러로 강등
             beat = _UPDATE_BEAT if i in UPDATE_EVENTS else "자연스럽게 이어간다."
