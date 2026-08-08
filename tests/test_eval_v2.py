@@ -753,3 +753,15 @@ def test_beats_have_no_generic_npc_invite():
     # 범용 NPC 초대 비트 없음 — 당채련 외 인물 유입 차단
     from benchmarks.eval.run2 import _BEATS
     assert all("인물" not in b for b in _BEATS)
+
+
+def test_report_splits_by_window():
+    # LITM(창내 실패) vs eviction(창밖 실패) 분리 — 구 JSON은 키 부재=창밖
+    from benchmarks.eval.report2 import window_split
+    probes = [{"judge": True, "in_window": True},
+              {"judge": False, "in_window": True},
+              {"judge": False, "in_window": False},
+              {"judge": None, "in_window": False},   # 파싱 실패는 분모 제외
+              {"judge": True}]                       # 구 JSON — 창밖 취급
+    inw, out = window_split(probes)
+    assert inw == (1, 2) and out == (1, 2)

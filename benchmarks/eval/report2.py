@@ -15,6 +15,21 @@ from typing import Dict, List
 _TYPES = ("recall", "relation", "false", "update", "recent")
 
 
+def window_split(probes: List[Dict]):
+    """(창내 pass, 창내 n), (창밖 pass, 창밖 n) — LITM/eviction 실패 분리.
+
+    구 JSON은 in_window 부재 = 창밖 취급(구 게이팅이 evict-전용이라 사실과
+    일치). judge None(파싱 실패)은 분모에서 뺀다.
+    """
+    inw = [p for p in probes if p.get("in_window") and p["judge"] is not None]
+    out = [p for p in probes
+           if not p.get("in_window") and p["judge"] is not None]
+
+    def _p(xs):
+        return (sum(1 for p in xs if p["judge"] is True), len(xs))
+    return _p(inw), _p(out)
+
+
 def aggregate(results: List[Dict]) -> Dict:
     agg: Dict = {}
     by_variant = defaultdict(list)
@@ -60,7 +75,9 @@ def aggregate(results: List[Dict]) -> Dict:
                 dist[bucket][0] += p["judge"]
                 dist[bucket][1] += 1
         parsed = scored - unparsed
+        inw, outw = window_split([p for r in runs for p in r["probes"]])
         agg[variant] = {
+            "window": {"in": inw, "out": outw},
             "by_type": by_type,
             "miss_causes": dict(misses),
             "distance": {k: v[0] / v[1] for k, v in sorted(dist.items())},
@@ -87,6 +104,13 @@ def render(agg: Dict, results: List[Dict]) -> str:
             cells.append(f"{row['mean']:.0%}±{row['std']:.0%}" if row else "-")
         lines.append(f"| {variant} | " + " | ".join(cells)
                      + f" | {a['cost_mean']:.2f} |")
+    lines.append("")
+    lines.append("## 창내(LITM) vs 창밖(eviction) 통과율")
+    lines.append("| variant | 창내 | 창밖 |")
+    lines.append("|" + "---|" * 3)
+    for variant, a in sorted(agg.items()):
+        (ip, inn), (op, on) = a["window"]["in"], a["window"]["out"]
+        lines.append(f"| {variant} | {ip}/{inn} | {op}/{on} |")
     lines.append("")
     lines.append("## 채점기 건강 — judge / 오라클 / 불일치")
     lines.append("| variant | judge | 오라클 | 불일치 | 파싱실패 | n |")
