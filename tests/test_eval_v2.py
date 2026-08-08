@@ -176,27 +176,28 @@ def _led():
     return led
 
 
-def test_eligible_only_outside_window():
+def test_eligible_distance_gated():
     led = _led()
-    got = [f.fid for f in eligible(led, window_start_turn=10)]
-    assert got == ["f0", "f2", "f3"]          # turn 30(f1)은 창 안
-    assert [f.fid for f in eligible(led, 10, kind="relation")] == ["f2"]
+    got = [f.fid for f in eligible(led, turn_now=35)]
+    assert got == ["f0", "f2", "f3"]          # 나이 33·31·29 ≥ 15, f1은 나이 5
+    assert [f.fid for f in eligible(led, 35, kind="relation")] == ["f2"]
+    assert [f.fid for f in eligible(led, 17)] == ["f0"]   # 나이 15 경계 포함
+    assert eligible(led, 16) == []                        # 나이 14 미달
 
 
 def test_probe_plan_marks_probed_and_respects_want():
     led = _led()
-    plan = probe_plan(led, window_start_turn=10,
-                      want={"recall": 1, "relation": 1, "false": 1})
+    plan = probe_plan(led, 35, want={"recall": 1, "relation": 1, "false": 1})
     types = [t for t, _ in plan]
     assert types == ["recall", "relation", "false"]
     assert len({f.fid for _, f in plan}) == 3          # 사실 중복 출제 없음
-    assert len(eligible(led, 10)) == 0                 # 전부 probed 처리
+    assert len(eligible(led, 35)) == 0                 # 전부 probed 처리
 
 
-def test_probe_plan_recent_uses_in_window_facts():
+def test_probe_plan_recent_pool_is_young():
     led = _led()
-    plan = probe_plan(led, window_start_turn=10, want={"recent": 2})
-    assert [f.fid for _, f in plan] == ["f1"]          # 창 안(turn 30)만
+    plan = probe_plan(led, 35, want={"recent": 2})
+    assert [f.fid for _, f in plan] == ["f1"]          # 나이 5 ≤ 8만 recent
 
 
 def test_false_premise_corrupts_value():
@@ -736,3 +737,19 @@ def test_run_reroll_abort_threshold():
     # 부분 결과 저장 후 SystemExit(비정상 종료)로 상위 스크립트에 알린다
     from benchmarks.eval.run2 import MAX_RUN_REROLLS
     assert MAX_RUN_REROLLS == 10
+
+
+def test_npc_event_introduces_dangchaeryun_only():
+    # NPC 등장은 당채련 하나로 고정 (T41~T45 자연 합류), 주인공은 위지소연
+    from benchmarks.eval import run2
+    assert run2.NPC_NAME == "당채련"
+    assert run2.NPC_EVENT_TURN == 40 and run2.NPC_EVENT_RETRY == 44
+    beat = run2.pick_beat(40, npc_due=True)
+    assert "당채련" in beat and "위지소연" in beat      # 이름 명시 + 주역 고정
+    assert "당채련" not in run2.pick_beat(40)           # npc_due 없으면 평소 비트
+
+
+def test_beats_have_no_generic_npc_invite():
+    # 범용 NPC 초대 비트 없음 — 당채련 외 인물 유입 차단
+    from benchmarks.eval.run2 import _BEATS
+    assert all("인물" not in b for b in _BEATS)

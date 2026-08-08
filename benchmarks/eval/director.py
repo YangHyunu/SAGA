@@ -86,11 +86,19 @@ _FALSE_SYS = (
     "질문: <발화>\n오염값: <틀린 값>")
 
 
-def eligible(ledger: Ledger, window_start_turn: int,
-             kind: Optional[str] = None) -> List[DirFact]:
-    """가시 창 밖으로 evict된 사실만 (The Seed: outside-visible-window)."""
+# LITM 분리 게이팅: 창 밖 여부가 아니라 사실 나이로 출제한다. evict-전용
+# 게이팅은 창 안 원거리 실패(lost in the middle)를 못 재고 창이 클수록
+# 벤치가 관대해진다. evict 여부는 run2가 프로브에 in_window로 별도 기록.
+# 파일럿 실측 — 풀컨텍스트 vanilla가 dist 19+에서 실패, dist 9는 통과.
+MIN_PROBE_AGE = 15   # 이 나이(현재턴-기록턴)부터 원거리 프로브 출제
+RECENT_MAX_AGE = 8   # 단기 대조군(recent) 상한
+
+
+def eligible(ledger: Ledger, turn_now: int, kind: Optional[str] = None,
+             min_age: int = MIN_PROBE_AGE) -> List[DirFact]:
+    """나이가 min_age 이상인 미출제 사실."""
     return [f for f in ledger.unprobed(kind)
-            if f.turn < window_start_turn]
+            if turn_now - f.turn >= min_age]
 
 
 def _probe_user(fact: DirFact, scene: str, style: str) -> str:
@@ -124,19 +132,20 @@ _PTYPE_KIND = {"recall": "exact", "relation": "relation",
                "false": None, "update": "exact", "recent": None}
 
 
-def probe_plan(ledger: Ledger, window_start_turn: int,
-               want: Dict[str, int]) -> List[Tuple[str, DirFact]]:
+def probe_plan(ledger: Ledger, turn_now: int, want: Dict[str, int],
+               min_age: int = MIN_PROBE_AGE) -> List[Tuple[str, DirFact]]:
     """유형별 수만큼 뽑고 probed 마킹.
 
-    recent만 창 안(단기 대조군), 나머지는 전부 창 밖(evict)에서 뽑는다.
+    recent만 젊은 사실(단기 대조군), 나머지는 나이 min_age 이상에서 뽑는다.
     """
     plan: List[Tuple[str, DirFact]] = []
     for ptype, n in want.items():
         if ptype == "recent":
             pool = [f for f in ledger.unprobed(_PTYPE_KIND[ptype])
-                    if f.turn >= window_start_turn]
+                    if turn_now - f.turn <= RECENT_MAX_AGE]
         else:
-            pool = eligible(ledger, window_start_turn, kind=_PTYPE_KIND[ptype])
+            pool = eligible(ledger, turn_now, kind=_PTYPE_KIND[ptype],
+                            min_age=min_age)
         pool.sort(key=lambda f: f.turn)
         for f in pool[:n]:
             f.probed = True

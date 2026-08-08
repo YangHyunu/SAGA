@@ -58,6 +58,13 @@ TURNS = 80
 PROBE_EVERY = 10              # 이 간격마다 발화 하나가 과거를 슬며시 되짚는다
 TRIM_TOKENS = 12000
 UPDATE_EVENTS = (12, 28)      # 지식갱신 강제 턴
+# NPC 등장은 당채련 하나로 고정 — 런 간 같은 사건 축이라 비교 가능하다.
+# 로어 7엔트리는 항상 주입되므로(키워드 게이팅 없음) 활성화 문제가 아니라
+# 장면 유도 문제다: 이름을 직접 불러 나레이터가 꺼내게 한다. 이 이름이
+# 디렉터 카드 지식 선취 금지의 유일한 예외. 파일럿 50/80턴 NPC 0명 실측.
+NPC_NAME = "당채련"
+NPC_EVENT_TURN = 40           # 0-기준 (표시 T41)에 첫 유도
+NPC_EVENT_RETRY = 44          # 이때까지 미등장이면 다시 유도
 # 캡처에서 RisuAI가 실제로 보낸 값이 4000이다 (capture-mythos req-001).
 # 실측 완성 평균은 771토큰이라 캡이 물리지 않는다 — 절단은 기억 실패로
 # 오인되는 교란이라 finish_reason을 턴마다 기록해 0%임을 증명한다.
@@ -270,8 +277,16 @@ _BEATS = ("장면이나 장소를 바꾸는 행동을 한다 — 밖으로 나�
           "무언가를 세거나 값을 치르기.")
 
 
-def pick_beat(i: int) -> str:
-    """턴 i의 필러 지시. UPDATE_EVENTS > 5턴 주기 비트 > 평서 진행."""
+_NPC_BEAT = (f"{NPC_NAME}(이)가 자연스럽게 장면에 합류할 상황을 만든다 — "
+             f"찾아가거나, 우연히 마주치거나, 이름을 언급하며 소식을 묻는다. "
+             f"'{NPC_NAME}'이라는 이름은 말해도 되지만 그 외 설정은 지어내지 "
+             f"마라. 장면의 중심은 계속 위지소연이다 — {NPC_NAME}은 곁가지로만.")
+
+
+def pick_beat(i: int, npc_due: bool = False) -> str:
+    """턴 i의 필러 지시. NPC 이벤트 > UPDATE_EVENTS > 5턴 주기 비트 > 평서."""
+    if npc_due:
+        return _NPC_BEAT
     if i in UPDATE_EVENTS:
         return _UPDATE_BEAT
     if i % 5 == 4:
@@ -316,12 +331,11 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     sched = probe_schedule(total_turns, probe_every)
 
     for i in range(total_turns):
-        _, win_start = token_trim(history, trim_tokens)
         ptype = sched[i]
         fact, wrong = None, ""
         t_dir = time.time()
         if ptype:
-            plan = probe_plan(ledger, win_start, {ptype: 1})
+            plan = probe_plan(ledger, i, {ptype: 1})
             if plan:
                 _, fact = plan[0]
         if fact is not None and ptype == "false":
@@ -333,9 +347,14 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         else:
             ptype = None                       # eligible 없으면 필러로 강등
             ctx = recent_dialogue(history) or f"[캐릭터]\n{last_reply[-600:]}"
+            # T41에 무조건 한 번, T45까지는 히스토리에 이름 없을 때만 재유도
+            npc_due = (i == NPC_EVENT_TURN
+                       or (NPC_EVENT_TURN < i <= NPC_EVENT_RETRY
+                           and not any(NPC_NAME in m["content"]
+                                       for m in history)))
             utext = director(
                 dir_sys + f"\n[작품 설정]\n{card.get('description', '')[:2000]}",
-                f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i)}")
+                f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")
         dir_sec = round(time.time() - t_dir, 1)
 
         history.append({"role": "user", "content": utext})
@@ -405,7 +424,11 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                            "reply": st["reply"], "oracle": o,
                            "judge": j["pass"], "why": j["why"],
                            "miss_cause": miss,
-                           "distance_turns": i - fact.turn})
+                           "distance_turns": i - fact.turn,
+                           # 나레이터가 실제 본 창 기준 — 창내 실패=LITM,
+                           # 창밖 실패=eviction. vanilla는 항상 창내.
+                           "in_window": (variant == "vanilla"
+                                         or fact.turn >= win_start)})
         if variant == "dreaming" and i in (total_turns // 3,
                                            2 * total_turns // 3):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
