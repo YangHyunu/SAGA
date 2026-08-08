@@ -648,3 +648,26 @@ def test_token_trim_counts_with_o200k_like_risuai():
     text = "위지소연은 대청마루에 앉아 마당을 응시했다." * 20
     assert _count(text) == len(
         tiktoken.get_encoding("o200k_base").encode(text))
+
+
+def test_oracle_returns_none_when_value_is_part_of_char_name():
+    """나레이션이 캐릭터 이름을 상시 언급 — 이름 계열 값은 오라클 판정 불가."""
+    assert oracle_pass("소연은 눈을 감았다", "소연", char_name="위지소연") is None
+    assert oracle_pass("소연은 눈을 감았다", "250골드",
+                       char_name="위지소연") is False
+
+
+def test_aggregate_excludes_oracle_na_from_rates():
+    from benchmarks.eval.report2 import aggregate
+    a_ok, a_na = _res("dreaming", 0, True), _res("dreaming", 1, True)
+    a_na["probes"][0]["oracle"] = None
+    a = aggregate([a_ok, a_na])["dreaming"]
+    assert a["oracle_na"] == 1
+    assert a["oracle_rate"] == 1.0          # None 제외한 분모 1건 중 1건
+    assert a["disagree_rate"] == 0.0
+
+
+def test_probe_prompt_forbids_time_anchoring():
+    """'방금 뭐라고 했지?' — 18턴 전 일을 방금이라 부르는 오류 방지."""
+    from benchmarks.eval.director import _PROBE_SYS
+    assert "방금" in _PROBE_SYS and "시점" in _PROBE_SYS

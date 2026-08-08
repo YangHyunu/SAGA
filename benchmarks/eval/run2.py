@@ -313,7 +313,8 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                       "sec_director": dir_sec, "sec_extract": ext_sec,
                       "ptype": ptype})
         if fact is not None:
-            o = oracle_pass(st["reply"], fact.value, wrong_value=wrong)
+            o = oracle_pass(st["reply"], fact.value, wrong_value=wrong,
+                            char_name=card.get("name", ""))
             j = judge_pass(judge, ptype, fact.text, fact.value, utext,
                            st["reply"], wrong_value=wrong)
             miss = "-"

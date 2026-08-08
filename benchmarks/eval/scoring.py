@@ -78,13 +78,19 @@ def _hit(hay: str, expected_value: str) -> bool:
 
 
 def oracle_pass(reply: str, expected_value: str,
-                wrong_value: str = "") -> bool:
+                wrong_value: str = "", char_name: str = "") -> Optional[bool]:
     """결정론 채점. 스탯바를 벗기고 한글 수사 동치를 허용한다.
 
     스탯바에는 이름·나이가 상시 박혀 있어 그대로 두면 모든 변형이 공짜로
     적중한다 (oracle.score_reply와 같은 처리 — 예전 구현은 이걸 빼먹었다).
     wrong_value가 주어지면(false 프로브) 오염값 복창은 즉시 실패다.
+
+    기대값이 캐릭터 이름의 일부면 None — 나레이션이 캐릭터 이름을 상시
+    언급하므로("소연은 눈을 감은 채…") 문자열 포함으로는 판정 불가다.
+    파일럿 실측: relation 프로브(값 "소연")가 오라클 공짜 적중, judge는 N.
     """
+    if char_name and _norm(expected_value) in _norm(char_name):
+        return None
     hay = _norm(_STATBAR.sub("", reply))
     if wrong_value and _hit(hay, wrong_value):
         return False

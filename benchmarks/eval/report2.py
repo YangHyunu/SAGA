@@ -38,16 +38,22 @@ def aggregate(results: List[Dict]) -> Dict:
                     "runs": len(rates)}
         misses = defaultdict(int)
         dist = defaultdict(lambda: [0, 0])
-        judged = oracle_hits = agree = scored = unparsed = 0
+        judged = oracle_hits = oracle_scored = scored = unparsed = 0
+        agree = agree_base = 0
         for r in runs:
             for p in r["probes"]:
-                oracle_hits += bool(p["oracle"])
+                # oracle None = 판정 불가(값이 캐릭터 이름 등) — 분모에서 뺀다
+                if p["oracle"] is not None:
+                    oracle_hits += bool(p["oracle"])
+                    oracle_scored += 1
                 scored += 1
                 if p["judge"] is None:
                     unparsed += 1
                     continue
                 judged += p["judge"]
-                agree += (bool(p["judge"]) == bool(p["oracle"]))
+                if p["oracle"] is not None:
+                    agree += (bool(p["judge"]) == bool(p["oracle"]))
+                    agree_base += 1
                 if p["judge"] is False and p["miss_cause"] != "-":
                     misses[p["miss_cause"]] += 1
                 bucket = (p["distance_turns"] // 10) * 10
@@ -62,9 +68,10 @@ def aggregate(results: List[Dict]) -> Dict:
             # 오라클과 judge의 불일치 해소 규칙은 문헌에 없다. 둘 다 내고
             # 불일치율 자체를 채점기 건강 지표로 읽는다 (PoLL·Thakur).
             "judge_rate": judged / parsed if parsed else 0.0,
-            "oracle_rate": oracle_hits / scored if scored else 0.0,
-            "disagree_rate": 1 - agree / parsed if parsed else 0.0,
+            "oracle_rate": oracle_hits / oracle_scored if oracle_scored else 0.0,
+            "disagree_rate": 1 - agree / agree_base if agree_base else 0.0,
             "unparsed": unparsed, "probes": scored,
+            "oracle_na": scored - oracle_scored,
         }
     return agg
 
