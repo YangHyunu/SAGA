@@ -358,6 +358,45 @@ def test_assemble_merges_systems_and_splices_history():
     assert msgs[-2]["role"] == "assistant"
 
 
+def test_empty_chat_range_still_breaks_system_merge():
+    """chat 아이템은 아무것도 못 내놔도 system 병합의 경계다.
+
+    뮈토스 첫 턴은 Previous Context Data가 비어 본체(48403)와 Current
+    Request(464)가 인접하는데, 실캡처는 그때도 별도 메시지로 보낸다.
+    합쳐버리면 턴마다 선두 system 길이가 달라져 캐시 경계가 흔들린다.
+    """
+    from benchmarks.eval.preset2wire import assemble
+    preset = {"promptTemplate": [
+        {"type": "plain", "role": "system", "text": "본체"},
+        {"type": "chat", "role": "system", "rangeStart": 0, "rangeEnd": -2},
+        {"type": "plain", "role": "system", "text": "현재 요청"},
+        {"type": "chat", "role": "system", "rangeStart": -2, "rangeEnd": "end"},
+    ]}
+    hist = [{"role": "assistant", "content": "인사"},
+            {"role": "user", "content": "질문"}]
+    msgs = assemble(preset, {}, hist)            # 앞 구간이 비는 첫 턴
+    assert [(m["role"], m["content"]) for m in msgs] == [
+        ("system", "본체"), ("system", "현재 요청"),
+        ("assistant", "인사"), ("user", "질문")]
+
+
+def test_full_system_prompt_route_keeps_systems_unmerged():
+    """hasFullSystemPrompt 경로는 선두 병합도 중간 접기도 안 한다.
+
+    request.ts:355에서 두 동작이 같은 조건 아래 묶여 있다 — 캡처 req-005가
+    선두 system 2개를, req-006이 연속 user 2개를 그대로 실어 확인됐다.
+    """
+    from benchmarks.eval.preset2wire import reformat
+    msgs = [{"role": "system", "content": "본체"},
+            {"role": "system", "content": "현재 요청"},
+            {"role": "user", "content": "u1"},
+            {"role": "user", "content": "u2"}]
+    assert reformat(msgs, fold_mid_system=False, alternate=False) == msgs
+    folded = reformat(msgs)                       # 기본값(구형 프로바이더)
+    assert folded[0]["content"] == "본체\n\n현재 요청"
+    assert len(folded) == 2                       # 연속 user 병합
+
+
 def test_assemble_nsfw_off_drops_section_and_memory_injects_mid():
     from benchmarks.eval.preset2wire import assemble
     hist = _hist(3)

@@ -157,10 +157,14 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
                     card={"description": card.get("description", ""),
                           "persona": card.get("persona", ""),
                           "lore": card.get("lore", []),
-                          "globalnote": card.get("globalnote", "")},
+                          "globalnote": card.get("globalnote", ""),
+                          "authornote": card.get("authornote", "")},
                     char_name=card.get("name", ""),
                     user_name=card.get("user_name", ""))
-    return reformat(msgs)
+    # 캡처 확인: Custom API 경로는 hasFullSystemPrompt + requiresAlternateRole
+    # 해제로 동작한다 — 중간 system(req-005의 2534자)도, 연속 user(req-006)도
+    # 그대로 실린다. 둘 다 끄지 않으면 우리 와이어만 다른 모양이 된다.
+    return reformat(msgs, fold_mid_system=False, alternate=False)
 
 
 def _call_upstream(variant: str, session: str, key: str,

@@ -20,43 +20,27 @@ import sys
 import zipfile
 from typing import Dict, List, Tuple
 
-import tiktoken
-
-LORE_BUDGET = 800                     # RisuAI loreBookToken 기본값
-_ENC = tiktoken.get_encoding("cl100k_base")
 _DEPTH_DECO = re.compile(r"^\s*@@depth\b", re.M)
 
 
-def _tokens(text: str) -> int:
-    return len(_ENC.encode(text))
+def _split_lore(book: Dict) -> Tuple[List[str], str]:
+    """항상 활성(constant) 엔트리를 (로어북 블록, 깊이 주입분)으로 가른다.
 
+    @@depth 엔트리는 로어북 블록이 아니라 꼬리 system 쪽으로 들어간다 — 뮈토스
+    캡처에서 Assets(@@depth 0)가 로어 블록이 아니라 Final Response Contract
+    앞(promptTemplate[41] authornote 자리)에 실린 것을 확인했다.
 
-def _lore(book: Dict, budget: int = LORE_BUDGET) -> List[str]:
-    """항상 활성(constant) 엔트리 중 RisuAI 로어북 예산 안에 드는 것만.
-
-    RisuAI는 priority(=insertion_order) 내림차순으로 훑으며 누적 토큰이
-    loreBookToken(기본 800, database.svelte.ts:80)을 넘지 않는 엔트리만 남긴다
-    (lorebook.svelte.ts:613-620). 이걸 재현하지 않으면 실제로는 잘려서 안 가는
-    로어까지 프롬프트에 넣게 된다 — 캡처 대조에서 카드 로어 8개 중 1개만
-    전송되는 것을 확인했다.
-
-    @@depth 엔트리는 예산은 함께 쓰지만 로어북 블록이 아니라 히스토리 안으로
-    주입되므로(캡처에서 Assets 586토큰이 꼬리 system에 실렸다) 출력에선 뺀다.
-    출력은 v3 규약대로 insertion_order 오름차순(낮을수록 위).
+    로어북 토큰 예산(loreBookToken)은 재현하지 않는다. 실캡처에서 3,400토큰
+    분량의 constant 엔트리 7개가 전부 실렸다 — 기본값 800이 적용되지 않았다.
     """
     entries = [e for e in book.get("entries", [])
                if e.get("constant") and e.get("content")]
-    kept, used = [], 0
-    for e in sorted(entries, key=lambda e: e.get("insertion_order", 0),
-                    reverse=True):
-        n = _tokens(e["content"])
-        if used + n > budget:
-            continue
-        used += n
-        if not _DEPTH_DECO.search(e["content"]):
-            kept.append(e)
-    kept.sort(key=lambda e: e.get("insertion_order", 0))
-    return [e["content"] for e in kept]
+    entries.sort(key=lambda e: e.get("insertion_order", 0))
+    block = [e["content"] for e in entries
+             if not _DEPTH_DECO.search(e["content"])]
+    depth = "\n\n".join(e["content"] for e in entries
+                        if _DEPTH_DECO.search(e["content"]))
+    return block, depth
 
 
 def extract(charx_path: str) -> Dict:
@@ -65,13 +49,18 @@ def extract(charx_path: str) -> Dict:
     d = card["data"]
     greetings = [g for g in [d.get("first_mes", "")]
                  + list(d.get("alternate_greetings", [])) if g.strip()]
+    lore, depth_lore = _split_lore(d.get("character_book") or {})
+    # 깊이 주입 로어는 authornote 슬롯(promptTemplate[41])으로 보낸다 —
+    # 캡처에서 그 위치에 실렸고, 이 카드의 post_history_instructions는 비어 있다.
+    note = "\n\n".join(x for x in [d.get("post_history_instructions", ""),
+                                   depth_lore] if x.strip())
     return {
         "name": d.get("name", ""),
         "description": d.get("description", ""),
         "greeting": greetings[0] if greetings else "",
-        "lore": _lore(d.get("character_book") or {}),
+        "lore": lore,
         "globalnote": d.get("system_prompt", ""),
-        "authornote": d.get("post_history_instructions", ""),
+        "authornote": note,
     }
 
 

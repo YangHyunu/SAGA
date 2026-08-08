@@ -23,6 +23,9 @@ RPACK_MAP = ("external/risuai/src/ts/rpack/rpack_map.bin")
 # templateDefaultVariables 폴백은 getChatVar 전용이라 여기엔 적용되지 않는다.
 UNSET = "null"
 
+# chat 아이템 자리표 — 비어 있어도 system 병합을 끊는다 (assemble 주석 참조)
+_BARRIER: Dict = {"role": "\x00barrier"}
+
 _WHEN = re.compile(r"\{\{#when::([^{}]*)\}\}", re.S)
 _SCALAR = re.compile(
     r"\{\{(getglobalvar|equal|notequal|and|or|any|not|greater|less|length)"
@@ -171,6 +174,7 @@ def assemble(preset: Dict, toggles: Dict[str, str], history: List[Dict],
         if t == "chat":
             out.extend(_slice(history, item.get("rangeStart", 0),
                               item.get("rangeEnd", "end")))
+            out.append(_BARRIER)
             continue
         if t == "plain":
             content = resolve_when(item.get("text", ""), toggles)
@@ -195,30 +199,43 @@ def assemble(preset: Dict, toggles: Dict[str, str], history: List[Dict],
         content = content.replace("{{user}}", user_name)
         out.append({"role": role, "content": content})
 
+    # 연속 system은 합치되 chat 아이템은 비어 있어도 경계다. 뮈토스는 히스토리를
+    # Previous Context Data / Current Input Data로 쪼개고 사이에 Current
+    # Request(system)를 끼우는데, 첫 턴엔 앞 구간이 비어 둘이 인접한다 —
+    # 그런데도 실캡처는 별도 메시지로 보낸다(req-005: system 48403 + system 464).
     merged: List[Dict] = []
     for m in out:
-        if merged and m["role"] == "system" and merged[-1]["role"] == "system":
+        if m is _BARRIER:
+            if merged:
+                merged.append(_BARRIER)
+            continue
+        if (merged and merged[-1] is not _BARRIER
+                and m["role"] == "system" == merged[-1]["role"]):
             merged[-1]["content"] += "\n\n" + m["content"]
         else:
             merged.append(dict(m))
-    return merged
+    return [m for m in merged if m is not _BARRIER]
 
 
 def reformat(msgs: List[Dict], fold_mid_system: bool = True,
              alternate: bool = True) -> List[Dict]:
-    """RisuAI request.ts reformater 재현 (DeepSeek 네이티브 flags 기준).
+    """RisuAI request.ts reformater 재현.
 
-    hasFirstSystemPrompt: 선두 system 연쇄를 하나로 떼어두고,
-    나머지 system은 `system: …` user로 접은 뒤(requiresAlternateRole)
-    연속 같은 역할을 병합한다. 플러그인 프로바이더가 hasFullSystemPrompt로
-    동작하면(캡처로 확인 시) fold_mid_system=False로 끈다.
+    선두 system 병합과 중간 system 접기는 request.ts:355에서 **같은 조건**
+    (`!hasFullSystemPrompt`) 아래 묶여 있다. 그래서 fold_mid_system 하나가
+    둘 다 지배한다 — hasFullSystemPrompt 프로바이더는 선두 system도 안 합친다
+    (뮈토스 캡처 req-005: system 48403 + system 464가 별도로 전송됨).
+
+    alternate는 별개 플래그(requiresAlternateRole)다. Custom API 경로는 꺼져
+    있다 — 캡처 req-006에 user가 연속 2개 그대로 실렸다.
     """
     if not msgs:
         return msgs
     head: List[Dict] = []
     rest = list(msgs)
-    while rest and rest[0]["role"] == "system":
-        head.append(rest.pop(0))
+    if fold_mid_system:
+        while rest and rest[0]["role"] == "system":
+            head.append(rest.pop(0))
     lead = {"role": "system",
             "content": "\n\n".join(m["content"] for m in head)} if head else None
     if fold_mid_system:
