@@ -435,25 +435,22 @@ def test_token_trim_drops_greeting_once_trimming():
     assert win[0]["role"] == "user" and start == 3
 
 
-def test_probe_schedule_covers_five_types():
+def test_probe_schedule_is_sparse_every_n_turns():
+    """10턴마다 딱 1번 — 나머지는 전부 자연 진행(None)."""
     from benchmarks.eval.run2 import probe_schedule
-    sched = probe_schedule(40)
-    types = [t for t in sched if t]
-    assert len(sched) == 40
-    assert types.count("recall") >= 8
-    for t in ("relation", "false", "update", "recent"):
-        assert sched.count(t) >= 2
-    assert sched.count(None) >= 10                     # 필러 존재
+    sched = probe_schedule(30, 10)
+    assert len(sched) == 30
+    assert [t for t in sched if t] == ["recall", "relation", "false"]
+    assert sched[9] == "recall" and sched[19] == "relation"
+    assert sched.count(None) == 27
 
 
-def test_probe_schedule_keeps_all_types_on_short_pilot():
-    """평가 10턴짜리 파일럿에서도 5유형 + 필러가 전부 나와야 한다."""
+def test_probe_schedule_rotates_all_types_on_long_run():
     from benchmarks.eval.run2 import probe_schedule
-    sched = probe_schedule(10)
-    assert len(sched) == 10
-    for t in ("recall", "relation", "false", "update", "recent"):
-        assert t in sched, t
-    assert None in sched
+    sched = probe_schedule(80, 10)
+    assert [t for t in sched if t] == [
+        "recall", "relation", "false", "update", "recent",
+        "recall", "relation", "false"]
 
 
 # ---- report2 ----
@@ -640,4 +637,4 @@ def test_probe_gets_scene_and_style_context():
                             text="잔액", turn=1),
                scene="객잔 카운터 앞이다.", style="- 반말 예시")
     assert "객잔 카운터" in seen["user"] and "반말 예시" in seen["user"]
-    assert "계기" in seen["sys"]                        # 퀴즈 금지 지침
+    assert "슬며시" in seen["sys"] and "시험조" in seen["sys"]   # 퀴즈 금지 지침
