@@ -105,8 +105,15 @@ def render(result: Dict) -> str:
         ("절단", t.get("truncated", 0)),
         ("캐시 히트", f"{cached_hits}/{len(turns)}턴"),
         ("캐시 토큰", f"{total_cached:,}/{total_prompt:,}"),
-        ("비용", f'${t.get("cost", 0)}'),
+        ("나레이터", f'${t.get("cost", 0)}'),
     ]
+    if "cost_director" in t:
+        grand = t["cost"] + t["cost_director"] + t.get("cost_judge", 0)
+        stats += [("디렉터", f'${t["cost_director"]} '
+                            f'({t.get("director_calls", 0)}콜)'),
+                  ("judge", f'${t.get("cost_judge", 0)} '
+                            f'({t.get("judge_calls", 0)}콜)'),
+                  ("총비용", f"${round(grand, 4)}")]
     out = [f"<style>{_CSS}</style>",
            '<div class="wrap">',
            f'<h1>{_esc(result.get("session", ""))} · '

@@ -103,7 +103,12 @@ def _mk_llm(model: str, temperature: float) -> LlmFn:
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}]})
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"] or ""
+        data = r.json()
+        u = data.get("usage") or {}
+        call.cost += u.get("cost") or 0.0      # 부대비용도 잰다 — 나레이터만
+        call.calls += 1                        # 재면 총비용을 과소보고한다
+        return data["choices"][0]["message"]["content"] or ""
+    call.cost, call.calls = 0.0, 0
     return call
 
 
@@ -376,7 +381,11 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                          # 절단은 기억 실패로 오인된다 — 0인지 매 런 확인한다
                          "truncated": sum(1 for t in turns
                                           if t.get("finish") == "length"),
-                         "cost": round(sum(t["cost"] for t in turns), 4)}}
+                         "cost": round(sum(t["cost"] for t in turns), 4),
+                         "cost_director": round(director.cost, 4),
+                         "director_calls": director.calls,
+                         "cost_judge": round(judge.cost, 4),
+                         "judge_calls": judge.calls}}
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1))
@@ -412,7 +421,10 @@ def main() -> None:
                      args.trim_tokens, reroll, edit, args.ttl_wait,
                      args.turns, args.probe_every)
         t = r["totals"]
-        print(f"[run{n}] {t['judge_pass']}/{t['probes']} ${t['cost']}",
+        grand = t["cost"] + t.get("cost_director", 0) + t.get("cost_judge", 0)
+        print(f"[run{n}] {t['judge_pass']}/{t['probes']} "
+              f"나레이터 ${t['cost']} + 디렉터 ${t.get('cost_director', 0)} "
+              f"+ judge ${t.get('cost_judge', 0)} = ${round(grand, 4)}",
               flush=True)
 
 
