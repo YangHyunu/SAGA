@@ -109,6 +109,8 @@ def render(result: Dict) -> str:
         ("캐시 토큰", f"{total_cached:,}/{total_prompt:,}"),
         ("나레이터", f'${t.get("cost", 0)}'),
     ]
+    if t.get("aborted"):
+        stats.append(("중단", t["aborted"]))
     if "cost_director" in t:
         grand = t["cost"] + t["cost_director"] + t.get("cost_judge", 0)
         stats += [("디렉터", f'${t["cost_director"]} '

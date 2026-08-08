@@ -729,3 +729,10 @@ def test_reply_flaw_treats_empty_reply_as_drift():
     # _call_upstream이 ""로 강제하고 게이트가 리롤로 걷어낸다
     from benchmarks.eval.run2 import reply_flaw
     assert reply_flaw("") == "language_drift"
+
+
+def test_run_reroll_abort_threshold():
+    # 거부(NSFW 등)가 반복되면 리롤 비용만 태운다 — 누적 10회에서 런 중단,
+    # 부분 결과 저장 후 SystemExit(비정상 종료)로 상위 스크립트에 알린다
+    from benchmarks.eval.run2 import MAX_RUN_REROLLS
+    assert MAX_RUN_REROLLS == 10

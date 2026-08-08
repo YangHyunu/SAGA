@@ -62,6 +62,9 @@ UPDATE_EVENTS = (12, 28)      # 지식갱신 강제 턴
 # 실측 완성 평균은 771토큰이라 캡이 물리지 않는다 — 절단은 기억 실패로
 # 오인되는 교란이라 finish_reason을 턴마다 기록해 0%임을 증명한다.
 MAX_TOKENS = 4000
+# 프로바이더가 거부(NSFW 등)를 반복하면 리롤 비용만 태운다 — 런 전체
+# 누적 리롤이 이 값에 닿으면 결과를 저장하고 런을 중단한다.
+MAX_RUN_REROLLS = 10
 
 # 확정 토글: RP 모드·한국어·성인 지침 ON·중립 렌더링 프리필 ON, 나머지 기본
 # select은 옵션 인덱스 문자열: response_language 1=🇰🇷 한국어, execution_mode 0=💬 RP.
@@ -309,6 +312,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     if few_shot:
         dir_sys += f"\n[실제 유저 발화 예시 — 문체 참고]\n{few_shot}"
     turns, probes = [], []
+    total_rerolls, aborted = 0, ""
     sched = probe_schedule(total_turns, probe_every)
 
     for i in range(total_turns):
@@ -357,6 +361,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             rerolls += 1
             flaw = reply_flaw(st["reply"])
         st["rerolls"], st["flaw"] = rerolls, flaw
+        total_rerolls += rerolls
         history.append({"role": "assistant", "content": st["reply"]})
         last_reply = st["reply"]
 
@@ -406,6 +411,10 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
         if ttl_wait and i % 10 == 9:
             time.sleep(305)                    # TTL 5m 만료 재현 (옵션)
+        if total_rerolls >= MAX_RUN_REROLLS:
+            aborted = (f"누적 리롤 {total_rerolls}회 (T{i + 1}) — "
+                       f"프로바이더 거부 반복, 런 중단")
+            break
 
     passed = sum(1 for p in probes if p["judge"] is True)
     unparsed = sum(1 for p in probes if p["judge"] is None)
@@ -425,7 +434,8 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                          "cost_director": round(director.cost, 4),
                          "director_calls": director.calls,
                          "cost_judge": round(judge.cost, 4),
-                         "judge_calls": judge.calls}}
+                         "judge_calls": judge.calls,
+                         "aborted": aborted}}
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1))
@@ -466,6 +476,9 @@ def main() -> None:
               f"나레이터 ${t['cost']} + 디렉터 ${t.get('cost_director', 0)} "
               f"+ judge ${t.get('cost_judge', 0)} = ${round(grand, 4)}",
               flush=True)
+        if t.get("aborted"):
+            # 부분 결과는 이미 저장됨 — 비정상 종료로 상위 스크립트에 알린다
+            raise SystemExit(f"런 중단: {t['aborted']}")
 
 
 if __name__ == "__main__":
