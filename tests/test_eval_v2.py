@@ -722,3 +722,10 @@ def test_reply_flaw_catches_refusal_and_language_drift():
 def test_director_sys_forbids_character_impersonation():
     from benchmarks.eval.run2 import _DIRECT_SYS
     assert "대신 쓰지 마라" in _DIRECT_SYS
+
+
+def test_reply_flaw_treats_empty_reply_as_drift():
+    # 프로바이더가 content: null을 줄 수 있다 (pilot80b 실측 크래시) —
+    # _call_upstream이 ""로 강제하고 게이트가 리롤로 걷어낸다
+    from benchmarks.eval.run2 import reply_flaw
+    assert reply_flaw("") == "language_drift"

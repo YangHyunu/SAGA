@@ -215,7 +215,9 @@ def _call_upstream(variant: str, session: str, key: str,
     det = u.get("prompt_tokens_details", {})
     cached = det.get("cached_tokens", 0) or u.get("prompt_cache_hit_tokens", 0)
     choice = d["choices"][0]
-    return {"reply": choice["message"]["content"],
+    # content는 None일 수 있다 (프로바이더 필터 등) — 빈 응답은 리롤 게이트가
+    # language_drift로 걷어내도록 ""로 강제한다 (실측: pilot80b가 None에 죽음)
+    return {"reply": choice["message"]["content"] or "",
             "finish": choice.get("finish_reason", ""),
             "prompt": u.get("prompt_tokens", 0), "cached": cached,
             "completion": u.get("completion_tokens", 0),
