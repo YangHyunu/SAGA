@@ -103,6 +103,8 @@ def render(result: Dict) -> str:
         ("프로브", f'{t.get("judge_pass", 0)}/{t.get("probes", 0)}'),
         ("오라클", t.get("oracle_pass", 0)),
         ("절단", t.get("truncated", 0)),
+        ("리롤", f'{t.get("rerolls", 0)}회'),
+        ("잔존 병리", t.get("flawed", 0)),
         ("캐시 히트", f"{cached_hits}/{len(turns)}턴"),
         ("캐시 토큰", f"{total_cached:,}/{total_prompt:,}"),
         ("나레이터", f'${t.get("cost", 0)}'),
@@ -161,6 +163,10 @@ def render(result: Dict) -> str:
         if x.get("finish") not in ("stop", None):
             chips.append(f'<span class="verdict bad">'
                          f'finish={_esc(x["finish"])}</span>')
+        if x.get("rerolls"):
+            chips.append(f'리롤 {x["rerolls"]}')
+        if x.get("flaw"):
+            chips.append(f'<span class="verdict bad">{_esc(x["flaw"])}</span>')
         p = probe_by_turn.get(i)
         if p:
             color = _BADGE.get(p.get("ptype", ""), "#6b7280")

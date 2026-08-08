@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import time
 from typing import Callable, Dict, List, Optional, Tuple
@@ -221,9 +222,30 @@ def _call_upstream(variant: str, session: str, key: str,
             "cost": u.get("cost", 0.0), "sec": round(time.time() - t0, 1)}
 
 
+# 실유저가 리롤로 걷어내는 응답 — 남겨두면 디렉터가 캐릭터 대사를 지어내며
+# 사칭하기 시작한다 (파일럿50 T3 거부 → T4 디렉터가 소연 대사 작성).
+_REFUSAL_MARKS = ("죄송합니다만", "처리할 수 없습니", "수행할 수 없습니",
+                  "I cannot", "I can't", "I'm not able to")
+_HANGUL = re.compile(r"[가-힣]")
+
+
+def reply_flaw(reply: str) -> str:
+    """리롤 사유. 정상이면 빈 문자열.
+
+    한글 비율 임계 0.3: 파일럿 실측에서 병리 턴(영어 드리프트·프리셋 지시문
+    에코)은 전부 0.09 이하, 정상 턴은 전부 0.64 이상 — 사이가 비어 있다.
+    """
+    if any(m in reply for m in _REFUSAL_MARKS):
+        return "refusal"
+    if len(_HANGUL.findall(reply)) / max(len(reply), 1) < 0.3:
+        return "language_drift"
+    return ""
+
+
 _DIRECT_SYS = ("너는 RP에서 유저(1인칭{user}) 역할을 연기한다. 작품 "
                "설정과 직전 장면에 자연스럽게 이어지는 유저 발화 하나만 출력. "
-               "3문장 이내, 반말 채팅체, 메타 발언 금지.\n"
+               "3문장 이내, 반말 채팅체, 메타 발언 금지. 상대 캐릭터의 대사나 "
+               "행동을 네가 대신 쓰지 마라 — 유저 자신의 말과 행동만.\n"
                "[작품 설정]은 배경 이해용이다 — 대화에서 아직 드러나지 않은 "
                "정보(호칭·직함·이름·과거사·신체 특징)를 네가 먼저 입에 올리지 "
                "마라. 상대가 말해주기 전까지 모르는 사람으로 산다. "
@@ -323,6 +345,16 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         if bad:
             raise SystemExit(f"와이어 형태 위반 T{i + 1}: {bad}")
         st = _call_upstream(variant, session, key, msgs)
+        # 품질 리롤: 거부·언어 드리프트는 실유저가 리롤로 걷어내는 응답이다.
+        # 남기면 이후 턴 전체가 오염된다 (디렉터 사칭·영어 고착).
+        rerolls, flaw = 0, reply_flaw(st["reply"])
+        while flaw and rerolls < 2:
+            st2 = _call_upstream(variant, session, key, msgs)
+            st2["cost"] += st["cost"]
+            st = st2
+            rerolls += 1
+            flaw = reply_flaw(st["reply"])
+        st["rerolls"], st["flaw"] = rerolls, flaw
         history.append({"role": "assistant", "content": st["reply"]})
         last_reply = st["reply"]
 
@@ -331,6 +363,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             history[-1] = {"role": "assistant", "content": st2["reply"]}
             last_reply = st2["reply"]
             st["cost"] += st2["cost"]
+            st["reply"] = st2["reply"]         # 기록·추출은 히스토리와 같게
         if i in edit_at:                       # 수정: user 텍스트 바꿔 재전송
             history[-2]["content"] = utext + " (아니, 정정할게.)"
             window, _ = token_trim(history[:-1], trim_tokens)
@@ -340,6 +373,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             history[-1] = {"role": "assistant", "content": st3["reply"]}
             last_reply = st3["reply"]
             st["cost"] += st3["cost"]
+            st["reply"] = st3["reply"]
 
         t_ext = time.time()
         if ptype is None:
@@ -382,6 +416,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                          # 절단은 기억 실패로 오인된다 — 0인지 매 런 확인한다
                          "truncated": sum(1 for t in turns
                                           if t.get("finish") == "length"),
+                         "rerolls": sum(t.get("rerolls", 0) for t in turns),
+                         # 리롤 2회로도 못 걷어낸 병리 턴 — 0이어야 한다
+                         "flawed": sum(1 for t in turns if t.get("flaw")),
                          "cost": round(sum(t["cost"] for t in turns), 4),
                          "cost_director": round(director.cost, 4),
                          "director_calls": director.calls,

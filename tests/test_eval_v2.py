@@ -703,3 +703,22 @@ def test_recent_dialogue_gives_last_pairs_with_roles():
 def test_director_sys_forbids_card_knowledge_preemption():
     from benchmarks.eval.run2 import _DIRECT_SYS
     assert "먼저 입에 올리지" in _DIRECT_SYS
+
+
+def test_reply_flaw_catches_refusal_and_language_drift():
+    from benchmarks.eval.run2 import reply_flaw
+    # 파일럿 실측 병리 3종: 한국어 거부문, 영어 드리프트, 프리셋 지시문 에코
+    assert reply_flaw("죄송합니다만, 그런 종류의 콘텐츠 생성 요청은 "
+                      "처리할 수 없습니다.") == "refusal"
+    assert reply_flaw("The house settled into silence. Soyeon lay on her "
+                      "bedding with her eyes open.") == "language_drift"
+    assert reply_flaw("All contracts preserved. The new domain standards "
+                      "are now applied.") == "language_drift"
+    # 정상 한국어 산문 (실측 한글 비율 0.64+)
+    assert reply_flaw("소연은 찻잔을 내려놓으며 조용히 고개를 끄덕였다. "
+                      "\"하룻밤 정도는 괜찮다.\"") == ""
+
+
+def test_director_sys_forbids_character_impersonation():
+    from benchmarks.eval.run2 import _DIRECT_SYS
+    assert "대신 쓰지 마라" in _DIRECT_SYS
