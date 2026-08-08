@@ -218,9 +218,41 @@ def _call_upstream(variant: str, session: str, key: str,
 
 _DIRECT_SYS = ("너는 RP에서 유저(1인칭{user}) 역할을 연기한다. 작품 "
                "설정과 직전 장면에 자연스럽게 이어지는 유저 발화 하나만 출력. "
-               "3문장 이내, 반말 채팅체, 메타 발언 금지.")
+               "3문장 이내, 반말 채팅체, 메타 발언 금지.\n"
+               "[작품 설정]은 배경 이해용이다 — 대화에서 아직 드러나지 않은 "
+               "정보(호칭·직함·이름·과거사·신체 특징)를 네가 먼저 입에 올리지 "
+               "마라. 상대가 말해주기 전까지 모르는 사람으로 산다. "
+               "(파일럿 실측: '신녀님' 호칭을 대화에 나온 적 없는데 선취했다)")
 _UPDATE_BEAT = ("이번 발화에서 이전에 언급된 수치나 소지품 상태를 명확히 바꾸는 "
                 "행동을 한다 (지불, 획득, 분실 중 하나). 새 값이 드러나게.")
+# 5턴마다 이야기를 미는 지시 — 없으면 디렉터가 같은 장면을 맴돈다
+# (30턴 파일럿 실측: 한 장소 하룻밤에서 정체). 회전이라 런마다 결이 달라진다.
+_BEATS = ("장면이나 장소를 바꾸는 행동을 한다 — 밖으로 나가자고 하거나, "
+          "다른 공간으로 옮기거나, 산책을 청한다.",
+          "새로운 화제나 작은 사건을 꺼낸다 — 마을, 소문, 상대의 과거, "
+          "앞으로의 계획 중 하나.",
+          "시간을 흘려보낸다 — 다음 날이나 몇 시간 뒤로 넘어갔음이 발화에 "
+          "드러나게 한다.",
+          "가벼운 갈등이나 의견 차이를 만든다 — 금방 풀 수 있는 수준으로.",
+          "구체적인 수치·이름·약속이 나올 만한 행동을 한다 — 거래, 날짜 잡기, "
+          "무언가를 세거나 값을 치르기.")
+
+
+def pick_beat(i: int) -> str:
+    """턴 i의 필러 지시. UPDATE_EVENTS > 5턴 주기 비트 > 평서 진행."""
+    if i in UPDATE_EVENTS:
+        return _UPDATE_BEAT
+    if i % 5 == 4:
+        return _BEATS[(i // 5) % len(_BEATS)]
+    return "자연스럽게 이어간다."
+
+
+def recent_dialogue(history: List[Dict], pairs: int = 3) -> str:
+    """디렉터에게 주는 최근 대화 — 직전 응답 하나만 주면 맥락 없이 맴돈다."""
+    tail = history[-(pairs * 2):]
+    return "\n\n".join(
+        f"[{'렌' if m['role'] == 'user' else '캐릭터'}]\n{m['content'][-600:]}"
+        for m in tail)
 
 
 def _load_json(path: str) -> Dict:
@@ -267,10 +299,10 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                                scene=last_reply, style=few_shot)
         else:
             ptype = None                       # eligible 없으면 필러로 강등
-            beat = _UPDATE_BEAT if i in UPDATE_EVENTS else "자연스럽게 이어간다."
+            ctx = recent_dialogue(history) or f"[캐릭터]\n{last_reply[-600:]}"
             utext = director(
                 dir_sys + f"\n[작품 설정]\n{card.get('description', '')[:2000]}",
-                f"[직전 캐릭터 응답]\n{last_reply[-800:]}\n[지시]\n{beat}")
+                f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i)}")
         dir_sec = round(time.time() - t_dir, 1)
 
         history.append({"role": "user", "content": utext})

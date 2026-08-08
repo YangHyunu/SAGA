@@ -671,3 +671,29 @@ def test_probe_prompt_forbids_time_anchoring():
     """'방금 뭐라고 했지?' — 18턴 전 일을 방금이라 부르는 오류 방지."""
     from benchmarks.eval.director import _PROBE_SYS
     assert "방금" in _PROBE_SYS and "시점" in _PROBE_SYS
+
+
+def test_beat_rotation_and_update_events():
+    """5턴마다 이야기 미는 비트, UPDATE_EVENTS가 비트보다 우선."""
+    from benchmarks.eval.run2 import UPDATE_EVENTS, pick_beat
+    assert pick_beat(0) == "자연스럽게 이어간다."
+    assert "장소" in pick_beat(4) or "장면" in pick_beat(4)
+    assert pick_beat(4) != pick_beat(9)                 # 회전
+    for e in UPDATE_EVENTS:
+        assert "지불" in pick_beat(e)
+
+
+def test_recent_dialogue_gives_last_pairs_with_roles():
+    from benchmarks.eval.run2 import recent_dialogue
+    hist = []
+    for k in range(5):
+        hist.append({"role": "user", "content": f"질문{k}"})
+        hist.append({"role": "assistant", "content": f"응답{k}"})
+    ctx = recent_dialogue(hist, pairs=2)
+    assert "[렌]" in ctx and "[캐릭터]" in ctx
+    assert "질문3" in ctx and "응답4" in ctx and "질문2" not in ctx
+
+
+def test_director_sys_forbids_card_knowledge_preemption():
+    from benchmarks.eval.run2 import _DIRECT_SYS
+    assert "먼저 입에 올리지" in _DIRECT_SYS
