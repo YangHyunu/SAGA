@@ -66,8 +66,17 @@ TOGGLES = {"mythos_response_language": "1",           # 🇰🇷 한국어
            "mythos_execution_mode": "0",              # 💬 RP
            "mythos_user_persona_usage": "0",          # 🙋 사용 — 안 켜면 슬롯이 통째로 빈다
            "mythos_bot_structure": "0",               # 💬 캐릭터 중심
-           "mythos_user_character_authorship": "1",   # 프리셋 templateDefaultVariables
-           "mythos_input_authority": "0",             # 프리셋 templateDefaultVariables
+           # select 토글은 미설정이면 사이드바 SelectInput이 바인딩하며 첫 옵션
+           # 인덱스를 써 넣는다. 프리셋의 templateDefaultVariables는 여기 안
+           # 먹는다 — getChatVar 전용이고 tis는 getGlobalChatVar를 본다
+           # (chatVar.svelte.ts:15 vs 35, parser.svelte.ts:1284).
+           "mythos_user_character_authorship": "0",   # 🛡️ 보호 — 캡처 req-005 확인
+           "mythos_input_authority": "0",             # 🔨 사실 확정
+           "mythos_prose_register": "0",              # 🤷 미지정
+           "mythos_narrative_pov": "0",               # 🤷 자율
+           "mythos_narrative_pacing": "0",            # 🤷 자율
+           "mythos_response_length_band": "0",        # 🤷 미지정
+           "mythos_size_scenario": "0",               # 🤷 미지정
            "mythos_genre_ero": "1",
            "mythos_mature_content_guidance": "1",
            "mythos_domain_neutral_rendering_prefill": "1"}
@@ -157,7 +166,9 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
                     card={"description": card.get("description", ""),
                           "persona": card.get("persona", ""),
                           "lore": card.get("lore", []),
-                          "globalnote": card.get("globalnote", ""),
+                          "system_prompt": card.get("system_prompt", ""),
+                          "replace_globalnote":
+                              card.get("replace_globalnote", ""),
                           "authornote": card.get("authornote", ""),
                           "post_everything": card.get("post_everything", "")},
                     char_name=card.get("name", ""),

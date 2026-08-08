@@ -20,7 +20,29 @@ import sys
 import zipfile
 from typing import Dict, List, Optional, Tuple
 
-_DEPTH_DECO = re.compile(r"^\s*@@depth\s+(-?\d+)", re.M)
+_DECO = re.compile(r"^\s*@@(\w+)([^\n]*)\n?", re.M)
+# RisuAI가 인식해 content에서 제거하는 데코레이터 중 우리가 배치를 재현할 수
+# 있는 것들. 그 외 데코레이터는 활성 조건·순서·역할을 바꾸므로 조용히 지나가면
+# 안 된다 (lorebook.svelte.ts:300-514 switch 전수).
+_HANDLED = {"depth", "end"}
+
+
+def _strip_deco(content: str) -> Tuple[str, Optional[int]]:
+    """데코레이터 줄을 떼고 (본문, depth)를 돌려준다.
+
+    RisuAI는 CCardLib.decorator.parse로 인식한 데코레이터 줄을 content에서
+    제거한 뒤 프롬프트에 싣는다(lorebook.svelte.ts:300). 실캡처의
+    postEverything 블록에도 `@@depth 0` 줄이 없다 — 남기면 와이어가 어긋난다.
+    """
+    depth = None
+    for m in _DECO.finditer(content):
+        name, arg = m.group(1), m.group(2).strip()
+        if name not in _HANDLED:
+            raise SystemExit(
+                f"@@{name} 데코레이터는 배치·활성 조건을 바꾼다 — 평탄한 카드 "
+                f"필드로 옮길 수 없다 (lorebook.svelte.ts:300-514)")
+        depth = 0 if name == "end" else int(arg)
+    return _DECO.sub("", content).lstrip("\n"), depth
 
 
 def _split_lore(book: Dict, budget: Optional[int] = None
@@ -42,26 +64,37 @@ def _split_lore(book: Dict, budget: Optional[int] = None
     """
     entries = [e for e in book.get("entries", [])
                if e.get("constant") and e.get("content")]
-    entries.sort(key=lambda e: e.get("insertion_order", 0))
+    # RisuAI 최종 순서: priority 내림차순 → 예산 필터 → order 내림차순 →
+    # .reverse() (lorebook.svelte.ts:608-662). charx 임포트는 order·priority가
+    # 둘 다 insertion_order라(lorebook.svelte.ts:273-274, characterCards.ts:1122)
+    # 두 정렬이 같은 키다. 그래서 결과는 오름차순 순정렬이 아니라 **동점 그룹이
+    # 카드 기재 역순으로 뒤집힌 것** — JS sort가 안정 정렬이라 마지막 reverse가
+    # 동점 안쪽 순서까지 뒤집는다. 위지소연의 NPC 5명이 전부 order=100이라
+    # 이게 실제로 캡처와 갈렸다.
+    entries.sort(key=lambda e: -e.get("insertion_order", 0))
     if budget is not None:
+        import tiktoken
+        # reverse_proxy의 기본 토크나이저는 tik → o200k_base다
+        # (tokenizer.ts:105-133의 default 분기, database.svelte.ts:482).
+        enc = tiktoken.get_encoding("o200k_base")
         kept, used = [], 0
-        for e in sorted(entries, key=lambda e: e.get("insertion_order", 0),
-                        reverse=True):
-            n = len(e["content"]) // 3            # 대략 — 정확한 토크나이저 없음
+        for e in entries:                         # priority 내림차순 그대로
+            n = len(enc.encode(e["content"]))
             if used + n <= budget:
                 used += n
-                kept.append(e)
-        entries = sorted(kept, key=lambda e: e.get("insertion_order", 0))
+                kept.append(e)                    # 안 맞는 건 건너뛰고 계속
+        entries = kept
+    entries.reverse()
     block, post = [], []
     for e in entries:
-        m = _DEPTH_DECO.search(e["content"])
-        if not m:
-            block.append(e["content"])
-        elif m.group(1) == "0":
-            post.append(e["content"])
+        body, depth = _strip_deco(e["content"])
+        if depth is None:
+            block.append(body)
+        elif depth == 0:
+            post.append(body)
         else:
             raise SystemExit(
-                f"@@depth {m.group(1)} 엔트리는 히스토리 중간으로 splice된다 — "
+                f"@@depth {depth} 엔트리는 히스토리 중간으로 splice된다 — "
                 f"평탄한 카드 필드로 옮길 수 없다: {e.get('name', '')}")
     return block, "\n\n".join(post)
 
@@ -78,8 +111,14 @@ def extract(charx_path: str) -> Dict:
         "description": d.get("description", ""),
         "greeting": greetings[0] if greetings else "",
         "lore": lore,
-        "globalnote": d.get("system_prompt", ""),
-        "authornote": d.get("post_history_instructions", ""),
+        # charx의 두 필드는 프롬프트 슬롯이 아니라 프리셋 아이템 **덮어쓰기**다.
+        # system_prompt → char.systemPrompt: main 아이템 텍스트를 대체하고
+        #   {{original}}에 원래 텍스트가 들어간다 (index.svelte.ts:411).
+        # post_history_instructions → char.replaceGlobalNote: globalNote 아이템에
+        #   같은 방식으로 적용된다 (characterCards.ts:992, index.svelte.ts:1350).
+        # authornote(= currentChat.note)는 채팅방 필드라 카드에서 나오지 않는다.
+        "system_prompt": d.get("system_prompt", ""),
+        "replace_globalnote": d.get("post_history_instructions", ""),
         "post_everything": post_everything,
     }
 

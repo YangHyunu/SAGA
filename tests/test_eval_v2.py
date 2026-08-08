@@ -506,3 +506,122 @@ def test_aggregate_drops_unparsed_judge_from_rates():
     a = aggregate([ok, bad])["dreaming"]
     assert a["by_type"]["recall"]["runs"] == 1          # 파싱 실패 런은 제외
     assert a["unparsed"] == 1 and a["judge_rate"] == 1.0
+
+
+# ── RisuAI 와이어 재현 (소스 대조 확정분) ──────────────────────────────────
+
+def test_when_block_trims_blank_lines_of_multiline_body():
+    """#when 다중행 본문은 고른 쪽의 앞뒤 빈 줄이 깎인다 (parser.svelte.ts:1488)."""
+    from benchmarks.eval.preset2wire import resolve_when
+    text = "{{#when::t::tis::1}}\n\n본문\n\n{{/when}}"
+    assert resolve_when(text, {"t": "1"}) == "본문"
+    assert resolve_when(text, {"t": "0"}) == ""
+
+
+def test_when_single_line_body_keeps_whitespace():
+    """한 줄 본문은 깎지 않는다 — newif의 lines.length===1 경로."""
+    from benchmarks.eval.preset2wire import resolve_when
+    assert resolve_when("{{#when::t::tis::1}} 본문 {{/when}}", {"t": "1"}) \
+        == " 본문 "
+
+
+def test_when_resolves_innermost_first():
+    """바깥 블록의 빈 줄 깎기가 안쪽 결과를 보고 일어나야 한다."""
+    from benchmarks.eval.preset2wire import resolve_when
+    text = ("{{#when::a::tis::1}}\n"
+            "{{#when::b::tis::1}}\n\n안쪽\n\n{{/when}}\n"
+            "{{/when}}")
+    assert resolve_when(text, {"a": "1", "b": "0"}) == ""
+
+
+def test_plain_item_does_not_substitute_slot():
+    """plain/jailbreak/cot는 {{slot}}을 치환하지 않는다 (index.svelte.ts:1337-)."""
+    from benchmarks.eval.preset2wire import assemble
+    preset = {"promptTemplate": [{"type": "plain", "text": "머리 {{slot}}"}]}
+    out = assemble(preset, {}, [], card={"globalnote": "먹히면 안 됨"})
+    assert out[0]["content"] == "머리 {{slot}}"
+
+
+def test_card_post_history_instructions_overrides_global_note():
+    """charx post_history_instructions → replaceGlobalNote, {{original}} 치환."""
+    from benchmarks.eval.preset2wire import assemble
+    preset = {"promptTemplate": [
+        {"type": "plain", "type2": "globalNote", "text": "원본"}]}
+    out = assemble(preset, {}, [], card={"replace_globalnote": "앞 {{original}} 뒤"})
+    assert out[0]["content"] == "앞 원본 뒤"
+
+
+def test_assembled_messages_are_trimmed():
+    """조립 끝에 모든 메시지가 trim된다 (index.svelte.ts:1471-1474)."""
+    from benchmarks.eval.preset2wire import assemble
+    preset = {"promptTemplate": [{"type": "plain", "text": "\n\n본문\n\n"}]}
+    assert assemble(preset, {}, [])[0]["content"] == "본문"
+
+
+def test_lore_decorator_line_is_stripped_and_routed():
+    from benchmarks.eval.charx2card import _split_lore
+    book = {"entries": [
+        {"constant": True, "insertion_order": 1, "content": "세계관"},
+        {"constant": True, "insertion_order": 9,
+         "content": "@@depth 0\n이미지 규칙"}]}
+    block, post = _split_lore(book)
+    assert block == ["세계관"] and post == "이미지 규칙"
+
+
+def test_unknown_lore_decorator_stops_instead_of_misplacing():
+    import pytest
+    from benchmarks.eval.charx2card import _split_lore
+    book = {"entries": [{"constant": True, "insertion_order": 1,
+                         "content": "@@probability 50\n본문"}]}
+    with pytest.raises(SystemExit):
+        _split_lore(book)
+
+
+def test_lore_order_reverses_ties_of_equal_insertion_order():
+    """order 내림차순 정렬 뒤 .reverse() — 동점은 카드 기재 역순 (:608-662)."""
+    from benchmarks.eval.charx2card import _split_lore
+    book = {"entries": [
+        {"constant": True, "insertion_order": 1, "content": "세계관"},
+        {"constant": True, "insertion_order": 100, "content": "가"},
+        {"constant": True, "insertion_order": 100, "content": "나"}]}
+    assert _split_lore(book)[0] == ["세계관", "나", "가"]
+
+
+def test_lore_budget_skips_oversized_and_keeps_going():
+    """예산은 priority 내림차순으로 소비하고, 안 맞는 항목은 건너뛴다 (:613)."""
+    from benchmarks.eval.charx2card import _split_lore
+    book = {"entries": [
+        {"constant": True, "insertion_order": 9, "content": "가" * 300},
+        {"constant": True, "insertion_order": 1, "content": "나" * 30}]}
+    assert _split_lore(book, budget=100)[0] == ["나" * 30]
+
+
+def test_assembly_is_byte_identical_to_real_capture():
+    """실캡처 재현 회귀 — 프리셋·카드·캡처가 다 있을 때만 돈다.
+
+    셋 다 저작물이라 레포에 없다. 로컬에서 와이어를 건드렸을 때 바이트가
+    어긋나면 여기서 잡힌다.
+    """
+    import glob
+    import pathlib
+    import pytest
+    from benchmarks.eval.preset2wire import decode_risup
+    from benchmarks.eval.run2 import build_wire
+
+    preset_glob = str(pathlib.Path.home() / "Downloads" / "뮈토스6.2" / "**"
+                      / "*DeepSeek*_preset.risup")
+    presets = glob.glob(preset_glob, recursive=True)
+    root = pathlib.Path(__file__).resolve().parents[1] / "dreaming_data"
+    card_path = root / "eval" / "card-soyeon-v2.json"
+    caps = sorted(glob.glob(str(root / "capture-mythos" / "req-00[56].json")))
+    if not (presets and card_path.exists() and caps):
+        pytest.skip("프리셋/카드/캡처 없음")
+
+    preset = decode_risup(presets[0])
+    card = json.loads(card_path.read_text())
+    for cap_path in caps:
+        cap = json.loads(pathlib.Path(cap_path).read_text())["messages"]
+        tail = max(i for i, m in enumerate(cap) if m["role"] == "system")
+        window = [{"role": m["role"], "content": m["content"]}
+                  for m in cap[1:tail] if m["role"] != "system"]
+        assert build_wire(preset, card, window) == cap, cap_path

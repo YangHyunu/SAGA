@@ -108,42 +108,52 @@ def decode_risup(path: str, rpack_map: str = RPACK_MAP) -> Dict:
     return msgpack.unpackb(plain, raw=False)
 
 
+def _newif(body: str, hit: bool) -> str:
+    """#when 본문 처리 — parser.svelte.ts:1452-1497 (newif / newif-falsy).
+
+    한 줄짜리 본문은 {{:else}}를 위치로 자르고 그대로 돌려준다. 여러 줄이면
+    {{:else}}는 **자기 줄 전체**여야 인식되고, 고른 쪽의 앞뒤 빈 줄이 깎인다
+    (`type2 !== 'keep'` 기본 경로). 이 깎기를 빼면 false 분기가 남긴 빈 줄이
+    그대로 쌓여 실캡처보다 길어진다.
+    """
+    lines = body.split("\n")
+    if len(lines) == 1:
+        i = body.find("{{:else}}")
+        if i >= 0:
+            return body[:i] if hit else body[i + len("{{:else}}"):]
+        return body if hit else ""
+    else_at = next((k for k, v in enumerate(lines)
+                    if v.strip() == "{{:else}}"), -1)
+    if else_at < 0 and not hit:
+        return ""
+    if else_at >= 0:
+        lines = lines[:else_at] if hit else lines[else_at + 1:]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
 def resolve_when(text: str, toggles: Dict[str, str]) -> str:
     """{{#when::…}} … {{:else}} … {{/when}} 해석 (중첩 지원).
 
     조건은 _reduce_scalars로 CBS 스칼라를 먼저 값으로 축약한 뒤 _cond로 판정.
+    블록은 **안쪽부터** 푼다 — 바깥 블록의 빈 줄 깎기가 안쪽 결과를 보고
+    일어나야 RisuAI 파서(재귀 하향)와 같은 결과가 나온다.
     """
     text = _reduce_scalars(text, toggles)
     while True:
-        m = _WHEN.search(text)
-        if m is None:
+        opens = list(_WHEN.finditer(text))
+        if not opens:
             return text
-        # 대응하는 {{/when}}을 중첩 카운트로 찾는다
-        depth, i = 1, m.end()
-        else_at = None
-        while depth > 0:
-            nxt_open = _WHEN.search(text, i)
-            nxt_close = text.find("{{/when}}", i)
-            nxt_else = text.find("{{:else}}", i)
-            if nxt_close < 0:
-                return text                      # 짝 안 맞음 — 그대로 두면 fidelity가 잡는다
-            if depth == 1 and nxt_else >= 0 and nxt_else < nxt_close and (
-                    nxt_open is None or nxt_else < nxt_open.start()):
-                else_at = nxt_else
-            if nxt_open is not None and nxt_open.start() < nxt_close:
-                depth += 1
-                i = nxt_open.end()
-            else:
-                depth -= 1
-                i = nxt_close + len("{{/when}}")
-        close_at = i - len("{{/when}}")
-        hit = _cond(m.group(1), toggles)
-        if else_at is not None:
-            body_true = text[m.end():else_at]
-            body_false = text[else_at + len("{{:else}}"):close_at]
-        else:
-            body_true, body_false = text[m.end():close_at], ""
-        text = text[:m.start()] + (body_true if hit else body_false) + text[i:]
+        m = opens[-1]                            # 가장 안쪽(=마지막) 여는 태그
+        close = text.find("{{/when}}", m.end())
+        if close < 0:
+            return text                          # 짝 안 맞음 — fidelity가 잡는다
+        text = (text[:m.start()]
+                + _newif(text[m.end():close], _cond(m.group(1), toggles))
+                + text[close + len("{{/when}}"):])
 
 
 def _slice(history: List[Dict], start, end) -> List[Dict]:
@@ -165,7 +175,10 @@ def assemble(preset: Dict, toggles: Dict[str, str], history: List[Dict],
              char_name: str = "", user_name: str = "") -> List[Dict]:
     """promptTemplate → OpenAI-compat 메시지 목록 (연속 system 병합 포함).
 
-    card: {"description": str, "persona": str, "lore": [str], "authornote": str}
+    card: description/persona/lore/post_everything는 슬롯에 채워지고,
+    system_prompt/replace_globalnote는 main·globalNote 아이템을 통째로 덮어쓴다
+    ({{original}}에 원래 텍스트). authornote는 카드가 아니라 채팅방 필드
+    (currentChat.note, index.svelte.ts:446)라 새 채팅에서는 비어 있다.
     """
     card = card or {}
     out: List[Dict] = []
@@ -177,8 +190,15 @@ def assemble(preset: Dict, toggles: Dict[str, str], history: List[Dict],
             out.append(_BARRIER)
             continue
         if t == "plain":
+            # plain/jailbreak/cot는 {{slot}} 치환을 하지 않는다 —
+            # index.svelte.ts:1337-1377에 그 코드가 없다. 뮈토스의 Global Note
+            # 아이템에 든 리터럴 {{slot}}은 실캡처에도 그대로 실려 온다.
             content = resolve_when(item.get("text", ""), toggles)
-            content = content.replace("{{slot}}", card.get("globalnote", ""))
+            override = {"main": card.get("system_prompt", ""),
+                        "globalNote": card.get("replace_globalnote", "")
+                        }.get(item.get("type2", ""), "")
+            if override:                          # 카드가 프리셋 아이템을 덮어쓴다
+                content = override.replace("{{original}}", content)
         elif t == "description":
             content = _fill(item, card.get("description", ""), toggles)
         elif t == "persona":
@@ -225,7 +245,10 @@ def assemble(preset: Dict, toggles: Dict[str, str], history: List[Dict],
             merged[-1]["content"] += "\n\n" + m["content"]
         else:
             merged.append(dict(m))
-    return [m for m in merged if m is not _BARRIER]
+    # 병합이 끝난 뒤 모든 메시지를 trim한다 (index.svelte.ts:1471-1474).
+    # false로 사라진 {{#when}} 블록이 남긴 양끝 빈 줄이 여기서 없어진다.
+    return [{**m, "content": m["content"].strip()}
+            for m in merged if m is not _BARRIER]
 
 
 def reformat(msgs: List[Dict], fold_mid_system: bool = True,
