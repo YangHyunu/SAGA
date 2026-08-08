@@ -638,3 +638,13 @@ def test_probe_gets_scene_and_style_context():
                scene="객잔 카운터 앞이다.", style="- 반말 예시")
     assert "객잔 카운터" in seen["user"] and "반말 예시" in seen["user"]
     assert "슬며시" in seen["sys"] and "시험조" in seen["sys"]   # 퀴즈 금지 지침
+
+
+def test_token_trim_counts_with_o200k_like_risuai():
+    """트림 카운터는 RisuAI와 같은 o200k여야 한다 — len/2.5 근사는 한국어를
+    ~40% 과소평가해 12K 예산에서 eviction이 아예 안 일어났다 (파일럿 실측)."""
+    from benchmarks.eval.run2 import _count
+    import tiktoken
+    text = "위지소연은 대청마루에 앉아 마당을 응시했다." * 20
+    assert _count(text) == len(
+        tiktoken.get_encoding("o200k_base").encode(text))

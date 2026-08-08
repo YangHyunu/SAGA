@@ -30,6 +30,9 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 import httpx
+import tiktoken
+
+_ENC = tiktoken.get_encoding("o200k_base")
 
 from benchmarks.eval.director import (Ledger, LlmFn, extract_facts,
                                       make_false_premise, make_probe,
@@ -113,7 +116,10 @@ def make_director_llm() -> LlmFn:
 
 
 def _count(text: str) -> int:
-    return int(len(text) / 2.5) + 1        # cardsim 근사와 동일
+    # RisuAI reverse_proxy 기본 토크나이저와 동일 (tokenizer.ts:105-133 →
+    # o200k_base). len/2.5 근사는 한국어를 ~40% 과소평가해 12K 예산에서
+    # eviction이 아예 안 일어났다 (파일럿 실측 18,917 vs 근사 11,816).
+    return len(_ENC.encode(text))
 
 
 def token_trim(history: List[Dict], budget: int,
