@@ -765,3 +765,43 @@ def test_report_splits_by_window():
               {"judge": True}]                       # 구 JSON — 창밖 취급
     inw, out = window_split(probes)
     assert inw == (1, 2) and out == (1, 2)
+
+
+def test_call_upstream_retries_transient_5xx(monkeypatch):
+    # night2-drm 실측: 프록시 ReadTimeout -> 502 한 방에 100턴 런 사망.
+    # 5xx·타임아웃은 재시도, 4xx는 즉시 전파.
+    import httpx
+    from benchmarks.eval import run2
+    calls = {"n": 0}
+
+    def fake_once(variant, session, key, msgs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise httpx.HTTPStatusError(
+                "502", request=httpx.Request("POST", "http://x"),
+                response=httpx.Response(502,
+                                        request=httpx.Request("POST",
+                                                              "http://x")))
+        return {"reply": "ok"}
+
+    monkeypatch.setattr(run2, "_call_upstream_once", fake_once)
+    monkeypatch.setattr(run2.time, "sleep", lambda s: None)
+    assert run2._call_upstream("trim", "s", "k", [])["reply"] == "ok"
+    assert calls["n"] == 3
+
+    calls["n"] = 0
+
+    def fake_400(variant, session, key, msgs):
+        calls["n"] += 1
+        raise httpx.HTTPStatusError(
+            "400", request=httpx.Request("POST", "http://x"),
+            response=httpx.Response(400,
+                                    request=httpx.Request("POST", "http://x")))
+
+    monkeypatch.setattr(run2, "_call_upstream_once", fake_400)
+    try:
+        run2._call_upstream("trim", "s", "k", [])
+        raise AssertionError("4xx가 재시도됨")
+    except httpx.HTTPStatusError:
+        pass
+    assert calls["n"] == 1                     # 재시도 없음

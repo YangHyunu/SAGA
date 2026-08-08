@@ -208,6 +208,23 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
 
 def _call_upstream(variant: str, session: str, key: str,
                    msgs: List[Dict]) -> Dict:
+    """일시 오류(5xx·타임아웃)는 재시도 — 한 번의 502가 100턴 런을 죽였다
+    (night2-drm 실측: 프록시 업스트림 ReadTimeout → 502 → 즉사)."""
+    for attempt in range(3):
+        try:
+            return _call_upstream_once(variant, session, key, msgs)
+        except (httpx.HTTPStatusError, httpx.TransportError) as e:
+            if (isinstance(e, httpx.HTTPStatusError)
+                    and e.response.status_code < 500):
+                raise                          # 4xx는 우리 잘못 — 즉시 전파
+            if attempt == 2:
+                raise
+            time.sleep(15 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
+def _call_upstream_once(variant: str, session: str, key: str,
+                        msgs: List[Dict]) -> Dict:
     t0 = time.time()
     if variant == "dreaming":
         r = httpx.post(PROXY + "/v1/chat/completions", timeout=300,
