@@ -180,15 +180,58 @@ def test_oracle_pass_ignores_whitespace():
     assert not oracle_pass("기억 안 나요", "250")
 
 
-def test_judge_false_premise_inverts():
-    ok = judge_pass(_fake_llm("N"), "false", "잔액 250", "250골드",
+def test_oracle_pass_ignores_statbar():
+    """스탯바에 이름·나이가 상시 박혀 있어 공짜 적중이 나면 안 된다."""
+    reply = "[한결 · 27세 · 여관]\n---\n글쎄요, 기억이 잘…"
+    assert not oracle_pass(reply, "27")
+    assert not oracle_pass(reply, "한결")
+
+
+def test_oracle_pass_accepts_korean_numeral_of_digit_expectation():
+    assert oracle_pass("이백오십 남았어요", "250골드")
+
+
+def test_oracle_false_probe_fails_on_parroting_wrong_value():
+    assert not oracle_pass("맞아요, 350골드였죠", "250", wrong_value="350")
+    assert oracle_pass("아뇨, 250이었어요", "250", wrong_value="350")
+
+
+def test_judge_false_probe_requires_active_correction():
+    """회피는 통과가 아니다 — 부정형 질문을 긍정형으로 뒤집은 결과."""
+    ok = judge_pass(_fake_llm("정정했다.\nY"), "false", "잔액 250", "250골드",
                     "350골드 남았댔지?", "아뇨, 250골드였어요.",
                     wrong_value="350골드")
-    assert ok["pass"] is True                  # 오염값 단정 안 함 = 통과
-    bad = judge_pass(_fake_llm("Y"), "false", "잔액 250", "250골드",
-                     "350골드 남았댔지?", "맞아요 350골드.",
-                     wrong_value="350골드")
-    assert bad["pass"] is False
+    assert ok["pass"] is True
+    dodged = judge_pass(_fake_llm("화제를 돌렸다.\nN"), "false", "잔액 250",
+                        "250골드", "350골드 남았댔지?", "그보다, 밖이 춥네요.",
+                        wrong_value="350골드")
+    assert dodged["pass"] is False
+
+
+def test_judge_unparsable_output_is_none_not_a_default():
+    """파싱 실패에 기본값을 두면 유형별로 반대 방향 편향이 생긴다."""
+    for ptype in ("recall", "false", "update"):
+        r = judge_pass(_fake_llm("네"), ptype, "잔액 250", "250",
+                       "얼마?", "250이요", wrong_value="350")
+        assert r["pass"] is None
+
+
+def test_judge_verdict_reads_last_standalone_token():
+    r = judge_pass(_fake_llm("근거 문장에 N이라는 글자가 섞여 있다.\n**Y**"),
+                   "recall", "잔액 250", "250", "얼마?", "250이요")
+    assert r["pass"] is True
+    assert "근거 문장" in r["why"]              # 감사 가능한 근거가 남는다
+
+
+def test_judge_update_prompt_mentions_updated_value_rule():
+    seen = {}
+
+    def spy(system, user):
+        seen["user"] = user
+        return "Y"
+
+    judge_pass(spy, "update", "잔액", "250", "얼마?", "300에서 250으로")
+    assert "갱신" in seen["user"]
 
 
 def test_decompose_miss_checks_dreaming_storage(tmp_path):
@@ -215,6 +258,27 @@ def test_agreement_counts_and_lists_disagreements():
     assert r["n"] == 3 and r["agree"] == 1
     assert r["disagrees"] == [1, 2]
     assert abs(r["rate"] - 1 / 3) < 1e-9
+    assert r["matrix"] == {"TP": 1, "FP": 2, "FN": 0, "TN": 0}
+
+
+def test_agreement_excludes_unparsed_from_denominator():
+    rows = [{"ptype": "recall", "fact_text": "잔액", "expected_value": "250",
+             "question": "q", "reply": "r", "human": True}]
+    r = agreement(rows, judge=_fake_llm("네"))
+    assert r["n"] == 0 and r["unparsed"] == [0]
+
+
+def test_kappa_corrects_for_chance_and_human_baseline():
+    from benchmarks.eval.judge_check import kappa
+    assert kappa([(True, True), (False, False)]) == 1.0
+    # 둘 다 전부 True → 우연 일치라 κ는 신호가 없다(관례상 1.0 처리)
+    assert kappa([(True, True), (True, True)]) == 1.0
+    assert kappa([(True, False), (False, True)]) < 0
+
+    rows = [{"ptype": "recall", "fact_text": "f", "expected_value": "250",
+             "question": "q", "reply": "r", "human": True, "human2": False}]
+    r = agreement(rows, judge=_fake_llm("Y"))
+    assert r["human_rate"] == 0.0                 # 사람끼리도 갈린 표본
 
 
 # ---- preset2wire (뮈토스 6.2 조립) ----
@@ -350,3 +414,22 @@ def test_render_contains_blocks():
     md = render(aggregate(results), results)
     assert "dreaming" in md and "recall" in md and "부록" in md
     assert "30~39" in md                                # 거리 구간
+    assert "채점기 건강" in md and "불일치" in md
+
+
+def test_aggregate_reports_oracle_and_disagreement():
+    from benchmarks.eval.report2 import aggregate
+    r = _res("dreaming", 0, True)
+    r["probes"][0]["oracle"] = False                    # judge=True, 오라클=False
+    a = aggregate([r])["dreaming"]
+    assert a["judge_rate"] == 1.0 and a["oracle_rate"] == 0.0
+    assert a["disagree_rate"] == 1.0
+
+
+def test_aggregate_drops_unparsed_judge_from_rates():
+    from benchmarks.eval.report2 import aggregate
+    ok, bad = _res("dreaming", 0, True), _res("dreaming", 1, True)
+    bad["probes"][0]["judge"] = None
+    a = aggregate([ok, bad])["dreaming"]
+    assert a["by_type"]["recall"]["runs"] == 1          # 파싱 실패 런은 제외
+    assert a["unparsed"] == 1 and a["judge_rate"] == 1.0

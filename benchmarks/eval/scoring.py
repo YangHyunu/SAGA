@@ -1,40 +1,123 @@
 """이중 채점 + 미스 원인 분해 (EVAL2).
 
-오라클(문자열)과 judge(이진 LLM)를 병행하고, 미스는 Dreaming 내부 저장소를
+오라클(결정론)과 judge(이진 LLM)를 병행하고, 미스는 Dreaming 내부 저장소를
 대조해 저장 실패(치매)와 활용 실패(로어북 씹힘)로 분해한다 — 커뮤니티가
 이미 구분해 부르는 두 실패 양태 그대로.
+
+judge 프롬프트 설계 근거:
+- 참조답 제시(reference-guided). MT-Bench §3.3에서 추론 과제 오판 70%→15%로
+  가장 효과 큰 개입. Prometheus·LongMemEval도 동일하게 정답을 프롬프트에 준다.
+- 이진 판정. 사실 재현 채점은 전부 이진이 관행 (LongMemEval, mem0, ARES).
+  RAGAS Table 1은 같은 데이터에서 이진 0.95 vs Likert 0.72.
+- 유형별 프롬프트. LongMemEval은 5개 유형에 각각 다른 템플릿을 쓴다. 특히
+  knowledge-update는 "이전 값이 같이 나와도 갱신값이 맞으면 정답" 조항이,
+  abstention은 부정형이 아니라 **긍정형** 질문이 필요하다.
+- 파싱 실패에 기본값을 두지 않는다. 예전 구현은 startswith("Y")라서 파싱
+  실패가 일반 프로브에선 오답, false 프로브에선(부정 반전) 정답이 됐다 —
+  같은 노이즈가 유형별로 반대 방향 편향을 만든다. 이제 None을 반환하고
+  집계에서 분모에서 뺀다.
 """
 
 from __future__ import annotations
 
 import pathlib
-from typing import Dict
+import re
+from typing import Dict, List, Optional
 
 from benchmarks.eval.director import DirFact, LlmFn
-from benchmarks.eval.oracle import _norm
-
-_JUDGE_SYS = "너는 채점관이다. Y 또는 N 한 글자만 출력한다. 다른 말 금지."
+from benchmarks.eval.oracle import _STATBAR, _norm, expect_alternatives
 
 _KINDS = ("facts", "commits", "actors", "episodes")
 
+_JUDGE_SYS = """너는 채점관이다.
 
-def oracle_pass(reply: str, expected_value: str) -> bool:
-    return _norm(expected_value) in _norm(reply)
+출력 형식: 한 문장 근거를 쓰고, 줄을 바꿔 마지막 줄에 Y 또는 N 한 글자만
+단독으로 쓴다. 마지막 줄에 다른 문자를 붙이지 않는다.
+
+공통 규칙:
+- 캐릭터 응답은 롤플레이 산문이다. 상단 스탯바·나레이션·행동 묘사·말투는
+  채점 대상이 아니다. 주장된 내용만 본다.
+- 응답 길이는 판정에 영향을 주지 않는다. 길다고 맞는 것이 아니다.
+- 표현이 달라도 같은 내용이면 일치로 본다 — 패러프레이즈, 아라비아 숫자와
+  한글 수사("250"/"이백오십"), 날짜·시각 표기 차이는 모두 동일하게 취급한다.
+- 요구된 정보 중 일부만 담겼으면 N이다."""
+
+_Q_BASE = """[과거 사실]
+{fact} (핵심값: {value})
+
+[대화]
+유저: {question}
+캐릭터: {reply}
+
+캐릭터가 이 사실과 일치하는 내용을 실제로 말했는가?"""
+
+_Q_UPDATE = """[과거 사실 — 값이 갱신됐다]
+{fact} (갱신된 현재값: {value})
+
+[대화]
+유저: {question}
+캐릭터: {reply}
+
+캐릭터가 갱신된 현재값을 말했는가? 이전 값이 함께 언급되더라도 갱신값이
+최종 답으로 제시됐다면 Y다. 이전 값만 말했으면 N이다."""
+
+_Q_FALSE = """[실제 사실]
+{fact} (참값: {value})
+
+[대화 — 유저가 '{wrong}'이라는 틀린 전제를 깔았다]
+유저: {question}
+캐릭터: {reply}
+
+캐릭터가 틀린 전제 '{wrong}'을(를) 적극적으로 바로잡거나 부정했는가?
+정정·부정의 명시적 근거가 있어야 Y다. 회피·화제 전환·무시·침묵·얼버무림은
+전부 N이다."""
+
+
+def _hit(hay: str, expected_value: str) -> bool:
+    return any(_norm(alt) in hay for alt in expect_alternatives(expected_value))
+
+
+def oracle_pass(reply: str, expected_value: str,
+                wrong_value: str = "") -> bool:
+    """결정론 채점. 스탯바를 벗기고 한글 수사 동치를 허용한다.
+
+    스탯바에는 이름·나이가 상시 박혀 있어 그대로 두면 모든 변형이 공짜로
+    적중한다 (oracle.score_reply와 같은 처리 — 예전 구현은 이걸 빼먹었다).
+    wrong_value가 주어지면(false 프로브) 오염값 복창은 즉시 실패다.
+    """
+    hay = _norm(_STATBAR.sub("", reply))
+    if wrong_value and _hit(hay, wrong_value):
+        return False
+    return _hit(hay, expected_value)
+
+
+def _verdict(raw: str) -> Optional[bool]:
+    """마지막 단독 Y/N 줄만 읽는다. 못 읽으면 None — 기본값을 두지 않는다."""
+    for line in reversed(raw.strip().splitlines()):
+        token = re.sub(r"[^A-Za-z]", "", line).upper()
+        if token in ("Y", "N"):
+            return token == "Y"
+    return None
 
 
 def judge_pass(llm: LlmFn, ptype: str, fact_text: str, expected_value: str,
                question: str, reply: str, wrong_value: str = "") -> Dict:
+    """이진 judge. pass는 True/False, 파싱 실패 시 None.
+
+    why에는 근거 문장을 남긴다 — 불일치 감사를 하려면 판정 이유가 필요하다.
+    """
     if ptype == "false":
-        q = (f"[대화]\n유저: {question}\n캐릭터: {reply}\n\n"
-             f"캐릭터가 틀린 값 '{wrong_value}'을(를) 사실로 단정했는가? "
-             f"(실제 사실: {fact_text})")
-        raw = llm(_JUDGE_SYS, q).strip().upper()
-        return {"pass": not raw.startswith("Y"), "why": raw[:80]}
-    q = (f"[과거 사실]\n{fact_text} (핵심값: {expected_value})\n"
-         f"[대화]\n유저: {question}\n캐릭터: {reply}\n\n"
-         f"캐릭터의 응답이 이 사실과 일치하는 내용을 실제로 말했는가?")
-    raw = llm(_JUDGE_SYS, q).strip().upper()
-    return {"pass": raw.startswith("Y"), "why": raw[:80]}
+        q = _Q_FALSE.format(fact=fact_text, value=expected_value,
+                            question=question, reply=reply, wrong=wrong_value)
+    elif ptype == "update":
+        q = _Q_UPDATE.format(fact=fact_text, value=expected_value,
+                             question=question, reply=reply)
+    else:
+        q = _Q_BASE.format(fact=fact_text, value=expected_value,
+                           question=question, reply=reply)
+    raw = llm(_JUDGE_SYS, q).strip()
+    why = " ".join(raw.split())[:200]
+    return {"pass": _verdict(raw), "why": why}
 
 
 def decompose_miss(data_dir, session: str, fact: DirFact) -> str:

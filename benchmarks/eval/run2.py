@@ -269,11 +269,12 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                       "sec_director": dir_sec, "sec_extract": ext_sec,
                       "ptype": ptype})
         if fact is not None:
-            o = oracle_pass(st["reply"], fact.value)
+            o = oracle_pass(st["reply"], fact.value, wrong_value=wrong)
             j = judge_pass(judge, ptype, fact.text, fact.value, utext,
                            st["reply"], wrong_value=wrong)
             miss = "-"
-            if not j["pass"] and variant == "dreaming":
+            # judge 파싱 실패(None)는 미스가 아니다 — 원인 분해에서 뺀다
+            if j["pass"] is False and variant == "dreaming":
                 miss = decompose_miss(DATA, session, fact)
             probes.append({"turn": i, "ptype": ptype, "fact": fact.text,
                            "value": fact.value, "question": utext,
@@ -286,11 +287,14 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         if ttl_wait and i % 10 == 9:
             time.sleep(305)                    # TTL 5m 만료 재현 (옵션)
 
-    passed = sum(1 for p in probes if p["judge"])
+    passed = sum(1 for p in probes if p["judge"] is True)
+    unparsed = sum(1 for p in probes if p["judge"] is None)
     result = {"variant": variant, "session": session, "run": run_no,
               "model": MODEL, "turns": turns, "probes": probes,
               "ledger": ledger.to_rows(),
               "totals": {"probes": len(probes), "judge_pass": passed,
+                         "judge_unparsed": unparsed,
+                         "oracle_pass": sum(1 for p in probes if p["oracle"]),
                          "cost": round(sum(t["cost"] for t in turns), 4)}}
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"

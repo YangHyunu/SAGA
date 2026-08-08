@@ -25,7 +25,10 @@ def aggregate(results: List[Dict]) -> Dict:
         for ptype in _TYPES:
             rates = []
             for r in runs:
-                ps = [p for p in r["probes"] if p["ptype"] == ptype]
+                # judge 파싱 실패(None)는 분모에서 뺀다 — 기본값을 두면
+                # 유형별로 반대 방향 편향이 생긴다 (scoring._verdict 주석)
+                ps = [p for p in r["probes"]
+                      if p["ptype"] == ptype and p["judge"] is not None]
                 if ps:
                     rates.append(sum(p["judge"] for p in ps) / len(ps))
             if rates:
@@ -35,18 +38,33 @@ def aggregate(results: List[Dict]) -> Dict:
                     "runs": len(rates)}
         misses = defaultdict(int)
         dist = defaultdict(lambda: [0, 0])
+        judged = oracle_hits = agree = scored = unparsed = 0
         for r in runs:
             for p in r["probes"]:
-                if not p["judge"] and p["miss_cause"] != "-":
+                oracle_hits += bool(p["oracle"])
+                scored += 1
+                if p["judge"] is None:
+                    unparsed += 1
+                    continue
+                judged += p["judge"]
+                agree += (bool(p["judge"]) == bool(p["oracle"]))
+                if p["judge"] is False and p["miss_cause"] != "-":
                     misses[p["miss_cause"]] += 1
                 bucket = (p["distance_turns"] // 10) * 10
                 dist[bucket][0] += p["judge"]
                 dist[bucket][1] += 1
+        parsed = scored - unparsed
         agg[variant] = {
             "by_type": by_type,
             "miss_causes": dict(misses),
             "distance": {k: v[0] / v[1] for k, v in sorted(dist.items())},
             "cost_mean": statistics.mean(r["totals"]["cost"] for r in runs),
+            # 오라클과 judge의 불일치 해소 규칙은 문헌에 없다. 둘 다 내고
+            # 불일치율 자체를 채점기 건강 지표로 읽는다 (PoLL·Thakur).
+            "judge_rate": judged / parsed if parsed else 0.0,
+            "oracle_rate": oracle_hits / scored if scored else 0.0,
+            "disagree_rate": 1 - agree / parsed if parsed else 0.0,
+            "unparsed": unparsed, "probes": scored,
         }
     return agg
 
@@ -63,6 +81,14 @@ def render(agg: Dict, results: List[Dict]) -> str:
         lines.append(f"| {variant} | " + " | ".join(cells)
                      + f" | {a['cost_mean']:.2f} |")
     lines.append("")
+    lines.append("## 채점기 건강 — judge / 오라클 / 불일치")
+    lines.append("| variant | judge | 오라클 | 불일치 | 파싱실패 | n |")
+    lines.append("|" + "---|" * 6)
+    for variant, a in sorted(agg.items()):
+        lines.append(f"| {variant} | {a['judge_rate']:.0%} | "
+                     f"{a['oracle_rate']:.0%} | {a['disagree_rate']:.0%} | "
+                     f"{a['unparsed']} | {a['probes']} |")
+    lines.append("")
     for variant, a in sorted(agg.items()):
         lines.append(f"## {variant} — 거리별 통과율(턴 구간): "
                      + ", ".join(f"{k}~{k + 9}: {v:.0%}"
@@ -72,7 +98,7 @@ def render(agg: Dict, results: List[Dict]) -> str:
     lines.append("\n## 부록 — 프로브 무편집 원문")
     for r in results:
         for p in r["probes"]:
-            mark = "○" if p["judge"] else "×"
+            mark = {True: "○", False: "×"}.get(p["judge"], "?")
             lines.append(f"- [{r['variant']} run{r['run']} T{p['turn'] + 1} "
                          f"{p['ptype']}] {mark} Q: {p['question']}")
             lines.append(f"  A: {' '.join(p['reply'].split())[:400]}")
