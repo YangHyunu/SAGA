@@ -1,10 +1,14 @@
-"""80턴 디렉터 벤치 드라이버 (EVAL2 §2·§3·§4).
+"""디렉터 벤치 드라이버 (EVAL2 §2·§3·§4). 기본 80턴, 파일럿은 짧게.
 
-진행 40턴: 디렉터가 유저 발화를 생성하며 매 턴 사실을 추출해 원장에 쌓는다.
-지식갱신 이벤트(값 변경) 2개는 디렉터 지시문으로 강제 발생.
-평가 40턴: 가시 창 밖으로 evict된 사실만 프로브로 재질문 (recall/relation/
-false/update/recent), 채점은 오라클+judge 이중, 미스는 저장/활용 실패 분해.
+진행 구간(기본 40턴): 디렉터가 유저 발화를 생성하며 매 턴 사실을 추출해 원장에
+쌓는다. 지식갱신 이벤트(값 변경) 2개는 디렉터 지시문으로 강제 발생.
+평가 구간(기본 40턴): 가시 창 밖으로 evict된 사실만 프로브로 재질문
+(recall/relation/false/update/recent), 채점은 오라클+judge 이중, 미스는
+저장/활용 실패 분해. --progress-turns/--eval-turns로 줄여 파일럿을 돌린다.
 --runs N 반복 (진행·필러만 변동, report2가 mean±std 집계).
+
+vanilla 변형만 트림 없이 전체 히스토리를 보낸다 — 프로브는 트림 창 기준으로
+뽑히므로, vanilla가 틀리면 그건 정보 부재가 아니라 lost-in-the-middle이다.
 
 와이어는 뮈토스 6.2 프리셋을 preset2wire로 조립 — 매 요청 check_wire_shape
 게이트. 모델·엔드포인트는 env로 오버라이드 (확정 설정: 나레이터 V4 Pro,
@@ -49,7 +53,10 @@ PROGRESS_TURNS = 40
 EVAL_TURNS = 40
 TRIM_TOKENS = 12000
 UPDATE_EVENTS = (12, 28)      # 지식갱신 강제 턴 (진행 구간)
-MAX_TOKENS = 1000             # 실사용 응답 길이 근사 (EVAL2 충실도 보강)
+# 캡처에서 RisuAI가 실제로 보낸 값이 4000이다 (capture-mythos req-001).
+# 실측 완성 평균은 771토큰이라 캡이 물리지 않는다 — 절단은 기억 실패로
+# 오인되는 교란이라 finish_reason을 턴마다 기록해 0%임을 증명한다.
+MAX_TOKENS = 4000
 
 # 확정 토글: RP 모드·한국어·성인 지침 ON·중립 렌더링 프리필 ON, 나머지 기본
 # select은 옵션 인덱스 문자열: response_language 1=🇰🇷 한국어, execution_mode 0=💬 RP.
@@ -126,12 +133,15 @@ def token_trim(history: List[Dict], budget: int,
 
 
 def probe_schedule(total: int) -> List[Optional[str]]:
-    """평가 구간 턴별 프로브 유형 배치 — 필러를 사이에 끼워 자연스럽게."""
-    seq = ["recall", None, "recall", "relation", None, "false", "recall", None,
-           "update", "recall", None, "false", "relation", None, "recall",
-           "recent", None, "recall", "false", None, "update", "recall", None,
-           "relation", "recall", None, "false", "recent", None, "recall"]
-    return (seq * ((total // len(seq)) + 1))[:total]
+    """평가 구간 턴별 프로브 유형 배치 — 필러를 사이에 끼워 자연스럽게.
+
+    10턴 단위로 5유형을 모두 담아 반복한다. 파일럿처럼 평가 구간이 짧아도
+    유형 커버리지가 유지된다 — 예전 30턴짜리 시퀀스는 앞 15턴에 recent가
+    아예 없어서 짧은 런이 대조군을 통째로 잃었다.
+    """
+    unit = ["recall", None, "relation", "recall", None,
+            "false", "update", None, "recent", "recall"]
+    return (unit * ((total // len(unit)) + 1))[:total]
 
 
 def build_wire(preset: Dict, card: Dict, window: List[Dict],
@@ -171,8 +181,11 @@ def _call_upstream(variant: str, session: str, key: str,
     u = d.get("usage", {})
     det = u.get("prompt_tokens_details", {})
     cached = det.get("cached_tokens", 0) or u.get("prompt_cache_hit_tokens", 0)
-    return {"reply": d["choices"][0]["message"]["content"],
+    choice = d["choices"][0]
+    return {"reply": choice["message"]["content"],
+            "finish": choice.get("finish_reason", ""),
             "prompt": u.get("prompt_tokens", 0), "cached": cached,
+            "completion": u.get("completion_tokens", 0),
             "cost": u.get("cost", 0.0), "sec": round(time.time() - t0, 1)}
 
 
@@ -189,7 +202,9 @@ def _load_json(path: str) -> Dict:
 
 def run_once(preset_path: str, card_path: str, variant: str, session: str,
              run_no: int, trim_tokens: int, reroll_at: List[int],
-             edit_at: List[int], ttl_wait: bool) -> Dict:
+             edit_at: List[int], ttl_wait: bool,
+             progress_turns: int = PROGRESS_TURNS,
+             eval_turns: int = EVAL_TURNS) -> Dict:
     preset = decode_risup(preset_path)
     card = _load_json(card_path)
     key = _key()
@@ -206,11 +221,11 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     if few_shot:
         dir_sys += f"\n[실제 유저 발화 예시 — 문체 참고]\n{few_shot}"
     turns, probes = [], []
-    sched = probe_schedule(EVAL_TURNS)
+    sched = probe_schedule(eval_turns)
 
-    for i in range(PROGRESS_TURNS + EVAL_TURNS):
+    for i in range(progress_turns + eval_turns):
         _, win_start = token_trim(history, trim_tokens)
-        ptype = sched[i - PROGRESS_TURNS] if i >= PROGRESS_TURNS else None
+        ptype = sched[i - progress_turns] if i >= progress_turns else None
         fact, wrong = None, ""
         t_dir = time.time()
         if ptype:
@@ -282,7 +297,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                            "judge": j["pass"], "why": j["why"],
                            "miss_cause": miss,
                            "distance_turns": i - fact.turn})
-        if variant == "dreaming" and i in (PROGRESS_TURNS // 2, PROGRESS_TURNS):
+        if variant == "dreaming" and i in (progress_turns // 2, progress_turns):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
         if ttl_wait and i % 10 == 9:
             time.sleep(305)                    # TTL 5m 만료 재현 (옵션)
@@ -295,6 +310,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
               "totals": {"probes": len(probes), "judge_pass": passed,
                          "judge_unparsed": unparsed,
                          "oracle_pass": sum(1 for p in probes if p["oracle"]),
+                         # 절단은 기억 실패로 오인된다 — 0인지 매 런 확인한다
+                         "truncated": sum(1 for t in turns
+                                          if t.get("finish") == "length"),
                          "cost": round(sum(t["cost"] for t in turns), 4)}}
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
@@ -311,6 +329,8 @@ def main() -> None:
     ap.add_argument("--session", required=True)
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--trim-tokens", type=int, default=TRIM_TOKENS)
+    ap.add_argument("--progress-turns", type=int, default=PROGRESS_TURNS)
+    ap.add_argument("--eval-turns", type=int, default=EVAL_TURNS)
     ap.add_argument("--reroll-at", default="18,33")
     ap.add_argument("--edit-at", default="25")
     ap.add_argument("--ttl-wait", action="store_true")
@@ -326,7 +346,8 @@ def main() -> None:
                 raise SystemExit(f"{d} 이미 있음 — --reset")
             shutil.rmtree(d)
         r = run_once(args.preset, args.card, args.variant, sess, n,
-                     args.trim_tokens, reroll, edit, args.ttl_wait)
+                     args.trim_tokens, reroll, edit, args.ttl_wait,
+                     args.progress_turns, args.eval_turns)
         t = r["totals"]
         print(f"[run{n}] {t['judge_pass']}/{t['probes']} ${t['cost']}",
               flush=True)

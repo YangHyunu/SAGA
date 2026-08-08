@@ -14,17 +14,49 @@ from __future__ import annotations
 import base64
 import json
 import pathlib
+import re
 import struct
 import sys
 import zipfile
 from typing import Dict, List, Tuple
 
+import tiktoken
 
-def _lore(book: Dict) -> List[str]:
-    """항상 활성(constant) 엔트리를 insertion_order 순으로."""
-    entries = [e for e in book.get("entries", []) if e.get("constant")]
-    entries.sort(key=lambda e: e.get("insertion_order", 0))
-    return [e["content"] for e in entries if e.get("content")]
+LORE_BUDGET = 800                     # RisuAI loreBookToken 기본값
+_ENC = tiktoken.get_encoding("cl100k_base")
+_DEPTH_DECO = re.compile(r"^\s*@@depth\b", re.M)
+
+
+def _tokens(text: str) -> int:
+    return len(_ENC.encode(text))
+
+
+def _lore(book: Dict, budget: int = LORE_BUDGET) -> List[str]:
+    """항상 활성(constant) 엔트리 중 RisuAI 로어북 예산 안에 드는 것만.
+
+    RisuAI는 priority(=insertion_order) 내림차순으로 훑으며 누적 토큰이
+    loreBookToken(기본 800, database.svelte.ts:80)을 넘지 않는 엔트리만 남긴다
+    (lorebook.svelte.ts:613-620). 이걸 재현하지 않으면 실제로는 잘려서 안 가는
+    로어까지 프롬프트에 넣게 된다 — 캡처 대조에서 카드 로어 8개 중 1개만
+    전송되는 것을 확인했다.
+
+    @@depth 엔트리는 예산은 함께 쓰지만 로어북 블록이 아니라 히스토리 안으로
+    주입되므로(캡처에서 Assets 586토큰이 꼬리 system에 실렸다) 출력에선 뺀다.
+    출력은 v3 규약대로 insertion_order 오름차순(낮을수록 위).
+    """
+    entries = [e for e in book.get("entries", [])
+               if e.get("constant") and e.get("content")]
+    kept, used = [], 0
+    for e in sorted(entries, key=lambda e: e.get("insertion_order", 0),
+                    reverse=True):
+        n = _tokens(e["content"])
+        if used + n > budget:
+            continue
+        used += n
+        if not _DEPTH_DECO.search(e["content"]):
+            kept.append(e)
+    kept.sort(key=lambda e: e.get("insertion_order", 0))
+    return [e["content"] for e in kept]
 
 
 def extract(charx_path: str) -> Dict:

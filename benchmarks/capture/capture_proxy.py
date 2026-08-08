@@ -5,7 +5,13 @@ RisuAI → :8788 (여기) → :8787 (dreaming) → 업스트림
 dreaming이 손대기 **전**의 바디를 저장한다. 시뮬 출력과 바이트 diff 하는 게 목적.
 브라우저에서 직접 부르므로 CORS 프리플라이트를 열어둔다 (로컬 전용).
 
+웹판 RisuAI는 호스트명이 localhost/127.0.0.1/0.0.0.0이면 요청을 거부한다
+(globalApi.svelte.ts:598,740 — 데스크톱/노드서버가 아니면 무조건). 목록에 없는
+IPv6 루프백 `[::1]`로 붙으면 통과하고, 브라우저도 ::1은 루프백으로 인정해
+HTTPS 페이지에서 mixed content로 막지 않는다. 그래서 기본 바인드가 ::1이다.
+
 usage: python3 capture_proxy.py [--out DIR] [--forward URL] [--port 8788]
+                                [--host ::1]
 """
 
 from __future__ import annotations
@@ -101,9 +107,10 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="captures")
     ap.add_argument("--forward", default=FORWARD)
     ap.add_argument("--port", type=int, default=8788)
+    ap.add_argument("--host", default="::1")
     a = ap.parse_args()
     OUT = pathlib.Path(a.out)
     OUT.mkdir(parents=True, exist_ok=True)
     FORWARD = a.forward.rstrip("/")
     print(f"capture → {OUT.resolve()}  forward → {FORWARD}", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=a.port, log_level="warning")
+    uvicorn.run(app, host=a.host, port=a.port, log_level="warning")

@@ -1,10 +1,15 @@
 """와이어 충실도 검사 — 합성 요청이 실캡처와 같은 형태인지 매 요청 기계 검증.
 
-실캡처(corpus5, 81건 전수) 실측 형태:
-  [선두 system 1개] (assistant 인사) user assistant … user [꼬리 system 1개]
-  · 중간 system 없음, 역할 연속 중복 없음, 미해석 매크로 없음
+실캡처(corpus5 81건 + 뮈토스 6.2 2건) 실측 형태:
+  [선두 system 1+] (assistant 인사) user assistant … user [꼬리 system] [프리필]
+  · 역할 연속 중복 없음, 미해석 매크로 없음(알려진 것 제외), 마지막은 user
   · greeting은 트림(~56메시지) 이후 사라지므로 고정 프리픽스로 보지 않는다
   · 형식은 OpenAI-compat (content=평문 문자열, system이 messages 안에 위치)
+
+"중간 system 금지"는 corpus5에만 맞는 규칙이었다. 뮈토스 6.2는 Current Input과
+Final Response Contract를 히스토리 사이에 깊이 고정으로 꽂고, 그 뒤에 프리필
+5개가 붙어 실제로 중간 system이 생긴다 — 실트래픽을 위반으로 잡으면 안 된다.
+{{slot}}도 마찬가지로 RisuAI가 미해석 상태 그대로 내보낸다.
 
 위반이 하나라도 나오면 러너는 즉시 중단한다 — "같다고 믿는" 대신 "매번 확인한다".
 """
@@ -19,6 +24,9 @@ import re
 from typing import Dict, List, Optional
 
 MACRO = re.compile(r"\{\{[^}]{1,80}\}\}")
+# RisuAI가 실제로 미해석 상태 그대로 내보내는 매크로 (뮈토스 캡처 system[0]).
+# 우리 조립 실수가 아니므로 위반으로 세지 않는다.
+KNOWN_MACROS = {"{{slot}}"}
 
 
 def _text(msg: Dict) -> str:
@@ -50,18 +58,16 @@ def check_wire_shape(msgs: List[Dict]) -> List[str]:
     elif body and body[-1]["role"] != "user":
         out.append("마지막 메시지가 user가 아님")
 
-    if any(m["role"] == "system" for m in body):
-        out.append("중간에 system이 있음 (선두/꼬리 외 금지)")
-
     for i in range(1, len(body)):
         if body[i]["role"] == body[i - 1]["role"]:
             out.append(f"역할 연속 중복: index {i} ({body[i]['role']})")
             break
 
     for i, m in enumerate(msgs):
-        found = MACRO.search(_text(m))
+        found = next((f for f in MACRO.findall(_text(m))
+                      if f not in KNOWN_MACROS), None)
         if found:
-            out.append(f"미해석 매크로: index {i} {found.group()[:40]}")
+            out.append(f"미해석 매크로: index {i} {found[:40]}")
             break
     return out
 
