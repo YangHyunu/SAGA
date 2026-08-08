@@ -18,29 +18,52 @@ import re
 import struct
 import sys
 import zipfile
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
-_DEPTH_DECO = re.compile(r"^\s*@@depth\b", re.M)
+_DEPTH_DECO = re.compile(r"^\s*@@depth\s+(-?\d+)", re.M)
 
 
-def _split_lore(book: Dict) -> Tuple[List[str], str]:
-    """항상 활성(constant) 엔트리를 (로어북 블록, 깊이 주입분)으로 가른다.
+def _split_lore(book: Dict, budget: Optional[int] = None
+                ) -> Tuple[List[str], str]:
+    """항상 활성(constant) 엔트리를 (로어북 블록, postEverything 주입분)으로 가른다.
 
-    @@depth 엔트리는 로어북 블록이 아니라 꼬리 system 쪽으로 들어간다 — 뮈토스
-    캡처에서 Assets(@@depth 0)가 로어 블록이 아니라 Final Response Contract
-    앞(promptTemplate[41] authornote 자리)에 실린 것을 확인했다.
+    @@depth 0 (role != assistant) 엔트리는 로어북 블록이 아니라 postEverything
+    슬롯으로 간다 — index.svelte.ts:582-590이 `pos==='depth' && depth===0 &&
+    role!=='assistant'`를 골라 unformated.postEverything에 넣는다.
+    depth>0은 히스토리 중간으로 splice되므로(index.svelte.ts:1188-1194) 여기서
+    다룰 수 없다. 만나면 조용히 잘못 놓지 말고 멈춘다.
 
-    로어북 토큰 예산(loreBookToken)은 재현하지 않는다. 실캡처에서 3,400토큰
-    분량의 constant 엔트리 7개가 전부 실렸다 — 기본값 800이 적용되지 않았다.
+    budget=None이면 토큰 예산을 적용하지 않는다. RisuAI 기본값은 800이고
+    (database.svelte.ts:80) 예산 필터는 실재하지만(lorebook.svelte.ts:613-620,
+    필터 결과가 그대로 actives로 반환된다), 캡처를 뜬 설정은 3,400토큰 분량을
+    전부 통과시켰다 — 즉 그 클라이언트의 loreBookToken이 크다. 카드의
+    character_book.token_budget은 비어 있어(이 카드 기준) 카드에서 알 수 없다.
+    다른 설정을 재현하려면 budget을 명시해 넘겨라.
     """
     entries = [e for e in book.get("entries", [])
                if e.get("constant") and e.get("content")]
     entries.sort(key=lambda e: e.get("insertion_order", 0))
-    block = [e["content"] for e in entries
-             if not _DEPTH_DECO.search(e["content"])]
-    depth = "\n\n".join(e["content"] for e in entries
-                        if _DEPTH_DECO.search(e["content"]))
-    return block, depth
+    if budget is not None:
+        kept, used = [], 0
+        for e in sorted(entries, key=lambda e: e.get("insertion_order", 0),
+                        reverse=True):
+            n = len(e["content"]) // 3            # 대략 — 정확한 토크나이저 없음
+            if used + n <= budget:
+                used += n
+                kept.append(e)
+        entries = sorted(kept, key=lambda e: e.get("insertion_order", 0))
+    block, post = [], []
+    for e in entries:
+        m = _DEPTH_DECO.search(e["content"])
+        if not m:
+            block.append(e["content"])
+        elif m.group(1) == "0":
+            post.append(e["content"])
+        else:
+            raise SystemExit(
+                f"@@depth {m.group(1)} 엔트리는 히스토리 중간으로 splice된다 — "
+                f"평탄한 카드 필드로 옮길 수 없다: {e.get('name', '')}")
+    return block, "\n\n".join(post)
 
 
 def extract(charx_path: str) -> Dict:
@@ -49,18 +72,15 @@ def extract(charx_path: str) -> Dict:
     d = card["data"]
     greetings = [g for g in [d.get("first_mes", "")]
                  + list(d.get("alternate_greetings", [])) if g.strip()]
-    lore, depth_lore = _split_lore(d.get("character_book") or {})
-    # 깊이 주입 로어는 authornote 슬롯(promptTemplate[41])으로 보낸다 —
-    # 캡처에서 그 위치에 실렸고, 이 카드의 post_history_instructions는 비어 있다.
-    note = "\n\n".join(x for x in [d.get("post_history_instructions", ""),
-                                   depth_lore] if x.strip())
+    lore, post_everything = _split_lore(d.get("character_book") or {})
     return {
         "name": d.get("name", ""),
         "description": d.get("description", ""),
         "greeting": greetings[0] if greetings else "",
         "lore": lore,
         "globalnote": d.get("system_prompt", ""),
-        "authornote": note,
+        "authornote": d.get("post_history_instructions", ""),
+        "post_everything": post_everything,
     }
 
 

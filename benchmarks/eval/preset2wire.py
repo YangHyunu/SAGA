@@ -190,7 +190,12 @@ def assemble(preset: Dict, toggles: Dict[str, str], history: List[Dict],
         elif t == "authornote":
             note = card.get("authornote", "")
             content = _fill(item, note, toggles) if note else ""
-        else:                                    # postEverything 등 빈 항목
+        elif t == "postEverything":
+            # @@depth 0 로어가 실리는 자리 (index.svelte.ts:582-590 —
+            # pos==='depth' && depth===0 && role!=='assistant' → postEverything)
+            post = card.get("post_everything", "")
+            content = _fill(item, post, toggles) if post else ""
+        else:
             content = resolve_when(item.get("text", ""), toggles)
         if not content.strip():
             continue
@@ -199,10 +204,16 @@ def assemble(preset: Dict, toggles: Dict[str, str], history: List[Dict],
         content = content.replace("{{user}}", user_name)
         out.append({"role": role, "content": content})
 
-    # 연속 system은 합치되 chat 아이템은 비어 있어도 경계다. 뮈토스는 히스토리를
-    # Previous Context Data / Current Input Data로 쪼개고 사이에 Current
-    # Request(system)를 끼우는데, 첫 턴엔 앞 구간이 비어 둘이 인접한다 —
-    # 그런데도 실캡처는 별도 메시지로 보낸다(req-005: system 48403 + system 464).
+    # 연속 system은 합치되 chat 아이템은 비어 있어도 경계로 둔다.
+    #
+    # ⚠ 이 규칙은 **관측에서 나왔고 소스와 아직 화해되지 않았다**. RisuAI의
+    # pushPrompts(index.svelte.ts:1235-1254)는 memo/name이 같은 연속 system을
+    # 무조건 합치고, plain 아이템은 둘 다 undefined라 합쳐져야 한다. 그런데
+    # 실캡처는 첫 턴(Previous Context Data 범위가 빈 턴)에도 본체(48403)와
+    # Current Request(464)를 별도 메시지로 보낸다 — req-001/002/005/006 전부.
+    # 벤더된 소스는 2026-07-30 스냅샷이라 배포본과 다를 수 있다.
+    # 재현 대상은 실제 클라이언트이므로 관측을 따르되, 다른 프리셋으로 확장할
+    # 때는 이 가정을 먼저 캡처로 다시 확인할 것.
     merged: List[Dict] = []
     for m in out:
         if m is _BARRIER:

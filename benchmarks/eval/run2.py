@@ -158,7 +158,8 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
                           "persona": card.get("persona", ""),
                           "lore": card.get("lore", []),
                           "globalnote": card.get("globalnote", ""),
-                          "authornote": card.get("authornote", "")},
+                          "authornote": card.get("authornote", ""),
+                          "post_everything": card.get("post_everything", "")},
                     char_name=card.get("name", ""),
                     user_name=card.get("user_name", ""))
     # 캡처 확인: Custom API 경로는 hasFullSystemPrompt + requiresAlternateRole
