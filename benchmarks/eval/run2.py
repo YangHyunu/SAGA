@@ -42,6 +42,7 @@ _ENC = tiktoken.get_encoding("o200k_base")
 
 from benchmarks.eval.director import (Ledger, LlmFn, extract_facts,
                                       make_false_premise, make_probe,
+                                      _probe_mentions_fact_object,
                                       probe_plan)
 from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
@@ -572,7 +573,10 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                            # 표기 변형은 놓친다 (알려진 한계, 과소탐지 방향).
                            "value_in_window": any(
                                fact.value in m["content"]
-                               for m in use_window)})
+                               for m in use_window),
+                           # 하드 차단·재시도는 무한루프 위험 — 로깅만.
+                           "drift_suspected": not _probe_mentions_fact_object(
+                               fact, utext)})
         if variant == "dreaming" and i in (total_turns // 3,
                                            2 * total_turns // 3):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)

@@ -709,6 +709,35 @@ def test_probe_prompt_forbids_time_anchoring():
     assert "방금" in _PROBE_SYS and "시점" in _PROBE_SYS
 
 
+def test_probe_prompt_forbids_ambiguous_referent():
+    """T19 실측: '그게 누구였더라' — 지시대상이 모호해 무엇을 묻는지 불명."""
+    from benchmarks.eval.director import _PROBE_SYS
+    assert "지시대상" in _PROBE_SYS
+
+
+def test_probe_mentions_fact_object_catches_real_drift_case():
+    """T49 실측: '저고리' → '옷감' 대상 명사 치환 드리프트 재현."""
+    from benchmarks.eval.director import DirFact, _probe_mentions_fact_object
+    fact = DirFact(fid="x", kind="exact", value="분홍색",
+                   text="소연은 분홍색이 섞인 한복 저고리를 입고 있다.", turn=10)
+    drifted = "그때 그 옷감 색이 참 곱다고 생각했는데..."      # 실측 T49 재현
+    faithful = "그때 그 저고리 색이 참 곱다고 생각했는데..."
+    assert _probe_mentions_fact_object(fact, drifted) is False
+    assert _probe_mentions_fact_object(fact, faithful) is True
+
+
+def test_probe_prompt_requires_vague_past_anchor():
+    """'그때'·'처음에' 같은 막연한 과거 지시어를 강제해 지시대상 모호성도 줄인다."""
+    from benchmarks.eval.director import _PROBE_SYS
+    assert "그때" in _PROBE_SYS and "처음에" in _PROBE_SYS
+
+
+def test_extract_prompt_excludes_self_appearance_facts():
+    """vanilla '회색 눈동자' 151회/98턴 — 상시 노출 신체 특징은 시험 무의미."""
+    from benchmarks.eval.director import _EXTRACT_SYS
+    assert "외모" in _EXTRACT_SYS and "신체 특징" in _EXTRACT_SYS
+
+
 def test_beat_rotation_and_update_events():
     """5턴마다 이야기 미는 비트, UPDATE_EVENTS가 비트보다 우선."""
     from benchmarks.eval.run2 import UPDATE_EVENTS, pick_beat

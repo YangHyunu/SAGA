@@ -7,6 +7,7 @@ The Seed DIRECTOR 방식 (EVAL2 §3): 사실을 미리 심지 않고, 롤플레�
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import asdict, dataclass
 from typing import Callable, Dict, List, Optional, Tuple
@@ -19,7 +20,9 @@ _EXTRACT_SYS = (
     "kind는 exact(숫자·고유명사·시각), relation(인물 관계·호칭), "
     "event(약속·사건) 중 하나. 핵심값은 응답에 그대로 나올 법한 명사형 "
     "단어(이름·품명·숫자·장소·시각)여야 한다 — '~하기로 함' 같은 문장형 "
-    "값 금지. 추출할 게 없으면 빈 출력. 다른 말 금지.")
+    "값 금지. 캐릭터 자신의 외모·신체 특징(눈동자 색·머리색·체형 등)은 "
+    "추출하지 않는다 — 나레이션에 상시 노출돼 시험이 무의미하다. "
+    "추출할 게 없으면 빈 출력. 다른 말 금지.")
 
 
 @dataclass
@@ -73,9 +76,14 @@ _PROBE_SYS = (
     "내용을 스스로 입에 올리게 만드는 게 목표다.\n"
     "금지: '기억해?' 같은 시험조·퀴즈조, 핵심값을 직접 말하는 것, 뜬금없는 "
     "회상 도입, 그 일의 시점을 단정하는 표현('방금'·'아까'·'어제' 등 — "
-    "언제 있었던 일인지 모르는 채로 말한다).\n"
+    "언제 있었던 일인지 모르는 채로 말한다), 지시대상이 모호한 표현("
+    "'그게 누구였더라'·'그거 뭐였지' 등 — 무엇/누구를 가리키는지 이 발화"
+    "만 보고 알 수 없는 질문. 사실의 대상을 최소한으로 특정할 수 있는 "
+    "실마리를 함께 준다).\n"
     "허용: 지나가는 혼잣말('그게 뭐였더라…'), 관련된 행동이나 상황 언급으로 "
-    "상대의 말을 끌어내기, 부드러운 되물음.\n"
+    "상대의 말을 끌어내기, 부드러운 되물음. 발화에는 '그때'·'처음에' 같은 "
+    "막연한 과거 지시어를 하나 반드시 포함한다 — 언제인지 단정하지 않으면서 "
+    "과거의 일임은 분명히 한다.\n"
     "1~3문장, 정중한 존댓말(상대는 연상의 신비한 존재다), 발화만 출력.")
 
 _FALSE_SYS = (
@@ -110,6 +118,31 @@ def _probe_user(fact: DirFact, scene: str, style: str) -> str:
         parts.append(f"[유저 문체 예시]\n{style}")
     parts.append(f"[과거 사실]\n{fact.text} (핵심값: {fact.value})")
     return "\n".join(parts)
+
+
+_PARTICLES = ("에게서", "에서", "으로", "이라서", "이지만", "하고", "까지",
+             "부터", "이나", "라도", "은", "는", "이", "가", "을", "를",
+             "의", "와", "과", "도", "만", "에", "로")
+_STOPWORDS = {"있다", "한다", "했다", "됐다"}
+
+
+def _strip_particle(word: str) -> str:
+    for p in _PARTICLES:
+        if word.endswith(p) and len(word) > len(p):
+            return word[:-len(p)]
+    return word
+
+
+def _probe_mentions_fact_object(fact: DirFact, utext: str) -> bool:
+    """생성된 프로브가 사실의 핵심 대상 명사를 담았는지 대략 확인.
+
+    완벽한 개체명 인식이 아니라 명백한 대상 치환(실측: '저고리'→'옷감')만
+    걸러낸다 — 정밀도 낮음, 야간 로그로 재보정 필요.
+    """
+    words = {_strip_particle(w) for w in re.findall(r"[가-힣]{2,}", fact.text)}
+    words -= _STOPWORDS
+    words = {w for w in words if w not in fact.value and fact.value not in w}
+    return not words or any(w in utext for w in words)
 
 
 def make_probe(llm: LlmFn, fact: DirFact, scene: str = "",
