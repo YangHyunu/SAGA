@@ -22,6 +22,11 @@ from saga.services.pair_ledger import extract_pairs
 
 _MAX_FACTS = 20
 
+# 연속 미정렬이 이 횟수에 닿으면 원장을 버리고 다시 베이스라인을 잡는다.
+# 격리 턴은 record_turn을 안 타서 체인이 자라지 않는다 — 한 번 오염된
+# 베이스라인은 스스로 못 빠져나온다 (night2-drm-r0: 105/106턴 격리).
+_MISALIGN_LIMIT = 3
+
 
 def render_knowledge(store: MemoryStore) -> str:
     parts: List[str] = []
@@ -96,6 +101,25 @@ class SyncPath:
         """
         return scaffold.split(messages, self._wire_state().get("tail_fp"))
 
+    def _rebaseline(self) -> None:
+        """오염된 원장을 버린다 — 다음 판정이 이번 요청으로 다시 잡는다.
+
+        어떤 요청 해시와도 안 맞는 행(프리필 등)이 베이스라인이면 정렬이
+        영구 실패하고, 격리 턴은 record_turn을 안 타 체인이 자라지도 않는다.
+        무효화는 리롤과 같은 primitive(demote_after)를 쓴다 — raw를 읽으므로
+        raw 삭제보다 반드시 먼저 부른다.
+        """
+        rows = [r for _, r in self._storage.scan(f"{self._session}/ledger")]
+        turns = [r["turn_number"] for r in rows
+                 if r.get("turn_number") is not None]
+        if turns:
+            demote_after(self._storage, self._session, min(turns))
+            for key, row in list(self._storage.scan(f"{self._session}/raw")):
+                if row.get("turn_number", 0) >= min(turns):
+                    self._storage.delete(f"{self._session}/raw", key)
+        for key, _ in list(self._storage.scan(f"{self._session}/ledger")):
+            self._storage.delete(f"{self._session}/ledger", key)
+
     def process(self, messages: List[Dict]) -> Tuple[List[Dict], Verdict]:
         state = self._wire_state()
         # 첫 요청은 직전 요청이 없어 프리필 꼬리를 배울 수단이 없다
@@ -103,14 +127,21 @@ class SyncPath:
         first_request = not state.get("prev_fp")
         tail_fp = state.get("tail_fp") or scaffold.learn(messages,
                                                          state.get("prev_fp"))
-        self._storage.put(f"{self._session}/wire", "scaffold",
-                          {"prev_fp": scaffold.fingerprint(messages),
-                           "tail_fp": tail_fp})
+        new_state = {"prev_fp": scaffold.fingerprint(messages),
+                     "tail_fp": tail_fp, "misaligned": 0}
         messages, tail = scaffold.split(messages, tail_fp)
 
         ledger_was_empty = first_request and not self._ledger.chain()
         pairs, last_user_hash = extract_pairs(messages)
         verdict = self._ledger.analyze_and_apply(pairs, last_user_hash)
+        if verdict.quarantine:
+            n = (state.get("misaligned") or 0) + 1
+            if n >= _MISALIGN_LIMIT:
+                self._rebaseline()                 # 자기치유 — 재판정
+                verdict = self._ledger.analyze_and_apply(pairs, last_user_hash)
+            else:
+                new_state["misaligned"] = n
+        self._storage.put(f"{self._session}/wire", "scaffold", new_state)
         if pairs and ledger_was_empty:
             # 꼬리를 못 배운 첫 요청의 pair가 진짜 히스토리인지 프리셋
             # 프리필인지 가릴 정보가 없다 — 베이스라인 기록을 한 턴 미룬다.

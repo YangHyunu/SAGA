@@ -213,3 +213,40 @@ def test_first_request_prefill_never_becomes_baseline(tmp_path):
     sp.record_response(v3, m3, "A3")
     assert len([r for _, r in storage.scan("s/ledger")]) == 2
     assert list(storage.scan("s/quarantine")) == []
+
+
+# ------------------------------------------------------------------ #
+# 자기치유 — 연속 N턴 미정렬 시 재베이스라인
+# ------------------------------------------------------------------ #
+
+def test_persistent_misalignment_rebaselines(tmp_path):
+    """이미 오염된 원장을 물고 재기동해도 N턴 뒤 스스로 끊는다."""
+    storage = JsonDirStorage(tmp_path)
+    storage.put("s/ledger", "001027", {
+        "index": 1027, "user_hash": "prefill-hash", "assistant_hash": "a0",
+        "status": "provisional", "turn_number": 1027})
+    storage.put("s/raw", "001027", {
+        "turn_number": 1027, "user_text": "Confirmed. Apply ...",
+        "assistant_text": "A0", "user_hash": "prefill-hash",
+        "assistant_hash": "a0"})
+    sp = SyncPath(storage, "s")
+
+    seen = []
+    for t in range(1, 5):
+        msgs = [{"role": "system", "content": "S"},
+                {"role": "user", "content": "U0"},
+                {"role": "assistant", "content": "A0'"}]
+        for k in range(1, t):
+            msgs += [{"role": "user", "content": f"U{k}"},
+                     {"role": "assistant", "content": f"A{k}"}]
+        msgs.append({"role": "user", "content": f"U{t}"})
+        _, v = sp.process(msgs)
+        seen.append(v.quarantine)
+        sp.record_response(v, msgs, f"A{t}")
+
+    assert seen == [True, True, False, False]        # 3턴째 재베이스라인
+    hashes = [r["user_hash"] for _, r in storage.scan("s/ledger")]
+    assert "prefill-hash" not in hashes              # 오염 행 폐기
+    assert hashes == [hash_text("U3"), hash_text("U4")]
+    texts = [r["user_text"] for _, r in storage.scan("s/raw")]
+    assert "Confirmed. Apply ..." not in texts       # 오염 raw 폐기
