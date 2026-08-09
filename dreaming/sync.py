@@ -98,6 +98,9 @@ class SyncPath:
 
     def process(self, messages: List[Dict]) -> Tuple[List[Dict], Verdict]:
         state = self._wire_state()
+        # 첫 요청은 직전 요청이 없어 프리필 꼬리를 배울 수단이 없다
+        # (scaffold.learn은 prev_fp 없이 항상 None)
+        first_request = not state.get("prev_fp")
         tail_fp = state.get("tail_fp") or scaffold.learn(messages,
                                                          state.get("prev_fp"))
         self._storage.put(f"{self._session}/wire", "scaffold",
@@ -105,8 +108,14 @@ class SyncPath:
                            "tail_fp": tail_fp})
         messages, tail = scaffold.split(messages, tail_fp)
 
+        ledger_was_empty = first_request and not self._ledger.chain()
         pairs, last_user_hash = extract_pairs(messages)
         verdict = self._ledger.analyze_and_apply(pairs, last_user_hash)
+        if pairs and ledger_was_empty:
+            # 꼬리를 못 배운 첫 요청의 pair가 진짜 히스토리인지 프리셋
+            # 프리필인지 가릴 정보가 없다 — 베이스라인 기록을 한 턴 미룬다.
+            # (원장이 이미 있으면 정렬이 pair의 실재성을 증명하므로 제외)
+            verdict = verdict.model_copy(update={"baseline_deferred": True})
         if (verdict.kind in ("reroll", "diverged")
                 and verdict.reroll_turn_number is not None):
             demote_after(self._storage, self._session, verdict.reroll_turn_number)
@@ -128,6 +137,8 @@ class SyncPath:
 
     def record_response(self, verdict: Verdict, messages: List[Dict],
                         assistant_text: str) -> None:
+        if verdict.baseline_deferred:
+            return                  # 다음 턴이 꼬리를 벗기고 베이스라인을 잡는다
         messages, _ = self._split(messages)
         pairs, last_user_hash = extract_pairs(messages)
         user_text = ""
