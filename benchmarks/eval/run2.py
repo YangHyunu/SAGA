@@ -8,8 +8,10 @@
 저장/활용 실패 분해. --turns로 줄여 파일럿을 돌린다.
 --runs N 반복 (진행·필러만 변동, report2가 mean±std 집계).
 
-vanilla 변형만 트림 없이 전체 히스토리를 보낸다 — 프로브는 트림 창 기준으로
-뽑히므로, vanilla가 틀리면 그건 정보 부재가 아니라 lost-in-the-middle이다.
+vanilla·dreaming 변형은 트림 없이 전체 히스토리를 보낸다 — 프로브는 트림 창
+기준으로 뽑히므로, vanilla가 틀리면 그건 정보 부재가 아니라
+lost-in-the-middle이다. dreaming은 창 관리(압축)가 프록시 책임이라 벤치가
+미리 자르지 않는다.
 
 와이어는 뮈토스 6.2 프리셋을 preset2wire로 조립 — 매 요청 check_wire_shape
 게이트. 모델·엔드포인트는 env로 오버라이드 (확정 설정: 나레이터 V4 Pro,
@@ -178,6 +180,18 @@ def probe_schedule(total: int, every: int = PROBE_EVERY) -> List[Optional[str]]:
         out[i] = rotation[k % len(rotation)]
         k += 1
     return out
+
+
+# 풀 히스토리를 그대로 보내는 변형. dreaming은 창 관리(압축)가 프록시 책임이라
+# 벤치가 미리 자르면 프록시가 기억해야 할 턴을 아예 못 본다 — night2에서
+# dreaming이 "trim 3회차"가 된 원인 중 하나.
+_FULL_HISTORY = ("vanilla", "dreaming")
+
+
+def wire_history(variant: str, history: List[Dict],
+                  window: List[Dict]) -> List[Dict]:
+    """변형별 전송 히스토리 — 트림 여부 단일 결정점."""
+    return history if variant in _FULL_HISTORY else window
 
 
 def build_wire(preset: Dict, card: Dict, window: List[Dict],
@@ -385,7 +399,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             ex = retrieve_turns(history, utext)
             if ex:
                 block = "[과거 대화 발췌]\n" + "\n---\n".join(ex)
-        use_window = history if variant == "vanilla" else window
+        use_window = wire_history(variant, history, window)
         msgs = build_wire(preset, card, use_window, retrieval_block=block)
         bad = check_wire_shape(msgs)
         if bad:
@@ -414,7 +428,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         if i in edit_at:                       # 수정: user 텍스트 바꿔 재전송
             history[-2]["content"] = utext + " (아니, 정정할게.)"
             window, _ = token_trim(history[:-1], trim_tokens)
-            use_window = history[:-1] if variant == "vanilla" else window
+            use_window = wire_history(variant, history[:-1], window)
             msgs2 = build_wire(preset, card, use_window)
             st3 = _call_upstream(variant, session, key, msgs2)
             history[-1] = {"role": "assistant", "content": st3["reply"]}
@@ -447,8 +461,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                            "miss_cause": miss,
                            "distance_turns": i - fact.turn,
                            # 나레이터가 실제 본 창 기준 — 창내 실패=LITM,
-                           # 창밖 실패=eviction. vanilla는 항상 창내.
-                           "in_window": (variant == "vanilla"
+                           # 창밖 실패=eviction. 풀 히스토리 변형은 항상 창내
+                           # (dreaming은 프록시가 압축했을 수 있어 상한값이다).
+                           "in_window": (variant in _FULL_HISTORY
                                          or fact.turn >= win_start)})
         if variant == "dreaming" and i in (total_turns // 3,
                                            2 * total_turns // 3):

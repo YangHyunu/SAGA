@@ -821,3 +821,14 @@ def test_director_sys_keeps_introduced_npcs():
     # 상호작용한다. 무시·조기 퇴장 금지 규칙.
     from benchmarks.eval.run2 import _DIRECT_SYS
     assert "퇴장" in _DIRECT_SYS
+
+
+def test_dreaming_variant_sends_full_history():
+    """트림은 클라이언트가 아니라 프록시 몫 — 벤치가 미리 자르면 안 된다."""
+    from benchmarks.eval.run2 import wire_history
+    hist = [{"role": "user", "content": f"u{i}"} for i in range(10)]
+    win = hist[-2:]
+    assert wire_history("dreaming", hist, win) == hist
+    assert wire_history("vanilla", hist, win) == hist
+    assert wire_history("trim", hist, win) == win
+    assert wire_history("retrieval", hist, win) == win
