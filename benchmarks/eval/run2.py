@@ -42,6 +42,14 @@ from benchmarks.eval.config import (DATA, DIRECTOR_MODEL, EVAL_DIR, HYPA_EXPORT,
                                     MAX_TOKENS, MODEL, NPC_EVENT_RETRY,
                                     NPC_EVENT_TURN, NPC_NAME, PROBE_EVERY, PROXY,
                                     ROOT, TOGGLES, TURNS, UPDATE_EVENTS, UPSTREAM)
+from benchmarks.eval import prompts
+# 별칭 재노출(이 파일 안에서는 안 쓰임) — 기존 테스트(run2._DIRECT_SYS 등)가
+# 이 이름으로 내용을 검증한다. 실제 호출부는 override_from 반영을 위해
+# prompts.X(점 접근)를 쓴다.
+from benchmarks.eval.prompts import (BEATS as _BEATS,  # noqa: F401
+                                     DIRECT_SYS as _DIRECT_SYS,  # noqa: F401
+                                     NPC_BEAT as _NPC_BEAT,  # noqa: F401
+                                     UPDATE_BEAT as _UPDATE_BEAT)  # noqa: F401
 
 _ENC = tiktoken.get_encoding("o200k_base")
 
@@ -282,47 +290,14 @@ def abort_reroll_count(flaw_history: Sequence[str]) -> int:
     return sum(1 for f in flaw_history[:-1] if f != "loop")
 
 
-_DIRECT_SYS = ("너는 RP에서 유저(1인칭{user}) 역할을 연기한다. 작품 "
-               "설정과 직전 장면에 자연스럽게 이어지는 유저 발화 하나만 출력. "
-               "3문장 이내, 메타 발언 금지. 상대는 연상이자 신비한 존재다 — "
-               "정중한 존댓말을 쓴다 (반말 금지). 상대 캐릭터의 대사나 "
-               "행동을 네가 대신 쓰지 마라 — 유저 자신의 말과 행동만.\n"
-               "[작품 설정]은 배경 이해용이다 — 대화에서 아직 드러나지 않은 "
-               "정보(호칭·직함·이름·과거사·신체 특징)를 네가 먼저 입에 올리지 "
-               "마라. 상대가 말해주기 전까지 모르는 사람으로 산다. "
-               "(파일럿 실측: '신녀님' 호칭을 대화에 나온 적 없는데 선취했다)\n"
-               "장면에 새 인물이 등장하면 실제 유저처럼 호기심을 갖고 "
-               "상호작용하라 — 등장한 인물을 이유 없이 무시하거나 서둘러 "
-               "퇴장시키지 마라. (실측: 등장한 조연을 한 턴 만에 흘려보냈다)")
-_UPDATE_BEAT = ("이번 발화에서 이전에 언급된 수치나 소지품 상태를 명확히 바꾸는 "
-                "행동을 한다 (지불, 획득, 분실 중 하나). 새 값이 드러나게.")
-# 5턴마다 이야기를 미는 지시 — 없으면 디렉터가 같은 장면을 맴돈다
-# (30턴 파일럿 실측: 한 장소 하룻밤에서 정체). 회전이라 런마다 결이 달라진다.
-_BEATS = ("장면이나 장소를 바꾸는 행동을 한다 — 밖으로 나가자고 하거나, "
-          "다른 공간으로 옮기거나, 산책을 청한다.",
-          "새로운 화제나 작은 사건을 꺼낸다 — 마을, 소문, 상대의 과거, "
-          "앞으로의 계획 중 하나.",
-          "시간을 흘려보낸다 — 다음 날이나 몇 시간 뒤로 넘어갔음이 발화에 "
-          "드러나게 한다.",
-          "가벼운 갈등이나 의견 차이를 만든다 — 금방 풀 수 있는 수준으로.",
-          "구체적인 수치·이름·약속이 나올 만한 행동을 한다 — 거래, 날짜 잡기, "
-          "무언가를 세거나 값을 치르기.")
-
-
-_NPC_BEAT = (f"{NPC_NAME}(이)가 자연스럽게 장면에 합류할 상황을 만든다 — "
-             f"찾아가거나, 우연히 마주치거나, 이름을 언급하며 소식을 묻는다. "
-             f"'{NPC_NAME}'이라는 이름은 말해도 되지만 그 외 설정은 지어내지 "
-             f"마라. 장면의 중심은 계속 위지소연이다 — {NPC_NAME}은 곁가지로만.")
-
-
 def pick_beat(i: int, npc_due: bool = False) -> str:
     """턴 i의 필러 지시. NPC 이벤트 > UPDATE_EVENTS > 5턴 주기 비트 > 평서."""
     if npc_due:
-        return _NPC_BEAT
+        return prompts.NPC_BEAT
     if i in UPDATE_EVENTS:
-        return _UPDATE_BEAT
+        return prompts.UPDATE_BEAT
     if i % 5 == 4:
-        return _BEATS[(i // 5) % len(_BEATS)]
+        return prompts.BEATS[(i // 5) % len(prompts.BEATS)]
     return "자연스럽게 이어간다."
 
 
@@ -353,6 +328,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
              edit_at: List[int], ttl_wait: bool,
              total_turns: int = TURNS,
              probe_every: int = PROBE_EVERY) -> Dict:
+    prompt_set = prompts.active()          # A/B 추적 — 이 런에 실제 쓰인 프롬프트 세트
     preset = decode_risup(preset_path)
     card = _load_json(card_path)
     key = _key()
@@ -365,7 +341,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     last_reply = card.get("greeting") or "(첫 장면)"
     few_shot = "\n".join(f"- {s}" for s in card.get("style_examples", [])[:8])
     uname = card.get("user_name", "")
-    dir_sys = _DIRECT_SYS.format(user=f", 이름 {uname}" if uname else "·무명")
+    dir_sys = prompts.DIRECT_SYS.format(user=f", 이름 {uname}" if uname else "·무명")
     if few_shot:
         dir_sys += f"\n[실제 유저 발화 예시 — 문체 참고]\n{few_shot}"
     turns, probes = [], []
@@ -536,7 +512,8 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     passed = sum(1 for p in probes if p["judge"] is True)
     unparsed = sum(1 for p in probes if p["judge"] is None)
     result = {"variant": variant, "session": session, "run": run_no,
-              "model": MODEL, "turns": turns, "probes": probes,
+              "model": MODEL, "prompt_set": prompt_set,
+              "turns": turns, "probes": probes,
               "ledger": ledger.to_rows(),
               "totals": {"probes": len(probes), "judge_pass": passed,
                          "judge_unparsed": unparsed,
@@ -579,7 +556,10 @@ def main() -> None:
     ap.add_argument("--edit-at", default="25")
     ap.add_argument("--ttl-wait", action="store_true")
     ap.add_argument("--reset", action="store_true")
+    ap.add_argument("--prompts", default="", help="프롬프트 오버라이드 JSON (A/B)")
     args = ap.parse_args()
+    if args.prompts:
+        prompts.override_from(args.prompts)
     reroll = [int(x) for x in args.reroll_at.split(",") if x]
     edit = [int(x) for x in args.edit_at.split(",") if x]
     for n in range(args.runs):

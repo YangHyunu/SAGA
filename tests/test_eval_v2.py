@@ -1009,3 +1009,26 @@ def test_hypa_in_window_maps_turn_to_message_index():
     assert not hypa_in_window(0, 3, has_greeting=True)
     assert hypa_in_window(1, 2, has_greeting=False)
     assert not hypa_in_window(0, 2, has_greeting=False)
+
+
+def test_prompts_override_replaces_named_prompt(tmp_path):
+    # A/B: JSON 파일로 이름 붙은 프롬프트를 통째로 교체한다
+    from benchmarks.eval import prompts
+    p = tmp_path / "ab.json"
+    p.write_text('{"JUDGE_SYS": "대체 채점 프롬프트"}', encoding="utf-8")
+    before = prompts.JUDGE_SYS
+    try:
+        prompts.override_from(str(p))
+        assert prompts.JUDGE_SYS == "대체 채점 프롬프트"
+        assert prompts.active()["JUDGE_SYS"] == "대체 채점 프롬프트"
+    finally:
+        prompts.JUDGE_SYS = before          # 모듈 전역 원복
+
+
+def test_prompts_override_rejects_unknown_key(tmp_path):
+    import pytest
+    from benchmarks.eval import prompts
+    p = tmp_path / "bad.json"
+    p.write_text('{"NO_SUCH_PROMPT": "x"}', encoding="utf-8")
+    with pytest.raises(KeyError):
+        prompts.override_from(str(p))

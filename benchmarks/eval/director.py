@@ -12,17 +12,15 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-LlmFn = Callable[[str, str], str]          # (system, user) -> 응답 텍스트
+from benchmarks.eval import prompts
+# 별칭 재노출 — 기존 테스트(director._PROBE_SYS 등)가 이 이름으로 내용을
+# 검증한다. 실제 호출부는 override_from이 반영되도록 prompts.X(점 접근)를
+# 쓴다 — 이 별칭은 이 파일 안에서는 안 쓰인다 (재노출 목적).
+from benchmarks.eval.prompts import (EXTRACT_SYS as _EXTRACT_SYS,  # noqa: F401
+                                     FALSE_SYS as _FALSE_SYS,  # noqa: F401
+                                     PROBE_SYS as _PROBE_SYS)  # noqa: F401
 
-_EXTRACT_SYS = (
-    "너는 RP 대화 감독관이다. 방금 턴에서 나중에 기억력 시험에 쓸 수 있는 "
-    "구체적 사실만 추출한다. 한 줄에 하나, 형식: kind|핵심값|한 문장 서술.\n"
-    "kind는 exact(숫자·고유명사·시각), relation(인물 관계·호칭), "
-    "event(약속·사건) 중 하나. 핵심값은 응답에 그대로 나올 법한 명사형 "
-    "단어(이름·품명·숫자·장소·시각)여야 한다 — '~하기로 함' 같은 문장형 "
-    "값 금지. 캐릭터 자신의 외모·신체 특징(눈동자 색·머리색·체형 등)은 "
-    "추출하지 않는다 — 나레이션에 상시 노출돼 시험이 무의미하다. "
-    "추출할 게 없으면 빈 출력. 다른 말 금지.")
+LlmFn = Callable[[str, str], str]          # (system, user) -> 응답 텍스트
 
 
 @dataclass
@@ -37,7 +35,10 @@ class DirFact:
 
 def extract_facts(llm: LlmFn, user_text: str, reply_text: str,
                   turn_no: int) -> List[DirFact]:
-    raw = llm(_EXTRACT_SYS,
+    # prompts.EXTRACT_SYS (dotted, not 모듈 상단 별칭) — override_from은 이
+    # 모듈이 아니라 prompts 모듈 전역을 재바인딩하므로, 호출 시점에 다시
+    # 읽어야 A/B 오버라이드가 실제로 반영된다.
+    raw = llm(prompts.EXTRACT_SYS,
               f"[유저]\n{user_text[-600:]}\n[캐릭터]\n{reply_text[-1200:]}")
     out: List[DirFact] = []
     for line in raw.splitlines():
@@ -68,31 +69,6 @@ class Ledger:
         led = cls()
         led.facts = [DirFact(**r) for r in rows]
         return led
-
-
-_PROBE_SYS = (
-    "너는 RP에서 유저 역할을 연기한다. 직전 장면에 자연스럽게 이어지는 평소 "
-    "같은 발화를 하되, 주어진 과거 일을 슬며시 화제에 끌어들인다. 상대가 그 "
-    "내용을 스스로 입에 올리게 만드는 게 목표다.\n"
-    "금지: '기억해?' 같은 시험조·퀴즈조, 핵심값을 직접 말하는 것, 뜬금없는 "
-    "회상 도입, 그 일의 시점을 단정하는 표현('방금'·'아까'·'어제' 등 — "
-    "언제 있었던 일인지 모르는 채로 말한다), 지시대상이 모호한 표현("
-    "'그게 누구였더라'·'그거 뭐였지' 등 — 무엇/누구를 가리키는지 이 발화"
-    "만 보고 알 수 없는 질문. 사실의 대상을 최소한으로 특정할 수 있는 "
-    "실마리를 함께 준다).\n"
-    "허용: 지나가는 혼잣말('그게 뭐였더라…'), 관련된 행동이나 상황 언급으로 "
-    "상대의 말을 끌어내기, 부드러운 되물음. 발화에는 '그때'·'처음에' 같은 "
-    "막연한 과거 지시어를 하나 반드시 포함한다 — 언제인지 단정하지 않으면서 "
-    "과거의 일임은 분명히 한다.\n"
-    "1~3문장, 정중한 존댓말(상대는 연상의 신비한 존재다), 발화만 출력.")
-
-_FALSE_SYS = (
-    "너는 RP에서 유저 역할을 연기한다. 직전 장면에 자연스럽게 이어지는 평소 "
-    "같은 발화를 하되, 주어진 사실의 핵심값을 그럴듯하게 틀린 값으로 바꿔 "
-    "지나가듯 사실인 양 언급한다. 시험조 금지, 뜬금없는 회상 도입 금지 — "
-    "잘못 기억하는 사람이 흘리는 말처럼. 1~3문장, 정중한 존댓말(상대는 "
-    "연상의 신비한 존재다). 출력 형식:\n"
-    "질문: <발화>\n오염값: <틀린 값>")
 
 
 # LITM 분리 게이팅: 창 밖 여부가 아니라 사실 나이로 출제한다. evict-전용
@@ -147,12 +123,12 @@ def _probe_mentions_fact_object(fact: DirFact, utext: str) -> bool:
 
 def make_probe(llm: LlmFn, fact: DirFact, scene: str = "",
                style: str = "") -> str:
-    return llm(_PROBE_SYS, _probe_user(fact, scene, style)).strip()
+    return llm(prompts.PROBE_SYS, _probe_user(fact, scene, style)).strip()
 
 
 def make_false_premise(llm: LlmFn, fact: DirFact, scene: str = "",
                        style: str = "") -> Tuple[str, str]:
-    raw = llm(_FALSE_SYS, _probe_user(fact, scene, style))
+    raw = llm(prompts.FALSE_SYS, _probe_user(fact, scene, style))
     q, wrong = "", ""
     for line in raw.splitlines():
         if line.startswith("질문:"):

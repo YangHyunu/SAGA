@@ -24,23 +24,14 @@ import pathlib
 import re
 from typing import Dict, List, Optional
 
+from benchmarks.eval import prompts
 from benchmarks.eval.director import DirFact, LlmFn
 from benchmarks.eval.oracle import _STATBAR, _norm, expect_alternatives
+# 별칭 재노출(이 파일 안에서는 안 쓰임) — judge_pass는 override_from 반영을
+# 위해 prompts.JUDGE_SYS(점 접근)를 쓴다.
+from benchmarks.eval.prompts import JUDGE_SYS as _JUDGE_SYS  # noqa: F401
 
 _KINDS = ("facts", "commits", "actors", "episodes")
-
-_JUDGE_SYS = """너는 채점관이다.
-
-출력 형식: 한 문장 근거를 쓰고, 줄을 바꿔 마지막 줄에 Y 또는 N 한 글자만
-단독으로 쓴다. 마지막 줄에 다른 문자를 붙이지 않는다.
-
-공통 규칙:
-- 캐릭터 응답은 롤플레이 산문이다. 상단 스탯바·나레이션·행동 묘사·말투는
-  채점 대상이 아니다. 주장된 내용만 본다.
-- 응답 길이는 판정에 영향을 주지 않는다. 길다고 맞는 것이 아니다.
-- 표현이 달라도 같은 내용이면 일치로 본다 — 패러프레이즈, 아라비아 숫자와
-  한글 수사("250"/"이백오십"), 날짜·시각 표기 차이는 모두 동일하게 취급한다.
-- 요구된 정보 중 일부만 담겼으면 N이다."""
 
 _Q_BASE = """[과거 사실]
 {fact} (핵심값: {value})
@@ -121,7 +112,7 @@ def judge_pass(llm: LlmFn, ptype: str, fact_text: str, expected_value: str,
     else:
         q = _Q_BASE.format(fact=fact_text, value=expected_value,
                            question=question, reply=reply)
-    raw = llm(_JUDGE_SYS, q).strip()
+    raw = llm(prompts.JUDGE_SYS, q).strip()
     why = " ".join(raw.split())[:200]
     return {"pass": _verdict(raw), "why": why}
 
