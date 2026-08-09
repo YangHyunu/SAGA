@@ -26,13 +26,14 @@ usage: python3 -m benchmarks.eval.run2 <preset.risup> <card.json> dreaming \
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import pathlib
 import re
 import shutil
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 import tiktoken
@@ -279,18 +280,59 @@ _REFUSAL_MARKS = ("죄송합니다만", "처리할 수 없습니", "수행할 �
                   "I cannot", "I can't", "I'm not able to")
 _HANGUL = re.compile(r"[가-힣]")
 
+_LOOP_LOOKBACK = 3      # 직전 몇 개 응답과 비교할지
+_LOOP_RATIO = 0.97      # 이 이상이면 사실상 동일 (실측: 972자/1159자 완전일치)
 
-def reply_flaw(reply: str) -> str:
+
+def reply_flaw(reply: str, prior_replies: Sequence[str] = ()) -> str:
     """리롤 사유. 정상이면 빈 문자열.
 
     한글 비율 임계 0.3: 파일럿 실측에서 병리 턴(영어 드리프트·프리셋 지시문
     에코)은 전부 0.09 이하, 정상 턴은 전부 0.64 이상 — 사이가 비어 있다.
+    loop: 직전 lookback개 응답과 SequenceMatcher ratio>=0.97 — 실측(trim
+    런 T85=T86, T91=T92) 완전 동일 응답 재현 방지.
     """
     if any(m in reply for m in _REFUSAL_MARKS):
         return "refusal"
     if len(_HANGUL.findall(reply)) / max(len(reply), 1) < 0.3:
         return "language_drift"
+    for prior in prior_replies[-_LOOP_LOOKBACK:]:
+        if difflib.SequenceMatcher(None, reply, prior).ratio() >= _LOOP_RATIO:
+            return "loop"
     return ""
+
+
+def reroll_until_clean(call: Callable[[], Dict],
+                        prior_replies: Sequence[str] = (),
+                        max_rerolls: int = 2) -> Tuple[Dict, List[str]]:
+    """flaw 있으면 재호출 최대 max_rerolls회. 반환: (최종 st, 시도별 flaw 이력).
+
+    flaw_history[0]은 첫 시도, 이후는 리롤 시도 순 — 폐기된 세대의 사유도
+    남긴다 (이전엔 최종 flaw만 남아 리롤 원인 분석이 불가능했다).
+    prior_replies는 직전 턴 응답들 — 중복 응답(loop) 판정에 쓴다.
+    """
+    st = call()
+    flaw = reply_flaw(st["reply"], prior_replies)
+    flaw_history = [flaw]
+    rerolls = 0
+    while flaw and rerolls < max_rerolls:
+        st2 = call()
+        st2["cost"] += st["cost"]
+        st = st2
+        rerolls += 1
+        flaw = reply_flaw(st["reply"], prior_replies)
+        flaw_history.append(flaw)
+    st["rerolls"], st["flaw"], st["flaw_history"] = rerolls, flaw, flaw_history
+    return st, flaw_history
+
+
+def abort_reroll_count(flaw_history: Sequence[str]) -> int:
+    """중단 게이트(MAX_RUN_REROLLS)에 누적할 리롤 수.
+
+    마지막 항목은 최종 상태지 리롤이 아니므로 제외한다. "loop"은 거부
+    반복(비용 소각)과 다른 병리라 게이트 오탐을 막기 위해 카운트에서 뺀다.
+    """
+    return sum(1 for f in flaw_history[:-1] if f != "loop")
 
 
 _DIRECT_SYS = ("너는 RP에서 유저(1인칭{user}) 역할을 연기한다. 작품 "
@@ -454,18 +496,14 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         bad = check_wire_shape(msgs)
         if bad:
             raise SystemExit(f"와이어 형태 위반 T{i + 1}: {bad}")
-        st = _call_upstream(variant, session, key, msgs)
-        # 품질 리롤: 거부·언어 드리프트는 실유저가 리롤로 걷어내는 응답이다.
-        # 남기면 이후 턴 전체가 오염된다 (디렉터 사칭·영어 고착).
-        rerolls, flaw = 0, reply_flaw(st["reply"])
-        while flaw and rerolls < 2:
-            st2 = _call_upstream(variant, session, key, msgs)
-            st2["cost"] += st["cost"]
-            st = st2
-            rerolls += 1
-            flaw = reply_flaw(st["reply"])
-        st["rerolls"], st["flaw"] = rerolls, flaw
-        total_rerolls += rerolls
+        # 품질 리롤: 거부·언어 드리프트·중복 응답(loop)은 실유저가 리롤로
+        # 걷어내는 응답이다. 남기면 이후 턴 전체가 오염된다 (디렉터 사칭·
+        # 영어 고착·자기표절).
+        prior_replies = [m["content"] for m in history[-6:]
+                          if m["role"] == "assistant"]
+        st, flaw_history = reroll_until_clean(
+            lambda: _call_upstream(variant, session, key, msgs), prior_replies)
+        total_rerolls += abort_reroll_count(flaw_history)
         history.append({"role": "assistant", "content": st["reply"]})
         last_reply = st["reply"]
 

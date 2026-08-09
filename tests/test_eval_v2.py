@@ -768,6 +768,60 @@ def test_run_reroll_abort_threshold():
     assert MAX_RUN_REROLLS == 10
 
 
+def test_reroll_records_flaw_history_for_each_attempt():
+    from benchmarks.eval.run2 import reroll_until_clean
+    replies = iter([
+        {"reply": "죄송합니다만, 처리 못 합니다.", "cost": 0.1},
+        {"reply": "The house was quiet in the night.", "cost": 0.1},
+        {"reply": "정상적인 한국어 산문 응답입니다. 안녕하세요.", "cost": 0.1},
+    ])
+    st, hist = reroll_until_clean(lambda: next(replies))
+    assert hist == ["refusal", "language_drift", ""]
+    assert st["rerolls"] == 2 and st["flaw"] == ""
+    assert st["flaw_history"] == hist
+
+
+def test_reroll_stops_at_max_with_flaw_history_full_of_same_cause():
+    from benchmarks.eval.run2 import reroll_until_clean
+
+    def call():
+        return {"reply": "죄송합니다만, 처리할 수 없습니다.", "cost": 0.0}
+    st, hist = reroll_until_clean(call, max_rerolls=2)
+    assert st["rerolls"] == 2 and len(hist) == 3
+    assert all(h == "refusal" for h in hist)
+
+
+def test_reply_flaw_catches_near_duplicate_response():
+    from benchmarks.eval.run2 import reply_flaw
+    prior = ['소연은 찻잔을 내려놓으며 조용히 고개를 끄덕였다. "하룻밤 정도는 괜찮다."']
+    dup = '소연은 찻잔을 내려놓으며 조용히 고개를 끄덕였다. "하룻밤 정도는 괜찮다."'
+    assert reply_flaw(dup, prior) == "loop"
+
+
+def test_reply_flaw_ignores_dissimilar_prior_replies():
+    from benchmarks.eval.run2 import reply_flaw
+    prior = ["전혀 다른 내용의 응답입니다."]
+    assert reply_flaw("소연은 찻잔을 내려놓으며 웃었다.", prior) == ""
+
+
+def test_reroll_until_clean_triggers_on_loop_and_recovers():
+    from benchmarks.eval.run2 import reroll_until_clean
+    prior = ["동일한 응답 본문입니다 반복 테스트."]
+    replies = iter([
+        {"reply": "동일한 응답 본문입니다 반복 테스트.", "cost": 0.0},
+        {"reply": "이번엔 다른 내용의 새 응답이다.", "cost": 0.0},
+    ])
+    st, hist = reroll_until_clean(lambda: next(replies), prior)
+    assert hist == ["loop", ""] and st["rerolls"] == 1
+
+
+def test_loop_rerolls_do_not_count_toward_abort_gate():
+    # 중단 게이트는 거부 반복용 — loop 리롤로 런이 죽으면 안 된다
+    from benchmarks.eval.run2 import abort_reroll_count
+    assert abort_reroll_count(["loop", "refusal", ""]) == 1
+    assert abort_reroll_count(["loop", "loop", "loop"]) == 0
+
+
 def test_npc_event_introduces_dangchaeryun_only():
     # NPC 등장은 당채련 하나로 고정 (T41~T45 자연 합류), 주인공은 위지소연
     from benchmarks.eval import run2
