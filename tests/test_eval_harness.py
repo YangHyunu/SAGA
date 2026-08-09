@@ -104,6 +104,26 @@ def test_retrieve_turns_is_deterministic_topk():
     assert not any("질문11" in g for g in got)
 
 
+def test_retrieve_turns_with_greeting_history():
+    # 실전(run2)은 greeting이 history[0]에 assistant로 온다 — 고정 스텝 pair
+    # 스캔이 전부 assistant 인덱스에 걸려 발췌 0건이 되던 회귀 케이스.
+    h = [{"role": "assistant", "content": "어서 와요."}] + _hist(12)
+    h[1]["content"] = "질문0 보름달 축제 약속"
+    got = retrieve_turns(h, "보름달 약속 기억해?", k=2)
+    assert any("보름달" in g for g in got)
+
+
+def test_retrieve_turns_honors_caller_window():
+    # run2는 token_trim으로 실창을 자른다 — 호출자 창을 넘기면 내부
+    # trim_window 대신 그 경계 밖에서만 발췌한다.
+    h = _hist(12)
+    win = h[-5:]                               # 마지막 2 pair + 진행 중 user
+    got = retrieve_turns(h, "질문9", k=3, window=win)
+    assert any("질문9" in g for g in got)
+    # 기본 경계(8 pair)에서는 질문9가 창 안이라 발췌되지 않는다
+    assert not any("질문9" in g for g in retrieve_turns(h, "질문9", k=3))
+
+
 def test_prepare_request_variants_differ():
     from benchmarks.cardsim.lorebook import Card
     card = Card(name="리사", description="너는 리사다.", post_history="",
