@@ -442,6 +442,35 @@ def test_token_trim_drops_greeting_once_trimming():
     assert win[0]["role"] == "user" and start == 3
 
 
+def _hist(pairs, greeting=None):
+    out = ([{"role": "assistant", "content": greeting}] if greeting else [])
+    for i in range(pairs):
+        out += [{"role": "user", "content": f"질문{i}" * 30},
+                {"role": "assistant", "content": f"답{i}" * 30}]
+    return out
+
+
+def test_token_trim_cuts_message_unit_fifo():
+    # RisuAI는 메시지 단위 — 남은 첫 메시지가 assistant일 수 있다
+    from benchmarks.eval.run2 import token_trim
+    h = _hist(4)
+    budget = sum(len(m["content"]) for m in h[3:])   # user1 중간에서 끊기게
+    window, win_start = token_trim(h, budget, count_fn=len)
+    assert window[0]["role"] == "assistant"          # 턴1의 답만 남음
+    assert win_start == 2                            # 반 잘린 턴1은 창밖
+
+
+def test_token_trim_counts_greeting_tokens():
+    # greeting(선두 assistant)도 예산 판정에 들어간다
+    from benchmarks.eval.run2 import token_trim
+    h = _hist(2, greeting="가" * 500)
+    keep_all = token_trim(h, budget=10**6, count_fn=len)[0]
+    assert keep_all == h                             # 여유면 전부 유지
+    window, _ = token_trim(h, budget=sum(len(m["content"]) for m in h) - 1,
+                           count_fn=len)
+    assert window[0]["content"] != "가" * 500        # 1토큰 모자라면 greeting부터 제거
+
+
 def test_probe_schedule_is_sparse_every_n_turns():
     """10턴마다 딱 1번 — 나머지는 전부 자연 진행(None)."""
     from benchmarks.eval.run2 import probe_schedule

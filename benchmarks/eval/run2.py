@@ -151,27 +151,28 @@ def _count(text: str) -> int:
 def token_trim(history: List[Dict], budget: int,
                count_fn: Callable[[str], int] = _count
                ) -> Tuple[List[Dict], int]:
-    """토큰 예산 기반 트림 — 실클라이언트 maxContext 절단 근사 (pair 경계).
+    """토큰 예산 기반 트림 — 메시지 단위 FIFO (index.svelte.ts:1143-1154).
 
-    반환: (윈도우, 잘린 pair 수 = 창 시작 턴). greeting 등 첫 user 이전
-    메시지는 트림이 시작되는 순간 통째로 떨어진다 (캡처 실측과 동일).
+    RisuAI는 페어 정렬 없이 chats[0]부터 하나씩 제거한다 — greeting도
+    이 큐의 일부라 예산 판정에 포함되고, 남는 첫 메시지가 assistant일 수
+    있다. 반환: (윈도우, win_start). win_start는 "이 턴 번호부터의 사실이
+    창내" 의미 — 창의 첫 메시지가 턴 k의 user면 win_start=k, 턴 k의
+    assistant면(반 잘린 턴) win_start=k+1.
     """
-    starts = [i for i, m in enumerate(history) if m["role"] == "user"]
-    if history and history[-1]["role"] == "user":
-        starts.pop()
-    total_pairs = len(starts)
-    keep = 0
-    for k in range(total_pairs, 0, -1):
-        seg = history[starts[k - 1]:]
-        if sum(count_fn(m["content"]) for m in seg) > budget:
-            break
-        keep = total_pairs - k + 1
-    if keep >= total_pairs:
+    if not history:
         return history, 0
-    cut = starts[total_pairs - keep] if keep else (
-        len(history) - 1 if history and history[-1]["role"] == "user"
-        else len(history))
-    return history[cut:], total_pairs - keep
+    total = sum(count_fn(m["content"]) for m in history)
+    start = 0
+    while total > budget and len(history) - start > 1:
+        total -= count_fn(history[start]["content"])
+        start += 1
+    window = history[start:]
+    if start == 0:
+        return window, 0
+    has_greeting = history[0]["role"] == "assistant"
+    offset = start - (1 if has_greeting else 0)
+    turn, half = divmod(offset, 2)
+    return window, turn + half
 
 
 def probe_schedule(total: int, every: int = PROBE_EVERY) -> List[Optional[str]]:
@@ -391,6 +392,12 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     # (index.svelte.ts:614-618). 빈 히스토리 와이어로 실측한다.
     fixed_tokens = (sum(hypa.tok_chat(m) for m in build_wire(preset, card, []))
                     if variant == "hypa" else 0)
+    # trim 예산 = 공유 풀 - 프리셋/카드 고정 비용 - 응답 예약(maxResponse+50)
+    # (index.svelte.ts:614,618) — hypa와 같은 실측 패턴, 카운터만 o200k.
+    trim_budget = (max_context
+                   - sum(_count(m["content"])
+                        for m in build_wire(preset, card, []))
+                   - MAX_TOKENS - 50) if variant == "trim" else max_context
     kept_start_msg = 0
 
     for i in range(total_turns):
@@ -441,7 +448,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                 aborted = f"hypa 요약 불가 T{i + 1}: {herr}"
                 break
         else:
-            window, win_start = token_trim(history, max_context)
+            window, win_start = token_trim(history, trim_budget)
             use_window = wire_history(variant, history, window)
         msgs = build_wire(preset, card, use_window, memory=memory_text or "")
         bad = check_wire_shape(msgs)
@@ -476,7 +483,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                 # 안 쓰이는 데드워크라 건너뛴다.
                 use_window = history[:-1][kept_start_msg:]
             else:
-                window, _ = token_trim(history[:-1], max_context)
+                window, _ = token_trim(history[:-1], trim_budget)
                 use_window = wire_history(variant, history[:-1], window)
             msgs2 = build_wire(preset, card, use_window,
                                memory=memory_text or "")
