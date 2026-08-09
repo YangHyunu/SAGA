@@ -1059,3 +1059,57 @@ def test_prompts_override_reaches_judge_pass_call_site(tmp_path):
         assert captured["system"] == "OVERRIDDEN_JUDGE_SYS"
     finally:
         prompts.JUDGE_SYS = before          # 모듈 전역 원복
+
+
+def test_run_once_offline_with_fake_narrator(tmp_path, monkeypatch):
+    """run_once 오케스트레이션이 라이브 HTTP 없이 완주 — call_fn 심 검증.
+
+    나레이터: call_fn 주입. 디렉터/저지/키/저장경로: monkeypatch.
+    실캡처(프리셋·카드) 필요한 다른 테스트와 같은 glob+skip 패턴 —
+    PRESET/CARD 공용 상수는 이 파일에 없어(태스크 브리프 가정과 달리)
+    test_assembly_is_byte_identical_to_real_capture와 동일하게 인라인 glob.
+    """
+    import glob
+    import pathlib
+
+    import pytest
+
+    from benchmarks.eval import run2
+
+    presets = glob.glob(str(pathlib.Path.home() / "Downloads" / "뮈토스6.2"
+                            / "**" / "*DeepSeek*_preset.risup"), recursive=True)
+    card_path = (pathlib.Path(__file__).resolve().parents[1] / "dreaming_data"
+                 / "eval" / "card-soyeon-v2.json")
+    if not (presets and card_path.exists()):
+        pytest.skip("프리셋/카드 없음")
+
+    def fake_call(variant, session, key, msgs):
+        return {"reply": "…소연은 조용히 고개를 끄덕였다.", "prompt": 100,
+                "cached": 0, "cost": 0.0, "sec": 0.1}
+
+    def _stub_llm(reply):
+        # totals가 director.cost/.calls, judge.cost/.calls를 읽는다 —
+        # 맨 람다는 이 속성이 없어 AttributeError로 죽는다.
+        def f(system, user):
+            f.calls += 1
+            return reply
+        f.cost, f.calls = 0.0, 0
+        return f
+
+    # run_once 본문은 run2 모듈 전역(임포트 시점 바인딩)을 참조한다 — 다른
+    # 시임(make_director_llm/EVAL_DIR)과 같은 이유로 transport.key가 아니라
+    # run2._key를 패치해야 실제로 걸린다. (안 하면 로컬 .env의 진짜 키를
+    # 읽어 시도하고, .env가 없는 환경에선 SystemExit로 죽는다.)
+    monkeypatch.setattr(run2, "_key", lambda: "offline")
+    monkeypatch.setattr(run2, "make_director_llm",
+                        lambda: _stub_llm("장터를 함께 걷자고 말한다"))
+    monkeypatch.setattr(run2, "make_judge_llm", lambda: _stub_llm("PASS"))
+    monkeypatch.setattr(run2, "EVAL_DIR", tmp_path)
+
+    # probe_schedule(5, 기본 PROBE_EVERY=10) == [None]*5 — 5턴 안에는 프로브가
+    # 없어 judge/oracle 경로를 안 탄다 (실측 확인, run_once 본문 정독).
+    out = run2.run_once(presets[0], str(card_path), "vanilla", "seam-test",
+                        0, 45000, [], [], False,
+                        total_turns=5, call_fn=fake_call)
+    assert out["turns"] and len(out["turns"]) == 5
+    assert not out["totals"]["aborted"]

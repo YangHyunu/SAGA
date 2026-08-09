@@ -30,7 +30,7 @@ import json
 import pathlib
 import shutil
 import time
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from benchmarks.eval.config import (DATA, EVAL_DIR, HYPA_EXPORT, MAX_CONTEXT,
                                     MAX_RUN_REROLLS, MAX_TOKENS, MODEL,
@@ -139,7 +139,10 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
              run_no: int, max_context: int, reroll_at: List[int],
              edit_at: List[int], ttl_wait: bool,
              total_turns: int = TURNS,
-             probe_every: int = PROBE_EVERY) -> Dict:
+             probe_every: int = PROBE_EVERY,
+             call_fn: Optional[Callable[[str, str, str, List[Dict]], Dict]]
+             = None) -> Dict:
+    call = call_fn or _call_upstream       # 심(seam) — 오프라인 테스트가 주입
     prompt_set = prompts.active()          # A/B 추적 — 이 런에 실제 쓰인 프롬프트 세트
     preset = decode_risup(preset_path)
     card = _load_json(card_path)
@@ -237,13 +240,13 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         prior_replies = [m["content"] for m in history[-6:]
                           if m["role"] == "assistant"]
         st, flaw_history = reroll_until_clean(
-            lambda: _call_upstream(variant, session, key, msgs), prior_replies)
+            lambda: call(variant, session, key, msgs), prior_replies)
         total_rerolls += abort_reroll_count(flaw_history)
         history.append({"role": "assistant", "content": st["reply"]})
         last_reply = st["reply"]
 
         if i in reroll_at:                     # 리롤: 동일 요청 재전송
-            st2 = _call_upstream(variant, session, key, msgs)
+            st2 = call(variant, session, key, msgs)
             history[-1] = {"role": "assistant", "content": st2["reply"]}
             last_reply = st2["reply"]
             st["cost"] += st2["cost"]
@@ -260,7 +263,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                 use_window = wire_history(variant, history[:-1], window)
             msgs2 = build_wire(preset, card, use_window,
                                memory=memory_text or "")
-            st3 = _call_upstream(variant, session, key, msgs2)
+            st3 = call(variant, session, key, msgs2)
             history[-1] = {"role": "assistant", "content": st3["reply"]}
             last_reply = st3["reply"]
             st["cost"] += st3["cost"]
