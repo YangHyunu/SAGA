@@ -142,7 +142,10 @@ def render(result: Dict) -> str:
             f'<a class="anchor" href="#t{p["turn"]}">턴 {p["turn"] + 1}</a>'
             f' · <span class="k">거리</span>{p.get("distance_turns")}턴'
             f' · <span class="k">{"창내" if p.get("in_window") else "창밖"}'
-            '</span></div>'
+            '</span>'
+            + (' · <span class="k">값 생존</span>'
+               if p.get("value_in_window") else "")
+            + '</div>'
             f'<div class="row"><span class="k">사실</span>{_esc(p.get("fact"))}'
             f' <span class="k">값</span><b>{_esc(p.get("value"))}</b></div>'
             f'<div class="row"><span class="k">질문</span>'

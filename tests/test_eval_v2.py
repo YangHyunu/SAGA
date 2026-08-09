@@ -850,6 +850,34 @@ def test_report_splits_by_window():
     assert inw == (1, 2) and out == (1, 2)
 
 
+def test_value_survival_flags_evicted_but_repeated_value():
+    from benchmarks.eval.report2 import value_survival
+    probes = [
+        {"judge": True, "in_window": False, "value_in_window": True},   # 오염 의심
+        {"judge": False, "in_window": False, "value_in_window": False}, # 진짜 evict 실패
+        {"judge": True, "in_window": True, "value_in_window": True},    # 창내 — 분모 제외
+    ]
+    survived, out = value_survival(probes)
+    assert survived == (1, 1) and out == (1, 2)
+
+
+def test_value_survival_defaults_missing_key_to_not_survived():
+    from benchmarks.eval.report2 import value_survival
+    probes = [{"judge": True, "in_window": False}]   # 구 JSON — value_in_window 없음
+    survived, out = value_survival(probes)
+    assert survived == (0, 0) and out == (1, 1)
+
+
+def test_report_cost_mean_includes_hypa_summary_cost():
+    # hypa 변형만 요약 비용(cost_hypa)이 나레이터 cost와 별도 — 리포트 $
+    # 컬럼이 cost_hypa를 누락하면 hypa가 실제보다 싸 보인다.
+    from benchmarks.eval.report2 import aggregate
+    r = _res("hypa", 0, True)
+    r["totals"]["cost_hypa"] = 0.005
+    a = aggregate([r])["hypa"]
+    assert abs(a["cost_mean"] - 0.015) < 1e-9
+
+
 def test_call_upstream_retries_transient_5xx(monkeypatch):
     # night2-drm 실측: 프록시 ReadTimeout -> 502 한 방에 100턴 런 사망.
     # 5xx·타임아웃은 재시도, 4xx는 즉시 전파.

@@ -564,7 +564,15 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                                or (hypa_in_window(fact.turn, kept_start_msg,
                                                   bool(card.get("greeting")))
                                    if variant == "hypa"
-                                   else fact.turn >= win_start))})
+                                   else fact.turn >= win_start)),
+                           # 원본 턴은 evict돼도 서사 반복으로 값이 창 안에
+                           # 남을 수 있다 (실측: retrieval "렌" 452회,
+                           # "15년" 10회 — night2-deep-analysis.md). 문자열
+                           # 완전일치만 본다 — "250"/"이백오십" 같은 한글
+                           # 표기 변형은 놓친다 (알려진 한계, 과소탐지 방향).
+                           "value_in_window": any(
+                               fact.value in m["content"]
+                               for m in use_window)})
         if variant == "dreaming" and i in (total_turns // 3,
                                            2 * total_turns // 3):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
