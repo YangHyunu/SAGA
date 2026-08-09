@@ -30,7 +30,7 @@ import json
 import pathlib
 import shutil
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from benchmarks.eval.config import (DATA, EVAL_DIR, HYPA_EXPORT, MAX_CONTEXT,
                                     MAX_RUN_REROLLS, MAX_TOKENS, MODEL,
@@ -64,7 +64,7 @@ from benchmarks.eval.quality import (abort_reroll_count,
                                      reply_flaw,  # noqa: F401
                                      reroll_until_clean)
 
-from benchmarks.eval.director import (Ledger, extract_facts,
+from benchmarks.eval.director import (DirFact, Ledger, LlmFn, extract_facts,
                                       make_false_premise, make_probe,
                                       _probe_mentions_fact_object,
                                       probe_plan)
@@ -138,13 +138,22 @@ def _load_json(path: str) -> Dict:
     return json.loads(pathlib.Path(path).read_text())
 
 
-def _play_turn(i, utext, variant, history, session, key, call, hypa_S,
-               hypa_data, hypa_state, fixed_tokens, max_context, trim_budget,
-               kept_start_msg, preset, card, reroll_at, edit_at, turns,
-               total_rerolls):
+def _play_turn(i: int, utext: str, variant: str, history: List[Dict],
+               session: str, key: str,
+               call: Callable[[str, str, str, List[Dict]], Dict],
+               hypa_S: Optional[hypa.HypaSettings], hypa_data: Dict,
+               hypa_state: pathlib.Path, fixed_tokens: int, max_context: int,
+               trim_budget: int, kept_start_msg: int, preset: Dict,
+               card: Dict, reroll_at: List[int], edit_at: List[int],
+               turns: List[Dict], total_rerolls: int
+               ) -> Tuple[Optional[Dict], List[Dict], Optional[int], int,
+                         Dict, int, Optional[str], str]:
     # 턴 1회 실행+리롤: 와이어 조립 → 품질 리롤 → reroll_at/edit_at 재전송.
     # hypa 요약 실패(herr)면 원래 run_once의 break 지점에서 조기 반환한다 —
     # aborted 메시지를 채워 돌려주면 호출부가 루프를 끊는다(break 승격).
+    # 반환: (st, use_window, win_start, kept_start_msg, hypa_data,
+    #        total_rerolls, last_reply, aborted) — aborted가 있으면
+    #        st/last_reply는 None, 호출부는 즉시 break해야 한다.
     history.append({"role": "user", "content": utext})
     memory_text = None
     win_start = None
@@ -213,9 +222,12 @@ def _play_turn(i, utext, variant, history, session, key, call, hypa_S,
             total_rerolls, last_reply, "")
 
 
-def _record_probe(i, ptype, fact, wrong, utext, st, dir_sec, director,
-                  ledger, judge, card, variant, session, kept_start_msg,
-                  win_start, use_window, turns, probes):
+def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
+                  wrong: str, utext: str, st: Dict, dir_sec: float,
+                  director: LlmFn, ledger: Ledger, judge: LlmFn, card: Dict,
+                  variant: str, session: str, kept_start_msg: int,
+                  win_start: Optional[int], use_window: List[Dict],
+                  turns: List[Dict], probes: List[Dict]) -> None:
     # 프로브 계획+기록: extract_facts로 원장을 키워 미래 프로브 재료를 대고,
     # 이번 턴이 프로브면 오라클+judge 이중 채점을 기록한다.
     t_ext = time.time()
@@ -265,9 +277,11 @@ def _record_probe(i, ptype, fact, wrong, utext, st, dir_sec, director,
                            fact, utext)})
 
 
-def _collect_totals(variant, session, run_no, prompt_set, turns, probes,
-                    ledger, director, judge, hypa_cost0, hypa_truncated0,
-                    aborted):
+def _collect_totals(variant: str, session: str, run_no: int,
+                    prompt_set: str, turns: List[Dict], probes: List[Dict],
+                    ledger: Ledger, director: LlmFn, judge: LlmFn,
+                    hypa_cost0: float, hypa_truncated0: int,
+                    aborted: str) -> Dict:
     # totals 집계: probes/turns에서 판정·비용을 합산해 최종 result를 조립.
     passed = sum(1 for p in probes if p["judge"] is True)
     unparsed = sum(1 for p in probes if p["judge"] is None)
@@ -370,18 +384,24 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
 
         (st, use_window, win_start, kept_start_msg, hypa_data,
          total_rerolls, new_last_reply, turn_aborted) = _play_turn(
-            i, utext, variant, history, session, key, call, hypa_S,
-            hypa_data, hypa_state, fixed_tokens, max_context, trim_budget,
-            kept_start_msg, preset, card, reroll_at, edit_at, turns,
-            total_rerolls)
+            i=i, utext=utext, variant=variant, history=history,
+            session=session, key=key, call=call, hypa_S=hypa_S,
+            hypa_data=hypa_data, hypa_state=hypa_state,
+            fixed_tokens=fixed_tokens, max_context=max_context,
+            trim_budget=trim_budget, kept_start_msg=kept_start_msg,
+            preset=preset, card=card, reroll_at=reroll_at,
+            edit_at=edit_at, turns=turns, total_rerolls=total_rerolls)
         if turn_aborted:
             aborted = turn_aborted
             break
         last_reply = new_last_reply
 
-        _record_probe(i, ptype, fact, wrong, utext, st, dir_sec, director,
-                      ledger, judge, card, variant, session, kept_start_msg,
-                      win_start, use_window, turns, probes)
+        _record_probe(i=i, ptype=ptype, fact=fact, wrong=wrong, utext=utext,
+                      st=st, dir_sec=dir_sec, director=director,
+                      ledger=ledger, judge=judge, card=card, variant=variant,
+                      session=session, kept_start_msg=kept_start_msg,
+                      win_start=win_start, use_window=use_window,
+                      turns=turns, probes=probes)
         if variant == "dreaming" and i in (total_turns // 3,
                                            2 * total_turns // 3):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
@@ -392,9 +412,12 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                        f"프로바이더 거부 반복, 런 중단")
             break
 
-    result = _collect_totals(variant, session, run_no, prompt_set, turns,
-                             probes, ledger, director, judge, hypa_cost0,
-                             hypa_truncated0, aborted)
+    result = _collect_totals(variant=variant, session=session, run_no=run_no,
+                             prompt_set=prompt_set, turns=turns,
+                             probes=probes, ledger=ledger, director=director,
+                             judge=judge, hypa_cost0=hypa_cost0,
+                             hypa_truncated0=hypa_truncated0,
+                             aborted=aborted)
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1))
