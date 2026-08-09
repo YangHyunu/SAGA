@@ -374,3 +374,17 @@ DREAMING_UPSTREAM_KEY_SET=1 python3 -m benchmarks.eval.run2 --variant vanilla --
 - 감사 finding 커버리지: R1 god object → T1–T6 / R5 순환 → T3 / R2 프롬프트 산재 → T2 / R5 v1 private → T7 / R2 모델 축 결합 → T3 / seam 부재 → T5 / v1 배너 → T7. 잔여: hypa.py 내부 분할(감사 Suggestion — 의도적 미착수, 스펙 대조 용이성 트레이드오프).
 - 테스트 수 추적: 658 → T2 +2 → T5 +1 = **661** (T8 게이트 기준).
 - 유의: Task 5 오프라인 테스트는 run_once 반환 키를 실코드 기준으로 조정할 여지를 명시했다 — 골격 고정, 키 이름만 가변.
+
+---
+
+## 실행 후기 (2026-08-10, 완료)
+
+10 커밋 (594455f..b1c7250), 663 passed (시작 658+5), ruff 완전 클린(기존 6→0). 최종 whole-branch 리뷰(opus): **머지 가능**, 픽스 웨이브 5건 반영 완료.
+
+**실행 중 발견된 플랜 결함 (다음 플랜 작성 시 참고):**
+- T2 Step 4: 별칭 import는 import-시점 바인딩 → override_from이 실호출에 무효였음. 구현자가 호출부 dotted access로 교정 (핵심 교훈: 패치·오버라이드가 도달해야 하는 호출부는 `module.NAME` 점 접근).
+- T5 스케치: `transport.key` 패치는 no-op (같은 바인딩 문제), PRESET/CARD 상수·시그니처 오기 — 5건 정합.
+- T6 "<400줄": 분해 전 baseline이 이미 407줄이라 산술적으로 불가능 — 474 수용 (스캐폴딩 +67, 로직 0, 리뷰어 전수 감사).
+- T1 재수출 목록에 미사용 5개 포함, T3 "config만 의존"이 director.LlmFn 누락.
+
+**패치 표면 규약 (테스트 작성자용):** 실업스트림 스텁은 `transport.call_upstream` 패치 또는 `call_fn` 주입. `_key`/`make_*_llm`은 run2 별칭 경유라 `run2.` 쪽 패치. run2.py:47-56 주석이 정본.
