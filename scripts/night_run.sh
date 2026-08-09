@@ -1,5 +1,5 @@
 #!/bin/zsh
-# 야간 비교런: vanilla/trim/retrieval/dreaming 각 1런 @ trim 32K.
+# 야간 비교런: vanilla/trim/hypa/dreaming 각 1런 @ maxContext 32K.
 # 목적: 아침에 변형별 실패 지점(LITM vs evict) 비교.
 # dreaming은 스모크런 후 격리(quarantine) 0건일 때만 본런을 시작한다 —
 # night2-drm-r0 사고(105/106턴 격리)가 100턴을 다 태운 뒤에야 발견된 재발 방지.
@@ -26,7 +26,7 @@ run_variant() {
 }
 run_variant vanilla   van  & PID_V=$!
 run_variant trim      trim & PID_T=$!
-run_variant retrieval ret  & PID_R=$!
+run_variant hypa      hypa & PID_R=$!
 
 # ── Dreaming 프록시 (8790) — 키는 변수로만, 절대 echo 금지 ──
 export DREAMING_DREAM_BASE="https://openrouter.ai/api/v1"

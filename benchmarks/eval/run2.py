@@ -11,7 +11,9 @@
 vanilla·dreaming 변형은 트림 없이 전체 히스토리를 보낸다 — 프로브는 트림 창
 기준으로 뽑히므로, vanilla가 틀리면 그건 정보 부재가 아니라
 lost-in-the-middle이다. dreaming은 창 관리(압축)가 프록시 책임이라 벤치가
-미리 자르지 않는다.
+미리 자르지 않는다. hypa는 RisuAI HypaV3(뮈토스 하이파 V5 설정)를 그대로
+돌려 스스로 요약·절단하므로 벤치의 token_trim을 쓰지 않는다 — 요약 블록은
+프리셋 memory 카드(시스템 프롬프트 한가운데) 자리에 실린다.
 
 와이어는 뮈토스 6.2 프리셋을 preset2wire로 조립 — 매 요청 check_wire_shape
 게이트. 모델·엔드포인트는 env로 오버라이드 (확정 설정: 나레이터 V4 Pro,
@@ -43,7 +45,7 @@ from benchmarks.eval.director import (Ledger, LlmFn, extract_facts,
 from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
 from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
-from benchmarks.eval.variants import retrieve_turns
+from benchmarks.eval import hypa
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DATA = ROOT / "dreaming_data"
@@ -56,9 +58,15 @@ JUDGE_MODEL = os.environ.get("DREAMING_EVAL_JUDGE",
                              "anthropic/claude-sonnet-4.5")
 DIRECTOR_MODEL = os.environ.get("DREAMING_EVAL_DIRECTOR",
                                 "google/gemini-3-flash-preview")
+HYPA_EXPORT = os.environ.get(
+    "DREAMING_EVAL_HYPA_EXPORT",
+    str(pathlib.Path.home() / "Downloads" / "뮈토스6.2"
+        / "🏺뮈토스 프롬프트 하이파" / "hypaV3_export_뮈토스 하이파 V5.json"))
 TURNS = 80
 PROBE_EVERY = 10              # 이 간격마다 발화 하나가 과거를 슬며시 되짚는다
-TRIM_TOKENS = 12000
+# maxContext — RisuAI의 단일 토큰 풀 (index.svelte.ts:614-618). trim·hypa 공용.
+# 원 프리셋 200K 대비 4.4× 축소라 hypa의 memoryTokens 선점도 78,000 → 17,550이다.
+MAX_CONTEXT = 45000
 UPDATE_EVENTS = (12, 28)      # 지식갱신 강제 턴
 # NPC 등장은 당채련 하나로 고정 — 런 간 같은 사건 축이라 비교 가능하다.
 # 로어 7엔트리는 항상 주입되므로(키워드 게이팅 없음) 활성화 문제가 아니라
@@ -195,15 +203,14 @@ def wire_history(variant: str, history: List[Dict],
 
 
 def build_wire(preset: Dict, card: Dict, window: List[Dict],
-               retrieval_block: str = "") -> List[Dict]:
-    """뮈토스 조립 + reformater. retrieval 변형은 마지막 user에 발췌 prepend."""
-    window = [dict(m) for m in window]
-    if retrieval_block:
-        for m in reversed(window):
-            if m["role"] == "user":
-                m["content"] = retrieval_block + "\n\n" + m["content"]
-                break
-    msgs = assemble(preset, TOGGLES, window,
+               memory: str = "") -> List[Dict]:
+    """뮈토스 조립 + reformater.
+
+    memory는 hypa 요약 블록 — 프리셋의 memory 카드(promptTemplate[35] 'Past
+    Summary') 자리에 들어간다. 즉 chat 히스토리보다 앞, 시스템 프롬프트
+    한가운데다 (index.svelte.ts:1429-1443). 캐시 파괴 병리의 구조적 원인이다.
+    """
+    msgs = assemble(preset, TOGGLES, window, memory=memory,
                     card={"description": card.get("description", ""),
                           "persona": card.get("persona", ""),
                           "lore": card.get("lore", []),
@@ -341,8 +348,18 @@ def _load_json(path: str) -> Dict:
     return json.loads(pathlib.Path(path).read_text())
 
 
+def hypa_in_window(fact_turn: int, kept_start_msg: int,
+                   has_greeting: bool) -> bool:
+    """hypa가 실제로 보낸 창에 턴 fact_turn의 발화가 남아 있는가.
+
+    hypa는 턴이 아니라 **메시지 인덱스**로 자른다 (chats.slice(startIdx),
+    hypav3.ts:934). greeting이 있으면 턴 t의 user 메시지는 인덱스 1+2t다.
+    """
+    return (1 if has_greeting else 0) + 2 * fact_turn >= kept_start_msg
+
+
 def run_once(preset_path: str, card_path: str, variant: str, session: str,
-             run_no: int, trim_tokens: int, reroll_at: List[int],
+             run_no: int, max_context: int, reroll_at: List[int],
              edit_at: List[int], ttl_wait: bool,
              total_turns: int = TURNS,
              probe_every: int = PROBE_EVERY) -> Dict:
@@ -364,6 +381,16 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     turns, probes = [], []
     total_rerolls, aborted = 0, ""
     sched = probe_schedule(total_turns, probe_every)
+    # hypa 상태 — 요약은 세션 안에서 누적된다 (data.summaries).
+    hypa_S = hypa.load_hypa_settings(HYPA_EXPORT) if variant == "hypa" else None
+    hypa_data: Dict = {"summaries": []}
+    hypa_state = EVAL_DIR / f"hypa-state-{session}.json"
+    hypa_cost0 = hypa.SUMMARY_COST
+    # 프리셋+카드 고정 비용 — RisuAI가 히스토리 앞에 먼저 태우는 몫
+    # (index.svelte.ts:614-618). 빈 히스토리 와이어로 실측한다.
+    fixed_tokens = (sum(hypa.tok_chat(m) for m in build_wire(preset, card, []))
+                    if variant == "hypa" else 0)
+    kept_start_msg = 0
 
     for i in range(total_turns):
         ptype = sched[i]
@@ -393,14 +420,26 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         dir_sec = round(time.time() - t_dir, 1)
 
         history.append({"role": "user", "content": utext})
-        window, win_start = token_trim(history, trim_tokens)
-        block = ""
-        if variant == "retrieval":
-            ex = retrieve_turns(history, utext)
-            if ex:
-                block = "[과거 대화 발췌]\n" + "\n---\n".join(ex)
-        use_window = wire_history(variant, history, window)
-        msgs = build_wire(preset, card, use_window, retrieval_block=block)
+        window, win_start = token_trim(history, max_context)
+        memory_text = None
+        if variant == "hypa":
+            (memory_text, use_window, kept_start_msg, hypa_data,
+             herr) = hypa.hypa_step(history, fixed_tokens, hypa_S, hypa_data,
+                                    hypa._summarize_call, max_context,
+                                    MAX_TOKENS)
+            hypa_state.parent.mkdir(parents=True, exist_ok=True)
+            hypa_state.write_text(json.dumps(hypa_data, ensure_ascii=False,
+                                             indent=1))
+            if herr:
+                # 원본도 요청 자체를 실패시킨다 (hypav3.ts:263-274) — 병리 재현이지
+                # 하네스 버그가 아니다. 부분 결과를 저장하고 중단한다.
+                turns.append({"turn": i, "user": utext, "hypa_error": herr,
+                              "cost": 0.0})
+                aborted = f"hypa 요약 불가 T{i + 1}: {herr}"
+                break
+        else:
+            use_window = wire_history(variant, history, window)
+        msgs = build_wire(preset, card, use_window, memory=memory_text or "")
         bad = check_wire_shape(msgs)
         if bad:
             raise SystemExit(f"와이어 형태 위반 T{i + 1}: {bad}")
@@ -427,9 +466,15 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             st["reply"] = st2["reply"]         # 기록·추출은 히스토리와 같게
         if i in edit_at:                       # 수정: user 텍스트 바꿔 재전송
             history[-2]["content"] = utext + " (아니, 정정할게.)"
-            window, _ = token_trim(history[:-1], trim_tokens)
-            use_window = wire_history(variant, history[:-1], window)
-            msgs2 = build_wire(preset, card, use_window)
+            window, _ = token_trim(history[:-1], max_context)
+            if variant == "hypa":
+                # 같은 턴의 재전송 — 요약을 다시 돌리지 않는다 (memo는 인덱스
+                # 기반이라 편집에도 불변, 창도 그대로다).
+                use_window = history[:-1][kept_start_msg:]
+            else:
+                use_window = wire_history(variant, history[:-1], window)
+            msgs2 = build_wire(preset, card, use_window,
+                               memory=memory_text or "")
             st3 = _call_upstream(variant, session, key, msgs2)
             history[-1] = {"role": "assistant", "content": st3["reply"]}
             last_reply = st3["reply"]
@@ -463,8 +508,13 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                            # 나레이터가 실제 본 창 기준 — 창내 실패=LITM,
                            # 창밖 실패=eviction. 풀 히스토리 변형은 항상 창내
                            # (dreaming은 프록시가 압축했을 수 있어 상한값이다).
-                           "in_window": (variant in _FULL_HISTORY
-                                         or fact.turn >= win_start)})
+                           # hypa는 token_trim이 아니라 자기 slice로 자른다.
+                           "in_window": (
+                               variant in _FULL_HISTORY
+                               or (hypa_in_window(fact.turn, kept_start_msg,
+                                                  bool(card.get("greeting")))
+                                   if variant == "hypa"
+                                   else fact.turn >= win_start))})
         if variant == "dreaming" and i in (total_turns // 3,
                                            2 * total_turns // 3):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
@@ -494,6 +544,8 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                          "director_calls": director.calls,
                          "cost_judge": round(judge.cost, 4),
                          "judge_calls": judge.calls,
+                         # hypa 요약 콜 — 모듈 전역 누적이라 런 시작 대비 증분
+                         "cost_hypa": round(hypa.SUMMARY_COST - hypa_cost0, 4),
                          "aborted": aborted}}
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
@@ -506,10 +558,12 @@ def main() -> None:
     ap.add_argument("preset")
     ap.add_argument("card")
     ap.add_argument("variant",
-                    choices=("dreaming", "vanilla", "trim", "retrieval"))
+                    choices=("dreaming", "vanilla", "trim", "hypa"))
     ap.add_argument("--session", required=True)
     ap.add_argument("--runs", type=int, default=1)
-    ap.add_argument("--trim-tokens", type=int, default=TRIM_TOKENS)
+    # --trim-tokens는 하위호환 별칭 — 같은 단일 풀(maxContext)이다
+    ap.add_argument("--max-context", "--trim-tokens", dest="max_context",
+                    type=int, default=MAX_CONTEXT)
     ap.add_argument("--turns", type=int, default=TURNS)
     ap.add_argument("--probe-every", type=int, default=PROBE_EVERY)
     ap.add_argument("--reroll-at", default="18,33")
@@ -527,13 +581,15 @@ def main() -> None:
                 raise SystemExit(f"{d} 이미 있음 — --reset")
             shutil.rmtree(d)
         r = run_once(args.preset, args.card, args.variant, sess, n,
-                     args.trim_tokens, reroll, edit, args.ttl_wait,
+                     args.max_context, reroll, edit, args.ttl_wait,
                      args.turns, args.probe_every)
         t = r["totals"]
-        grand = t["cost"] + t.get("cost_director", 0) + t.get("cost_judge", 0)
+        grand = (t["cost"] + t.get("cost_director", 0) + t.get("cost_judge", 0)
+                 + t.get("cost_hypa", 0))
         print(f"[run{n}] {t['judge_pass']}/{t['probes']} "
               f"나레이터 ${t['cost']} + 디렉터 ${t.get('cost_director', 0)} "
-              f"+ judge ${t.get('cost_judge', 0)} = ${round(grand, 4)}",
+              f"+ judge ${t.get('cost_judge', 0)} "
+              f"+ hypa ${t.get('cost_hypa', 0)} = ${round(grand, 4)}",
               flush=True)
         if t.get("aborted"):
             # 부분 결과는 이미 저장됨 — 비정상 종료로 상위 스크립트에 알린다

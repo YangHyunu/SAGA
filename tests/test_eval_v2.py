@@ -831,4 +831,41 @@ def test_dreaming_variant_sends_full_history():
     assert wire_history("dreaming", hist, win) == hist
     assert wire_history("vanilla", hist, win) == hist
     assert wire_history("trim", hist, win) == win
-    assert wire_history("retrieval", hist, win) == win
+
+
+def test_wire_carries_memory_inside_leading_system():
+    """hypa 요약은 선두 system(카드 0~36 병합 블록) 안, chat 히스토리 앞에
+    앉는다 — 캐시 파괴 병리의 구조적 재현 (index.svelte.ts:1429-1443)."""
+    import glob
+    import pathlib
+    import pytest
+    from benchmarks.eval.preset2wire import decode_risup
+    from benchmarks.eval.run2 import build_wire
+
+    presets = glob.glob(str(pathlib.Path.home() / "Downloads" / "뮈토스6.2"
+                            / "**" / "*DeepSeek*_preset.risup"), recursive=True)
+    card_path = (pathlib.Path(__file__).resolve().parents[1] / "dreaming_data"
+                 / "eval" / "card-soyeon-v2.json")
+    if not (presets and card_path.exists()):
+        pytest.skip("프리셋/카드 없음")
+
+    preset = decode_risup(presets[0])
+    card = json.loads(card_path.read_text())
+    window = [{"role": "user", "content": "안녕"}]
+    msgs = build_wire(preset, card, window, memory="MEMORY_SENTINEL_XYZ")
+    assert "MEMORY_SENTINEL_XYZ" in msgs[0]["content"]      # 선두 system 내부
+    assert all("MEMORY_SENTINEL_XYZ" not in m["content"] for m in msgs[1:])
+    without = build_wire(preset, card, window)
+    assert "MEMORY_SENTINEL_XYZ" not in without[0]["content"]
+
+
+def test_hypa_in_window_maps_turn_to_message_index():
+    """hypa는 메시지 인덱스로 자른다 — 턴 번호와 섞으면 2×2가 밀린다.
+
+    greeting이 있으면 턴 t의 user 메시지는 인덱스 1+2t.
+    """
+    from benchmarks.eval.run2 import hypa_in_window
+    assert hypa_in_window(1, 3, has_greeting=True)
+    assert not hypa_in_window(0, 3, has_greeting=True)
+    assert hypa_in_window(1, 2, has_greeting=False)
+    assert not hypa_in_window(0, 2, has_greeting=False)
