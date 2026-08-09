@@ -26,9 +26,6 @@ from typing import Dict, List, Optional
 
 from benchmarks.eval import prompts
 from benchmarks.eval.director import DirFact, LlmFn
-# 별칭 재노출(이 파일 안에서는 안 쓰임) — judge_pass는 override_from 반영을
-# 위해 prompts.JUDGE_SYS(점 접근)를 쓴다.
-from benchmarks.eval.prompts import JUDGE_SYS as _JUDGE_SYS  # noqa: F401
 from dreaming.numerals import korean_spellings
 
 _WS = re.compile(r"\s+")

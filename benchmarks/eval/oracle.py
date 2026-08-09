@@ -10,7 +10,8 @@ from __future__ import annotations
 from typing import Dict
 
 from benchmarks.eval.script import Probe
-# expect_alternatives는 이 파일 안에서는 안 쓰임 — 구 임포터 호환용 재노출.
+# expect_alternatives는 이 파일 안에서는 안 쓰임 — brief 지정 단일 인터페이스
+# 유지 + 외부 표면 보존용 재노출.
 from benchmarks.eval.scoring import _STATBAR, _norm, expect_alternatives  # noqa: F401
 
 

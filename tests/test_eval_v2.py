@@ -1113,3 +1113,67 @@ def test_run_once_offline_with_fake_narrator(tmp_path, monkeypatch):
                         total_turns=5, call_fn=fake_call)
     assert out["turns"] and len(out["turns"]) == 5
     assert not out["totals"]["aborted"]
+
+
+def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
+    """hypa 요약 실패(herr)면 _play_turn이 조기 반환하고 run_once가 즉시
+    break한다 — 이 브랜치에서 유일하게 손으로 재작성된 제어 흐름.
+
+    hypa.hypa_step의 실제 반환 계약은 5-튜플
+    (memory_text, kept_history, kept_start_msg, data, error)이다
+    (hypa.py:538-546, hypa.py:583 error 분기). error가 non-None이면
+    _play_turn(run2.py:171-178)이 8-튜플 (None, use_window, win_start,
+    kept_start_msg, hypa_data, total_rerolls, None, aborted)로 조기
+    반환하고, run_once(run2.py:394-396)가 그 자리에서 break한다.
+
+    test_run_once_offline_with_fake_narrator와 같은 글롭+skip·call_fn/
+    director·judge 팩토리·EVAL_DIR monkeypatch 패턴을 재사용하고,
+    variant만 "hypa"로 바꿔 hypa.hypa_step을 항상 에러를 내는 스텁으로
+    교체한다.
+    """
+    import glob
+    import pathlib
+
+    import pytest
+
+    from benchmarks.eval import run2
+
+    presets = glob.glob(str(pathlib.Path.home() / "Downloads" / "뮈토스6.2"
+                            / "**" / "*DeepSeek*_preset.risup"), recursive=True)
+    card_path = (pathlib.Path(__file__).resolve().parents[1] / "dreaming_data"
+                 / "eval" / "card-soyeon-v2.json")
+    if not (presets and card_path.exists()):
+        pytest.skip("프리셋/카드 없음")
+
+    def fake_call(variant, session, key, msgs):
+        return {"reply": "…소연은 조용히 고개를 끄덕였다.", "prompt": 100,
+                "cached": 0, "cost": 0.0, "sec": 0.1}
+
+    def _stub_llm(reply):
+        # totals가 director.cost/.calls, judge.cost/.calls를 읽는다 —
+        # 맨 람다는 이 속성이 없어 AttributeError로 죽는다.
+        def f(system, user):
+            f.calls += 1
+            return reply
+        f.cost, f.calls = 0.0, 0
+        return f
+
+    def stub_hypa_step(history, preset_tokens, S, data, send, max_ctx,
+                       max_response):
+        return None, history, 0, data, "요약 실패 T0: 토큰 초과 (stub)"
+
+    monkeypatch.setattr(run2, "_key", lambda: "offline")
+    monkeypatch.setattr(run2, "make_director_llm",
+                        lambda: _stub_llm("장터를 함께 걷자고 말한다"))
+    monkeypatch.setattr(run2, "make_judge_llm", lambda: _stub_llm("PASS"))
+    monkeypatch.setattr(run2, "EVAL_DIR", tmp_path)
+    # hypa.hypa_step은 run2가 `hypa.` 점 접근으로 매 턴 호출한다(run2.py:165)
+    # — 모듈 속성 패치라 run2.hypa(=benchmarks.eval.hypa)에 걸면 먹힌다.
+    monkeypatch.setattr(run2.hypa, "hypa_step", stub_hypa_step)
+
+    out = run2.run_once(presets[0], str(card_path), "hypa",
+                        "seam-hypa-abort", 0, 45000, [], [], False,
+                        total_turns=3, call_fn=fake_call)
+    assert out["totals"]["aborted"]
+    assert out["turns"]
+    assert "hypa_error" in out["turns"][-1]

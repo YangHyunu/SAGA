@@ -46,14 +46,16 @@ from benchmarks.eval.prompts import (BEATS as _BEATS,  # noqa: F401
                                      UPDATE_BEAT as _UPDATE_BEAT)  # noqa: F401
 # transport 모듈 자체를 쓴다 — run_once의 call_fn 심은
 # transport.call_upstream을 기본값으로 참조한다(점 접근, 모듈 속성이라
-# monkeypatch.setattr(transport, "call_upstream", ...)가 걸린다). 나머지는
-# 별칭 재노출(이 파일 안에서는 일부만 쓰임) — 기존 테스트·스크립트가
-# run2._key 등으로 참조한다.
+# monkeypatch.setattr(transport, "call_upstream", ...)가 걸린다). 패치 표면은
+# 둘로 갈린다: call은 transport. 점 접근이라 transport 패치가 먹힌다;
+# _key/make_*_llm은 run2 별칭 경유(import 시점에 값이 고정)라
+# monkeypatch.setattr(transport, "key", ...)는 조용한 no-op이고 run2. 쪽을
+# 패치해야 실제로 걸린다. 나머지는 별칭 재노출(이 파일 안에서는 일부만
+# 쓰임) — 기존 테스트·스크립트가 run2._key 등으로 참조한다.
 from benchmarks.eval import transport
 from benchmarks.eval.transport import (call_upstream as _call_upstream,  # noqa: F401
-                                       call_upstream_once as _call_upstream_once,  # noqa: F401
                                        key as _key, make_director_llm,
-                                       make_judge_llm, mk_llm as _mk_llm)  # noqa: F401
+                                       make_judge_llm)
 # 별칭 재노출 — 기존 테스트가 run2._count, run2._FULL_HISTORY 등으로 참조.
 from benchmarks.eval.windowing import (FULL_HISTORY as _FULL_HISTORY,
                                        count as _count, hypa_in_window,
@@ -278,9 +280,9 @@ def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
 
 
 def _collect_totals(variant: str, session: str, run_no: int,
-                    prompt_set: str, turns: List[Dict], probes: List[Dict],
-                    ledger: Ledger, director: LlmFn, judge: LlmFn,
-                    hypa_cost0: float, hypa_truncated0: int,
+                    prompt_set: Dict[str, object], turns: List[Dict],
+                    probes: List[Dict], ledger: Ledger, director: LlmFn,
+                    judge: LlmFn, hypa_cost0: float, hypa_truncated0: int,
                     aborted: str) -> Dict:
     # totals 집계: probes/turns에서 판정·비용을 합산해 최종 result를 조립.
     passed = sum(1 for p in probes if p["judge"] is True)

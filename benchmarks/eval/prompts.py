@@ -103,7 +103,7 @@ _NAMES = ("DIRECT_SYS", "UPDATE_BEAT", "BEATS", "NPC_BEAT",
           "EXTRACT_SYS", "PROBE_SYS", "FALSE_SYS", "JUDGE_SYS")
 
 
-def active() -> Dict[str, str]:
+def active() -> Dict[str, object]:
     """현재 프롬프트 세트 스냅샷 — 결과 JSON에 기록해 A/B 추적용."""
     return {n: globals()[n] for n in _NAMES}
 
@@ -116,7 +116,8 @@ def override_from(path: str) -> None:
     """
     with open(path, "r", encoding="utf-8") as f:
         overrides = json.load(f)
-    for name, value in overrides.items():
+    for name in overrides:
         if name not in _NAMES:
             raise KeyError(f"unknown prompt: {name} (valid: {', '.join(_NAMES)})")
+    for name, value in overrides.items():
         globals()[name] = tuple(value) if isinstance(value, list) else value
