@@ -26,15 +26,11 @@ usage: python3 -m benchmarks.eval.run2 <preset.risup> <card.json> dreaming \
 from __future__ import annotations
 
 import argparse
-import difflib
 import json
 import pathlib
-import re
 import shutil
 import time
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
-
-import tiktoken
+from typing import Dict, List, Optional
 
 from benchmarks.eval.config import (DATA, EVAL_DIR, HYPA_EXPORT, MAX_CONTEXT,
                                     MAX_RUN_REROLLS, MAX_TOKENS, MODEL,
@@ -55,8 +51,15 @@ from benchmarks.eval.transport import (call_upstream as _call_upstream,
                                        call_upstream_once as _call_upstream_once,  # noqa: F401
                                        key as _key, make_director_llm,
                                        make_judge_llm, mk_llm as _mk_llm)  # noqa: F401
-
-_ENC = tiktoken.get_encoding("o200k_base")
+# 별칭 재노출 — 기존 테스트가 run2._count, run2._FULL_HISTORY 등으로 참조.
+from benchmarks.eval.windowing import (FULL_HISTORY as _FULL_HISTORY,
+                                       count as _count, hypa_in_window,
+                                       token_trim, wire_history)
+# reply_flaw는 이 파일 안에서는 안 쓰임(quality.reroll_until_clean 내부용) —
+# 기존 테스트가 run2.reply_flaw로 직접 참조한다.
+from benchmarks.eval.quality import (abort_reroll_count,
+                                     reply_flaw,  # noqa: F401
+                                     reroll_until_clean)
 
 from benchmarks.eval.director import (Ledger, extract_facts,
                                       make_false_premise, make_probe,
@@ -66,40 +69,6 @@ from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
 from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
 from benchmarks.eval import hypa
-
-
-def _count(text: str) -> int:
-    # RisuAI reverse_proxy 기본 토크나이저와 동일 (tokenizer.ts:105-133 →
-    # o200k_base). len/2.5 근사는 한국어를 ~40% 과소평가해 12K 예산에서
-    # eviction이 아예 안 일어났다 (파일럿 실측 18,917 vs 근사 11,816).
-    return len(_ENC.encode(text))
-
-
-def token_trim(history: List[Dict], budget: int,
-               count_fn: Callable[[str], int] = _count
-               ) -> Tuple[List[Dict], int]:
-    """토큰 예산 기반 트림 — 메시지 단위 FIFO (index.svelte.ts:1143-1154).
-
-    RisuAI는 페어 정렬 없이 chats[0]부터 하나씩 제거한다 — greeting도
-    이 큐의 일부라 예산 판정에 포함되고, 남는 첫 메시지가 assistant일 수
-    있다. 반환: (윈도우, win_start). win_start는 "이 턴 번호부터의 사실이
-    창내" 의미 — 창의 첫 메시지가 턴 k의 user면 win_start=k, 턴 k의
-    assistant면(반 잘린 턴) win_start=k+1.
-    """
-    if not history:
-        return history, 0
-    total = sum(count_fn(m["content"]) for m in history)
-    start = 0
-    while total > budget and len(history) - start > 1:
-        total -= count_fn(history[start]["content"])
-        start += 1
-    window = history[start:]
-    if start == 0:
-        return window, 0
-    has_greeting = history[0]["role"] == "assistant"
-    offset = start - (1 if has_greeting else 0)
-    turn, half = divmod(offset, 2)
-    return window, turn + half
 
 
 def probe_schedule(total: int, every: int = PROBE_EVERY) -> List[Optional[str]]:
@@ -116,18 +85,6 @@ def probe_schedule(total: int, every: int = PROBE_EVERY) -> List[Optional[str]]:
         out[i] = rotation[k % len(rotation)]
         k += 1
     return out
-
-
-# 풀 히스토리를 그대로 보내는 변형. dreaming은 창 관리(압축)가 프록시 책임이라
-# 벤치가 미리 자르면 프록시가 기억해야 할 턴을 아예 못 본다 — night2에서
-# dreaming이 "trim 3회차"가 된 원인 중 하나.
-_FULL_HISTORY = ("vanilla", "dreaming")
-
-
-def wire_history(variant: str, history: List[Dict],
-                  window: List[Dict]) -> List[Dict]:
-    """변형별 전송 히스토리 — 트림 여부 단일 결정점."""
-    return history if variant in _FULL_HISTORY else window
 
 
 def build_wire(preset: Dict, card: Dict, window: List[Dict],
@@ -155,67 +112,6 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
     return reformat(msgs, fold_mid_system=False, alternate=False)
 
 
-# 실유저가 리롤로 걷어내는 응답 — 남겨두면 디렉터가 캐릭터 대사를 지어내며
-# 사칭하기 시작한다 (파일럿50 T3 거부 → T4 디렉터가 소연 대사 작성).
-_REFUSAL_MARKS = ("죄송합니다만", "처리할 수 없습니", "수행할 수 없습니",
-                  "I cannot", "I can't", "I'm not able to")
-_HANGUL = re.compile(r"[가-힣]")
-
-_LOOP_LOOKBACK = 3      # 직전 몇 개 응답과 비교할지
-_LOOP_RATIO = 0.97      # 이 이상이면 사실상 동일 (실측: 972자/1159자 완전일치)
-
-
-def reply_flaw(reply: str, prior_replies: Sequence[str] = ()) -> str:
-    """리롤 사유. 정상이면 빈 문자열.
-
-    한글 비율 임계 0.3: 파일럿 실측에서 병리 턴(영어 드리프트·프리셋 지시문
-    에코)은 전부 0.09 이하, 정상 턴은 전부 0.64 이상 — 사이가 비어 있다.
-    loop: 직전 lookback개 응답과 SequenceMatcher ratio>=0.97 — 실측(trim
-    런 T85=T86, T91=T92) 완전 동일 응답 재현 방지.
-    """
-    if any(m in reply for m in _REFUSAL_MARKS):
-        return "refusal"
-    if len(_HANGUL.findall(reply)) / max(len(reply), 1) < 0.3:
-        return "language_drift"
-    for prior in prior_replies[-_LOOP_LOOKBACK:]:
-        if difflib.SequenceMatcher(None, reply, prior).ratio() >= _LOOP_RATIO:
-            return "loop"
-    return ""
-
-
-def reroll_until_clean(call: Callable[[], Dict],
-                        prior_replies: Sequence[str] = (),
-                        max_rerolls: int = 2) -> Tuple[Dict, List[str]]:
-    """flaw 있으면 재호출 최대 max_rerolls회. 반환: (최종 st, 시도별 flaw 이력).
-
-    flaw_history[0]은 첫 시도, 이후는 리롤 시도 순 — 폐기된 세대의 사유도
-    남긴다 (이전엔 최종 flaw만 남아 리롤 원인 분석이 불가능했다).
-    prior_replies는 직전 턴 응답들 — 중복 응답(loop) 판정에 쓴다.
-    """
-    st = call()
-    flaw = reply_flaw(st["reply"], prior_replies)
-    flaw_history = [flaw]
-    rerolls = 0
-    while flaw and rerolls < max_rerolls:
-        st2 = call()
-        st2["cost"] += st["cost"]
-        st = st2
-        rerolls += 1
-        flaw = reply_flaw(st["reply"], prior_replies)
-        flaw_history.append(flaw)
-    st["rerolls"], st["flaw"], st["flaw_history"] = rerolls, flaw, flaw_history
-    return st, flaw_history
-
-
-def abort_reroll_count(flaw_history: Sequence[str]) -> int:
-    """중단 게이트(MAX_RUN_REROLLS)에 누적할 리롤 수.
-
-    마지막 항목은 최종 상태지 리롤이 아니므로 제외한다. "loop"은 거부
-    반복(비용 소각)과 다른 병리라 게이트 오탐을 막기 위해 카운트에서 뺀다.
-    """
-    return sum(1 for f in flaw_history[:-1] if f != "loop")
-
-
 def pick_beat(i: int, npc_due: bool = False) -> str:
     """턴 i의 필러 지시. NPC 이벤트 > UPDATE_EVENTS > 5턴 주기 비트 > 평서."""
     if npc_due:
@@ -237,16 +133,6 @@ def recent_dialogue(history: List[Dict], pairs: int = 3) -> str:
 
 def _load_json(path: str) -> Dict:
     return json.loads(pathlib.Path(path).read_text())
-
-
-def hypa_in_window(fact_turn: int, kept_start_msg: int,
-                   has_greeting: bool) -> bool:
-    """hypa가 실제로 보낸 창에 턴 fact_turn의 발화가 남아 있는가.
-
-    hypa는 턴이 아니라 **메시지 인덱스**로 자른다 (chats.slice(startIdx),
-    hypav3.ts:934). greeting이 있으면 턴 t의 user 메시지는 인덱스 1+2t다.
-    """
-    return (1 if has_greeting else 0) + 2 * fact_turn >= kept_start_msg
 
 
 def run_once(preset_path: str, card_path: str, variant: str, session: str,
