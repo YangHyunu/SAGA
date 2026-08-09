@@ -805,3 +805,19 @@ def test_call_upstream_retries_transient_5xx(monkeypatch):
     except httpx.HTTPStatusError:
         pass
     assert calls["n"] == 1                     # 재시도 없음
+
+
+def test_director_prompts_use_polite_speech():
+    # 유저 피드백: 렌(27)이 연상 신녀(31)에게 첫만남부터 반말 — 부자연.
+    # 디렉터·프로브·오염 프롬프트 전부 존댓말로 통일한다.
+    from benchmarks.eval.run2 import _DIRECT_SYS
+    from benchmarks.eval.director import _PROBE_SYS, _FALSE_SYS
+    for sys_prompt in (_DIRECT_SYS, _PROBE_SYS, _FALSE_SYS):
+        assert "존댓말" in sys_prompt and "반말 채팅체" not in sys_prompt
+
+
+def test_director_sys_keeps_introduced_npcs():
+    # 유저 피드백: 등장한 NPC(당채련)를 한 턴 만에 흘려보냄 — 실제 유저라면
+    # 상호작용한다. 무시·조기 퇴장 금지 규칙.
+    from benchmarks.eval.run2 import _DIRECT_SYS
+    assert "퇴장" in _DIRECT_SYS
