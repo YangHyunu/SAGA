@@ -386,6 +386,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     hypa_data: Dict = {"summaries": []}
     hypa_state = EVAL_DIR / f"hypa-state-{session}.json"
     hypa_cost0 = hypa.SUMMARY_COST
+    hypa_truncated0 = hypa.SUMMARY_TRUNCATED
     # 프리셋+카드 고정 비용 — RisuAI가 히스토리 앞에 먼저 태우는 몫
     # (index.svelte.ts:614-618). 빈 히스토리 와이어로 실측한다.
     fixed_tokens = (sum(hypa.tok_chat(m) for m in build_wire(preset, card, []))
@@ -420,9 +421,11 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         dir_sec = round(time.time() - t_dir, 1)
 
         history.append({"role": "user", "content": utext})
-        window, win_start = token_trim(history, max_context)
         memory_text = None
         if variant == "hypa":
+            # hypa는 token_trim이 아니라 자기 slice로 자른다 — window/win_start
+            # 는 이 분기에서 안 읽힌다. 매 턴 전체 히스토리 토큰 카운트를
+            # 태우는 데드워크라 건너뛴다.
             (memory_text, use_window, kept_start_msg, hypa_data,
              herr) = hypa.hypa_step(history, fixed_tokens, hypa_S, hypa_data,
                                     hypa._summarize_call, max_context,
@@ -438,6 +441,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                 aborted = f"hypa 요약 불가 T{i + 1}: {herr}"
                 break
         else:
+            window, win_start = token_trim(history, max_context)
             use_window = wire_history(variant, history, window)
         msgs = build_wire(preset, card, use_window, memory=memory_text or "")
         bad = check_wire_shape(msgs)
@@ -466,12 +470,13 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             st["reply"] = st2["reply"]         # 기록·추출은 히스토리와 같게
         if i in edit_at:                       # 수정: user 텍스트 바꿔 재전송
             history[-2]["content"] = utext + " (아니, 정정할게.)"
-            window, _ = token_trim(history[:-1], max_context)
             if variant == "hypa":
                 # 같은 턴의 재전송 — 요약을 다시 돌리지 않는다 (memo는 인덱스
-                # 기반이라 편집에도 불변, 창도 그대로다).
+                # 기반이라 편집에도 불변, 창도 그대로다). token_trim은 여기서
+                # 안 쓰이는 데드워크라 건너뛴다.
                 use_window = history[:-1][kept_start_msg:]
             else:
+                window, _ = token_trim(history[:-1], max_context)
                 use_window = wire_history(variant, history[:-1], window)
             msgs2 = build_wire(preset, card, use_window,
                                memory=memory_text or "")
@@ -546,6 +551,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                          "judge_calls": judge.calls,
                          # hypa 요약 콜 — 모듈 전역 누적이라 런 시작 대비 증분
                          "cost_hypa": round(hypa.SUMMARY_COST - hypa_cost0, 4),
+                         "hypa_truncated": hypa.SUMMARY_TRUNCATED - hypa_truncated0,
                          "aborted": aborted}}
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"

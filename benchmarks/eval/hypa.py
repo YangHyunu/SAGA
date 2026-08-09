@@ -594,4 +594,23 @@ def hypa_step(
 
     selected = select_summaries(summaries, available, chats, S)
     memory = wrap_xml(MEMORY_TAG, SUMMARY_SEP.join(s["text"] for s in selected))
+
+    # 의도적 생략: §2 227-229 최종 토큰 정산
+    #   (current -= memory_tokens; current += real_mem_tokens;
+    #    current > max_ctx면 throw)은 여기 없다. 이 함수는 available
+    #    (= memory_tokens 상한, 위 should_reserve 블록) 자체를 select_summaries
+    #    의 예산으로 넘기고 그 안에서 그리디하게 채우므로 real_mem_tokens는
+    #    available을 절대 넘지 못한다 — throw는 도달 불가능한 방어 코드다.
+    #    또한 이 함수는 current_tokens를 호출부로 반환하지 않는다(반환 튜플에
+    #    자리가 없다) — 다음 턴은 hypa_step을 처음부터 다시 불러 current를
+    #    재계산하므로 정산값을 들고 있을 이유가 없다. 버그 아님.
+    # §2 231-236 대체: select_summaries는 4단계 결과를 태그 없이 병합·시간순
+    # 정렬해 반환하므로 단계별 개수는 여기서 복원 불가 — 대신 이번 턴 실제로
+    # 선택된 요약 개수와 그 chatMemos를 남긴다. "요약 갱신 없는 턴에도 similar
+    # 선택이 흔들려 캐시가 깨지는가"는 이 값의 턴간 변화로 사후 확인한다.
+    data["metrics"] = {
+        "selectedCount": len(selected),
+        "selectedChatMemos": [memo for s in selected
+                               for memo in s.get("chatMemos", [])],
+    }
     return memory, history[start_idx:], start_idx, data, None

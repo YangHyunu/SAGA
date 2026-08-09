@@ -26,7 +26,7 @@ run_variant() {
 }
 run_variant vanilla   van  & PID_V=$!
 run_variant trim      trim & PID_T=$!
-run_variant hypa      hypa & PID_R=$!
+run_variant hypa      hypa & PID_H=$!
 
 # ── Dreaming 프록시 (8790) — 키는 변수로만, 절대 echo 금지 ──
 export DREAMING_DREAM_BASE="https://openrouter.ai/api/v1"
@@ -61,7 +61,7 @@ if [ -n "$PROXY_PID" ]; then
   fi
 fi
 
-wait $PID_V $PID_T $PID_R ${PID_D:+$PID_D}
+wait $PID_V $PID_T $PID_H ${PID_D:+$PID_D}
 say "런 전부 종료"
 [ -n "$PROXY_PID" ] && kill $PROXY_PID 2>/dev/null
 

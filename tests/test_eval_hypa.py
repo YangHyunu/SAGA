@@ -498,6 +498,18 @@ def test_hypa_step_resumes_after_last_summarized_memo(monkeypatch):
     assert len(data["summaries"]) == 1          # 예산 여유 → 추가 요약 없음
 
 
+def test_hypa_step_records_selection_in_metrics():
+    # 비차단 정리 #2: 요약 선택 결과가 data["metrics"]에 실려야 run2가 매 턴
+    # 저장하는 hypa-state json으로 사후 분석(캐시 흔들림)이 가능하다.
+    data = {"summaries": [{"text": "요약", "chatMemos": ["m0"],
+                           "isImportant": False}]}
+    hist = [{"role": "user", "content": "짧다"}]
+    mem, _, _, data, err = hypa.hypa_step(hist, 1000, S, data, None, 10**6, 4000)
+    assert err is None and mem is not None
+    assert data["metrics"]["selectedCount"] == 1
+    assert data["metrics"]["selectedChatMemos"] == ["m0"]
+
+
 def test_rrf_tie_keeps_insertion_order():
     # 동점이면 첫 등장 순서 유지 — JS Map 삽입순 대응 (inv-agent2 §2 주의)
     out2 = hypa.child_to_parent_rrf([], key=lambda c: c)
