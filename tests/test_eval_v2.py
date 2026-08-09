@@ -1032,3 +1032,30 @@ def test_prompts_override_rejects_unknown_key(tmp_path):
     p.write_text('{"NO_SUCH_PROMPT": "x"}', encoding="utf-8")
     with pytest.raises(KeyError):
         prompts.override_from(str(p))
+
+
+def test_prompts_override_reaches_judge_pass_call_site(tmp_path):
+    """override가 메타데이터(active())뿐 아니라 실제 호출부에도 닿는지 증명.
+
+    scoring.judge_pass는 모듈 상단 별칭(_JUDGE_SYS, import 시점에 값이
+    고정됨)이 아니라 prompts.JUDGE_SYS를 매 호출마다 점 접근으로 읽는다.
+    누군가 호출부를 별칭 읽기로 되돌리면 override_from을 걸어도 이 테스트가
+    실패해야 한다 — active()만 보면 그 회귀를 못 잡는다.
+    """
+    from benchmarks.eval import prompts
+    from benchmarks.eval.scoring import judge_pass
+    p = tmp_path / "ab-judge.json"
+    p.write_text('{"JUDGE_SYS": "OVERRIDDEN_JUDGE_SYS"}', encoding="utf-8")
+    before = prompts.JUDGE_SYS
+    captured = {}
+
+    def stub_llm(system, user):
+        captured["system"] = system
+        return "근거\nY"
+
+    try:
+        prompts.override_from(str(p))
+        judge_pass(stub_llm, "recall", "fact", "value", "question", "reply")
+        assert captured["system"] == "OVERRIDDEN_JUDGE_SYS"
+    finally:
+        prompts.JUDGE_SYS = before          # 모듈 전역 원복
