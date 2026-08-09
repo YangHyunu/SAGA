@@ -138,6 +138,164 @@ def _load_json(path: str) -> Dict:
     return json.loads(pathlib.Path(path).read_text())
 
 
+def _play_turn(i, utext, variant, history, session, key, call, hypa_S,
+               hypa_data, hypa_state, fixed_tokens, max_context, trim_budget,
+               kept_start_msg, preset, card, reroll_at, edit_at, turns,
+               total_rerolls):
+    # 턴 1회 실행+리롤: 와이어 조립 → 품질 리롤 → reroll_at/edit_at 재전송.
+    # hypa 요약 실패(herr)면 원래 run_once의 break 지점에서 조기 반환한다 —
+    # aborted 메시지를 채워 돌려주면 호출부가 루프를 끊는다(break 승격).
+    history.append({"role": "user", "content": utext})
+    memory_text = None
+    win_start = None
+    if variant == "hypa":
+        # hypa는 token_trim이 아니라 자기 slice로 자른다 — window/win_start
+        # 는 이 분기에서 안 읽힌다. 매 턴 전체 히스토리 토큰 카운트를
+        # 태우는 데드워크라 건너뛴다.
+        (memory_text, use_window, kept_start_msg, hypa_data,
+         herr) = hypa.hypa_step(history, fixed_tokens, hypa_S, hypa_data,
+                                hypa._summarize_call, max_context,
+                                MAX_TOKENS)
+        hypa_state.parent.mkdir(parents=True, exist_ok=True)
+        hypa_state.write_text(json.dumps(hypa_data, ensure_ascii=False,
+                                         indent=1))
+        if herr:
+            # 원본도 요청 자체를 실패시킨다 (hypav3.ts:263-274) — 병리 재현이지
+            # 하네스 버그가 아니다. 부분 결과를 저장하고 중단한다.
+            turns.append({"turn": i, "user": utext, "hypa_error": herr,
+                          "cost": 0.0})
+            aborted = f"hypa 요약 불가 T{i + 1}: {herr}"
+            return (None, use_window, win_start, kept_start_msg, hypa_data,
+                    total_rerolls, None, aborted)
+    else:
+        window, win_start = token_trim(history, trim_budget)
+        use_window = wire_history(variant, history, window)
+    msgs = build_wire(preset, card, use_window, memory=memory_text or "")
+    bad = check_wire_shape(msgs)
+    if bad:
+        raise SystemExit(f"와이어 형태 위반 T{i + 1}: {bad}")
+    # 품질 리롤: 거부·언어 드리프트·중복 응답(loop)은 실유저가 리롤로
+    # 걷어내는 응답이다. 남기면 이후 턴 전체가 오염된다 (디렉터 사칭·
+    # 영어 고착·자기표절).
+    prior_replies = [m["content"] for m in history[-6:]
+                      if m["role"] == "assistant"]
+    st, flaw_history = reroll_until_clean(
+        lambda: call(variant, session, key, msgs), prior_replies)
+    total_rerolls += abort_reroll_count(flaw_history)
+    history.append({"role": "assistant", "content": st["reply"]})
+    last_reply = st["reply"]
+
+    if i in reroll_at:                     # 리롤: 동일 요청 재전송
+        st2 = call(variant, session, key, msgs)
+        history[-1] = {"role": "assistant", "content": st2["reply"]}
+        last_reply = st2["reply"]
+        st["cost"] += st2["cost"]
+        st["reply"] = st2["reply"]         # 기록·추출은 히스토리와 같게
+    if i in edit_at:                       # 수정: user 텍스트 바꿔 재전송
+        history[-2]["content"] = utext + " (아니, 정정할게.)"
+        if variant == "hypa":
+            # 같은 턴의 재전송 — 요약을 다시 돌리지 않는다 (memo는 인덱스
+            # 기반이라 편집에도 불변, 창도 그대로다). token_trim은 여기서
+            # 안 쓰이는 데드워크라 건너뛴다.
+            use_window = history[:-1][kept_start_msg:]
+        else:
+            window, _ = token_trim(history[:-1], trim_budget)
+            use_window = wire_history(variant, history[:-1], window)
+        msgs2 = build_wire(preset, card, use_window,
+                           memory=memory_text or "")
+        st3 = call(variant, session, key, msgs2)
+        history[-1] = {"role": "assistant", "content": st3["reply"]}
+        last_reply = st3["reply"]
+        st["cost"] += st3["cost"]
+        st["reply"] = st3["reply"]
+
+    return (st, use_window, win_start, kept_start_msg, hypa_data,
+            total_rerolls, last_reply, "")
+
+
+def _record_probe(i, ptype, fact, wrong, utext, st, dir_sec, director,
+                  ledger, judge, card, variant, session, kept_start_msg,
+                  win_start, use_window, turns, probes):
+    # 프로브 계획+기록: extract_facts로 원장을 키워 미래 프로브 재료를 대고,
+    # 이번 턴이 프로브면 오라클+judge 이중 채점을 기록한다.
+    t_ext = time.time()
+    if ptype is None:
+        ledger.add(extract_facts(director, utext, st["reply"], i))
+    ext_sec = round(time.time() - t_ext, 1)
+
+    turns.append({"turn": i, "user": utext, **st,
+                  "sec_director": dir_sec, "sec_extract": ext_sec,
+                  "ptype": ptype})
+    if fact is not None:
+        o = oracle_pass(st["reply"], fact.value, wrong_value=wrong,
+                        char_name=card.get("name", ""))
+        j = judge_pass(judge, ptype, fact.text, fact.value, utext,
+                       st["reply"], wrong_value=wrong)
+        miss = "-"
+        # judge 파싱 실패(None)는 미스가 아니다 — 원인 분해에서 뺀다
+        if j["pass"] is False and variant == "dreaming":
+            miss = decompose_miss(DATA, session, fact)
+        probes.append({"turn": i, "ptype": ptype, "fact": fact.text,
+                       "value": fact.value, "wrong": wrong,
+                       "question": utext,
+                       "reply": st["reply"], "oracle": o,
+                       "judge": j["pass"], "why": j["why"],
+                       "miss_cause": miss,
+                       "distance_turns": i - fact.turn,
+                       # 나레이터가 실제 본 창 기준 — 창내 실패=LITM,
+                       # 창밖 실패=eviction. 풀 히스토리 변형은 항상 창내
+                       # (dreaming은 프록시가 압축했을 수 있어 상한값이다).
+                       # hypa는 token_trim이 아니라 자기 slice로 자른다.
+                       "in_window": (
+                           variant in _FULL_HISTORY
+                           or (hypa_in_window(fact.turn, kept_start_msg,
+                                              bool(card.get("greeting")))
+                               if variant == "hypa"
+                               else fact.turn >= win_start)),
+                       # 원본 턴은 evict돼도 서사 반복으로 값이 창 안에
+                       # 남을 수 있다 (실측: retrieval "렌" 452회,
+                       # "15년" 10회 — night2-deep-analysis.md). 문자열
+                       # 완전일치만 본다 — "250"/"이백오십" 같은 한글
+                       # 표기 변형은 놓친다 (알려진 한계, 과소탐지 방향).
+                       "value_in_window": any(
+                           fact.value in m["content"]
+                           for m in use_window),
+                       # 하드 차단·재시도는 무한루프 위험 — 로깅만.
+                       "drift_suspected": not _probe_mentions_fact_object(
+                           fact, utext)})
+
+
+def _collect_totals(variant, session, run_no, prompt_set, turns, probes,
+                    ledger, director, judge, hypa_cost0, hypa_truncated0,
+                    aborted):
+    # totals 집계: probes/turns에서 판정·비용을 합산해 최종 result를 조립.
+    passed = sum(1 for p in probes if p["judge"] is True)
+    unparsed = sum(1 for p in probes if p["judge"] is None)
+    result = {"variant": variant, "session": session, "run": run_no,
+              "model": MODEL, "prompt_set": prompt_set,
+              "turns": turns, "probes": probes,
+              "ledger": ledger.to_rows(),
+              "totals": {"probes": len(probes), "judge_pass": passed,
+                         "judge_unparsed": unparsed,
+                         "oracle_pass": sum(1 for p in probes if p["oracle"]),
+                         # 절단은 기억 실패로 오인된다 — 0인지 매 런 확인한다
+                         "truncated": sum(1 for t in turns
+                                          if t.get("finish") == "length"),
+                         "rerolls": sum(t.get("rerolls", 0) for t in turns),
+                         # 리롤 2회로도 못 걷어낸 병리 턴 — 0이어야 한다
+                         "flawed": sum(1 for t in turns if t.get("flaw")),
+                         "cost": round(sum(t["cost"] for t in turns), 4),
+                         "cost_director": round(director.cost, 4),
+                         "director_calls": director.calls,
+                         "cost_judge": round(judge.cost, 4),
+                         "judge_calls": judge.calls,
+                         # hypa 요약 콜 — 모듈 전역 누적이라 런 시작 대비 증분
+                         "cost_hypa": round(hypa.SUMMARY_COST - hypa_cost0, 4),
+                         "hypa_truncated": hypa.SUMMARY_TRUNCATED - hypa_truncated0,
+                         "aborted": aborted}}
+    return result
+
+
 def run_once(preset_path: str, card_path: str, variant: str, session: str,
              run_no: int, max_context: int, reroll_at: List[int],
              edit_at: List[int], ttl_wait: bool,
@@ -210,113 +368,20 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                 f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")
         dir_sec = round(time.time() - t_dir, 1)
 
-        history.append({"role": "user", "content": utext})
-        memory_text = None
-        if variant == "hypa":
-            # hypa는 token_trim이 아니라 자기 slice로 자른다 — window/win_start
-            # 는 이 분기에서 안 읽힌다. 매 턴 전체 히스토리 토큰 카운트를
-            # 태우는 데드워크라 건너뛴다.
-            (memory_text, use_window, kept_start_msg, hypa_data,
-             herr) = hypa.hypa_step(history, fixed_tokens, hypa_S, hypa_data,
-                                    hypa._summarize_call, max_context,
-                                    MAX_TOKENS)
-            hypa_state.parent.mkdir(parents=True, exist_ok=True)
-            hypa_state.write_text(json.dumps(hypa_data, ensure_ascii=False,
-                                             indent=1))
-            if herr:
-                # 원본도 요청 자체를 실패시킨다 (hypav3.ts:263-274) — 병리 재현이지
-                # 하네스 버그가 아니다. 부분 결과를 저장하고 중단한다.
-                turns.append({"turn": i, "user": utext, "hypa_error": herr,
-                              "cost": 0.0})
-                aborted = f"hypa 요약 불가 T{i + 1}: {herr}"
-                break
-        else:
-            window, win_start = token_trim(history, trim_budget)
-            use_window = wire_history(variant, history, window)
-        msgs = build_wire(preset, card, use_window, memory=memory_text or "")
-        bad = check_wire_shape(msgs)
-        if bad:
-            raise SystemExit(f"와이어 형태 위반 T{i + 1}: {bad}")
-        # 품질 리롤: 거부·언어 드리프트·중복 응답(loop)은 실유저가 리롤로
-        # 걷어내는 응답이다. 남기면 이후 턴 전체가 오염된다 (디렉터 사칭·
-        # 영어 고착·자기표절).
-        prior_replies = [m["content"] for m in history[-6:]
-                          if m["role"] == "assistant"]
-        st, flaw_history = reroll_until_clean(
-            lambda: call(variant, session, key, msgs), prior_replies)
-        total_rerolls += abort_reroll_count(flaw_history)
-        history.append({"role": "assistant", "content": st["reply"]})
-        last_reply = st["reply"]
+        (st, use_window, win_start, kept_start_msg, hypa_data,
+         total_rerolls, new_last_reply, turn_aborted) = _play_turn(
+            i, utext, variant, history, session, key, call, hypa_S,
+            hypa_data, hypa_state, fixed_tokens, max_context, trim_budget,
+            kept_start_msg, preset, card, reroll_at, edit_at, turns,
+            total_rerolls)
+        if turn_aborted:
+            aborted = turn_aborted
+            break
+        last_reply = new_last_reply
 
-        if i in reroll_at:                     # 리롤: 동일 요청 재전송
-            st2 = call(variant, session, key, msgs)
-            history[-1] = {"role": "assistant", "content": st2["reply"]}
-            last_reply = st2["reply"]
-            st["cost"] += st2["cost"]
-            st["reply"] = st2["reply"]         # 기록·추출은 히스토리와 같게
-        if i in edit_at:                       # 수정: user 텍스트 바꿔 재전송
-            history[-2]["content"] = utext + " (아니, 정정할게.)"
-            if variant == "hypa":
-                # 같은 턴의 재전송 — 요약을 다시 돌리지 않는다 (memo는 인덱스
-                # 기반이라 편집에도 불변, 창도 그대로다). token_trim은 여기서
-                # 안 쓰이는 데드워크라 건너뛴다.
-                use_window = history[:-1][kept_start_msg:]
-            else:
-                window, _ = token_trim(history[:-1], trim_budget)
-                use_window = wire_history(variant, history[:-1], window)
-            msgs2 = build_wire(preset, card, use_window,
-                               memory=memory_text or "")
-            st3 = call(variant, session, key, msgs2)
-            history[-1] = {"role": "assistant", "content": st3["reply"]}
-            last_reply = st3["reply"]
-            st["cost"] += st3["cost"]
-            st["reply"] = st3["reply"]
-
-        t_ext = time.time()
-        if ptype is None:
-            ledger.add(extract_facts(director, utext, st["reply"], i))
-        ext_sec = round(time.time() - t_ext, 1)
-
-        turns.append({"turn": i, "user": utext, **st,
-                      "sec_director": dir_sec, "sec_extract": ext_sec,
-                      "ptype": ptype})
-        if fact is not None:
-            o = oracle_pass(st["reply"], fact.value, wrong_value=wrong,
-                            char_name=card.get("name", ""))
-            j = judge_pass(judge, ptype, fact.text, fact.value, utext,
-                           st["reply"], wrong_value=wrong)
-            miss = "-"
-            # judge 파싱 실패(None)는 미스가 아니다 — 원인 분해에서 뺀다
-            if j["pass"] is False and variant == "dreaming":
-                miss = decompose_miss(DATA, session, fact)
-            probes.append({"turn": i, "ptype": ptype, "fact": fact.text,
-                           "value": fact.value, "wrong": wrong,
-                           "question": utext,
-                           "reply": st["reply"], "oracle": o,
-                           "judge": j["pass"], "why": j["why"],
-                           "miss_cause": miss,
-                           "distance_turns": i - fact.turn,
-                           # 나레이터가 실제 본 창 기준 — 창내 실패=LITM,
-                           # 창밖 실패=eviction. 풀 히스토리 변형은 항상 창내
-                           # (dreaming은 프록시가 압축했을 수 있어 상한값이다).
-                           # hypa는 token_trim이 아니라 자기 slice로 자른다.
-                           "in_window": (
-                               variant in _FULL_HISTORY
-                               or (hypa_in_window(fact.turn, kept_start_msg,
-                                                  bool(card.get("greeting")))
-                                   if variant == "hypa"
-                                   else fact.turn >= win_start)),
-                           # 원본 턴은 evict돼도 서사 반복으로 값이 창 안에
-                           # 남을 수 있다 (실측: retrieval "렌" 452회,
-                           # "15년" 10회 — night2-deep-analysis.md). 문자열
-                           # 완전일치만 본다 — "250"/"이백오십" 같은 한글
-                           # 표기 변형은 놓친다 (알려진 한계, 과소탐지 방향).
-                           "value_in_window": any(
-                               fact.value in m["content"]
-                               for m in use_window),
-                           # 하드 차단·재시도는 무한루프 위험 — 로깅만.
-                           "drift_suspected": not _probe_mentions_fact_object(
-                               fact, utext)})
+        _record_probe(i, ptype, fact, wrong, utext, st, dir_sec, director,
+                      ledger, judge, card, variant, session, kept_start_msg,
+                      win_start, use_window, turns, probes)
         if variant == "dreaming" and i in (total_turns // 3,
                                            2 * total_turns // 3):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
@@ -327,30 +392,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                        f"프로바이더 거부 반복, 런 중단")
             break
 
-    passed = sum(1 for p in probes if p["judge"] is True)
-    unparsed = sum(1 for p in probes if p["judge"] is None)
-    result = {"variant": variant, "session": session, "run": run_no,
-              "model": MODEL, "prompt_set": prompt_set,
-              "turns": turns, "probes": probes,
-              "ledger": ledger.to_rows(),
-              "totals": {"probes": len(probes), "judge_pass": passed,
-                         "judge_unparsed": unparsed,
-                         "oracle_pass": sum(1 for p in probes if p["oracle"]),
-                         # 절단은 기억 실패로 오인된다 — 0인지 매 런 확인한다
-                         "truncated": sum(1 for t in turns
-                                          if t.get("finish") == "length"),
-                         "rerolls": sum(t.get("rerolls", 0) for t in turns),
-                         # 리롤 2회로도 못 걷어낸 병리 턴 — 0이어야 한다
-                         "flawed": sum(1 for t in turns if t.get("flaw")),
-                         "cost": round(sum(t["cost"] for t in turns), 4),
-                         "cost_director": round(director.cost, 4),
-                         "director_calls": director.calls,
-                         "cost_judge": round(judge.cost, 4),
-                         "judge_calls": judge.calls,
-                         # hypa 요약 콜 — 모듈 전역 누적이라 런 시작 대비 증분
-                         "cost_hypa": round(hypa.SUMMARY_COST - hypa_cost0, 4),
-                         "hypa_truncated": hypa.SUMMARY_TRUNCATED - hypa_truncated0,
-                         "aborted": aborted}}
+    result = _collect_totals(variant, session, run_no, prompt_set, turns,
+                             probes, ledger, director, judge, hypa_cost0,
+                             hypa_truncated0, aborted)
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1))
