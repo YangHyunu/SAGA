@@ -44,10 +44,13 @@ from benchmarks.eval.prompts import (BEATS as _BEATS,  # noqa: F401
                                      DIRECT_SYS as _DIRECT_SYS,  # noqa: F401
                                      NPC_BEAT as _NPC_BEAT,  # noqa: F401
                                      UPDATE_BEAT as _UPDATE_BEAT)  # noqa: F401
+# transport 모듈 자체를 쓴다 — run_once의 call_fn 심은
+# transport.call_upstream을 기본값으로 참조한다(점 접근, 모듈 속성이라
+# monkeypatch.setattr(transport, "call_upstream", ...)가 걸린다). 나머지는
 # 별칭 재노출(이 파일 안에서는 일부만 쓰임) — 기존 테스트·스크립트가
-# run2._key, run2._call_upstream 등으로 참조한다.
-from benchmarks.eval import transport  # noqa: F401
-from benchmarks.eval.transport import (call_upstream as _call_upstream,
+# run2._key 등으로 참조한다.
+from benchmarks.eval import transport
+from benchmarks.eval.transport import (call_upstream as _call_upstream,  # noqa: F401
                                        call_upstream_once as _call_upstream_once,  # noqa: F401
                                        key as _key, make_director_llm,
                                        make_judge_llm, mk_llm as _mk_llm)  # noqa: F401
@@ -142,7 +145,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
              probe_every: int = PROBE_EVERY,
              call_fn: Optional[Callable[[str, str, str, List[Dict]], Dict]]
              = None) -> Dict:
-    call = call_fn or _call_upstream       # 심(seam) — 오프라인 테스트가 주입
+    call = call_fn or transport.call_upstream  # 심(seam) — 오프라인 테스트가 주입
     prompt_set = prompts.active()          # A/B 추적 — 이 런에 실제 쓰인 프롬프트 세트
     preset = decode_risup(preset_path)
     card = _load_json(card_path)
