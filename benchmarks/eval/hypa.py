@@ -20,6 +20,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 import httpx
 import tiktoken
 
+from benchmarks.eval import config, transport
+
 _ENC = tiktoken.get_encoding("o200k_base")
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -210,9 +212,8 @@ def mark_truncated() -> None:
 
 
 def _director_model() -> str:
-    """요약 모델 — run2 모듈 속성에서 호출 시점에 읽는다 (env 오버라이드 반영)."""
-    from benchmarks.eval import run2
-    return run2.DIRECTOR_MODEL
+    """요약 모델 — HYPA_SUMMARY_MODEL env, 기본 DIRECTOR_MODEL 상속."""
+    return transport.SUMMARY_MODEL
 
 
 def _sanitize(content: str) -> str:
@@ -306,11 +307,10 @@ def _summarize_call(messages: List[Dict[str, str]]) -> str:
 def _summarize_call_once(messages: List[Dict[str, str]]) -> str:
     """OpenRouter 직접 호출 (db.subModel = Gemini 3 Flash 계열)."""
     global SUMMARY_COST, SUMMARY_CALLS
-    from benchmarks.eval import run2
 
     r = httpx.post(
-        f"{run2.UPSTREAM}/chat/completions", timeout=120,
-        headers={"Authorization": f"Bearer {run2._key()}"},
+        f"{config.UPSTREAM}/chat/completions", timeout=120,
+        headers={"Authorization": f"Bearer {transport.key()}"},
         json={"model": _director_model(), "max_tokens": SUMMARY_MAX_TOKENS,
               "temperature": SUMMARY_TEMPERATURE, "messages": messages,
               "usage": {"include": True}})    # 없으면 usage에 cost가 안 실린다

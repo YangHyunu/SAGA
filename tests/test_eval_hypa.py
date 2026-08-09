@@ -5,7 +5,7 @@ import types
 import httpx
 import pytest
 
-from benchmarks.eval import hypa
+from benchmarks.eval import hypa, transport
 
 EXPORT = ("/Users/yanghyeon-u/Downloads/뮈토스6.2/🏺뮈토스 프롬프트 하이파/"
           "hypaV3_export_뮈토스 하이파 V5.json")
@@ -156,10 +156,9 @@ def test_summarize_rejects_empty_response():
 
 def test_cache_key_changes_with_summarizer_model(monkeypatch):
     # 캐시는 디스크에 영구 잔류한다 — 모델을 바꾸면 키도 바뀌어야 한다
-    from benchmarks.eval import run2
     batch = [_chat("user", "모델 민감도", memo="m0")]
     before = hypa.summary_cache_key(batch, S)
-    monkeypatch.setattr(run2, "DIRECTOR_MODEL", "some/other-model")
+    monkeypatch.setattr(transport, "SUMMARY_MODEL", "some/other-model")
     assert hypa.summary_cache_key(batch, S) != before
 
 
@@ -189,9 +188,8 @@ _OK_BODY = {"choices": [{"message": {"content": "요약"}, "finish_reason": "sto
 
 def test_summarize_call_retries_transient_5xx(monkeypatch):
     # 502 한 방이 100턴 런을 죽인다 — run2._call_upstream과 같은 재시도 정책
-    from benchmarks.eval import run2
     seq = [_resp(502), _resp(503), _resp(200, _OK_BODY)]
-    monkeypatch.setattr(run2, "_key", lambda: "k")
+    monkeypatch.setattr(transport, "key", lambda: "k")
     monkeypatch.setattr(hypa.httpx, "post", lambda *a, **k: seq.pop(0))
     monkeypatch.setattr(hypa.time, "sleep", lambda s: None)
     assert hypa._summarize_call([{"role": "user", "content": "x"}]) == "요약"
@@ -200,10 +198,9 @@ def test_summarize_call_retries_transient_5xx(monkeypatch):
 
 def test_summarize_call_flags_length_truncation(monkeypatch):
     # 프로덕션 경로가 finish_reason == "length"를 실제로 잡아내는지
-    from benchmarks.eval import run2
     body = {"choices": [{"message": {"content": "잘림"}, "finish_reason": "length"}],
             "usage": {"cost": 0.0}}
-    monkeypatch.setattr(run2, "_key", lambda: "k")
+    monkeypatch.setattr(transport, "key", lambda: "k")
     monkeypatch.setattr(hypa.httpx, "post", lambda *a, **k: _resp(200, body))
     before = hypa.SUMMARY_TRUNCATED
     assert hypa._summarize_call([{"role": "user", "content": "x"}]) == "잘림"
@@ -213,7 +210,6 @@ def test_summarize_call_flags_length_truncation(monkeypatch):
 def test_summarize_call_pins_params_and_accumulates_cost(monkeypatch):
     # max_tokens/temperature/모델/usage.include가 바뀌면 여기서 잡는다 —
     # usage.include 없으면 OpenRouter가 cost를 안 실어 SUMMARY_COST가 항상 0
-    from benchmarks.eval import run2
     captured = {}
 
     def post(url, **kw):
@@ -222,7 +218,7 @@ def test_summarize_call_pins_params_and_accumulates_cost(monkeypatch):
                                         "finish_reason": "stop"}],
                            "usage": {"cost": 0.0123}})
 
-    monkeypatch.setattr(run2, "_key", lambda: "k")
+    monkeypatch.setattr(transport, "key", lambda: "k")
     monkeypatch.setattr(hypa.httpx, "post", post)
     monkeypatch.setattr(hypa, "SUMMARY_COST", 0.0)
     assert hypa._summarize_call([{"role": "user", "content": "x"}]) == "요약"
@@ -235,9 +231,8 @@ def test_summarize_call_pins_params_and_accumulates_cost(monkeypatch):
 
 
 def test_summarize_call_reraises_4xx_immediately(monkeypatch):
-    from benchmarks.eval import run2
     calls = []
-    monkeypatch.setattr(run2, "_key", lambda: "k")
+    monkeypatch.setattr(transport, "key", lambda: "k")
     monkeypatch.setattr(hypa.httpx, "post",
                         lambda *a, **k: calls.append(1) or _resp(400))
     monkeypatch.setattr(hypa.time, "sleep", lambda s: None)

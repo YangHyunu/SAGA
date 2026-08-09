@@ -34,14 +34,12 @@ import shutil
 import time
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-import httpx
 import tiktoken
 
-from benchmarks.eval.config import (DATA, DIRECTOR_MODEL, EVAL_DIR, HYPA_EXPORT,
-                                    JUDGE_MODEL, MAX_CONTEXT, MAX_RUN_REROLLS,
-                                    MAX_TOKENS, MODEL, NPC_EVENT_RETRY,
-                                    NPC_EVENT_TURN, NPC_NAME, PROBE_EVERY, PROXY,
-                                    ROOT, TOGGLES, TURNS, UPDATE_EVENTS, UPSTREAM)
+from benchmarks.eval.config import (DATA, EVAL_DIR, HYPA_EXPORT, MAX_CONTEXT,
+                                    MAX_RUN_REROLLS, MAX_TOKENS, MODEL,
+                                    NPC_EVENT_RETRY, NPC_EVENT_TURN, NPC_NAME,
+                                    PROBE_EVERY, TOGGLES, TURNS, UPDATE_EVENTS)
 from benchmarks.eval import prompts
 # 별칭 재노출(이 파일 안에서는 안 쓰임) — 기존 테스트(run2._DIRECT_SYS 등)가
 # 이 이름으로 내용을 검증한다. 실제 호출부는 override_from 반영을 위해
@@ -50,10 +48,17 @@ from benchmarks.eval.prompts import (BEATS as _BEATS,  # noqa: F401
                                      DIRECT_SYS as _DIRECT_SYS,  # noqa: F401
                                      NPC_BEAT as _NPC_BEAT,  # noqa: F401
                                      UPDATE_BEAT as _UPDATE_BEAT)  # noqa: F401
+# 별칭 재노출(이 파일 안에서는 일부만 쓰임) — 기존 테스트·스크립트가
+# run2._key, run2._call_upstream 등으로 참조한다.
+from benchmarks.eval import transport  # noqa: F401
+from benchmarks.eval.transport import (call_upstream as _call_upstream,
+                                       call_upstream_once as _call_upstream_once,  # noqa: F401
+                                       key as _key, make_director_llm,
+                                       make_judge_llm, mk_llm as _mk_llm)  # noqa: F401
 
 _ENC = tiktoken.get_encoding("o200k_base")
 
-from benchmarks.eval.director import (Ledger, LlmFn, extract_facts,
+from benchmarks.eval.director import (Ledger, extract_facts,
                                       make_false_premise, make_probe,
                                       _probe_mentions_fact_object,
                                       probe_plan)
@@ -61,40 +66,6 @@ from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
 from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
 from benchmarks.eval import hypa
-
-
-def _key() -> str:
-    for line in (ROOT / ".env").read_text().splitlines():
-        if line.startswith("DREAMING_UPSTREAM_KEY="):
-            return line.split("=", 1)[1].strip().strip('"')
-    raise SystemExit("no DREAMING_UPSTREAM_KEY in .env")
-
-
-def _mk_llm(model: str, temperature: float) -> LlmFn:
-    client = httpx.Client(base_url=UPSTREAM, timeout=120,
-                          headers={"Authorization": f"Bearer {_key()}"})
-
-    def call(system: str, user: str) -> str:
-        r = client.post("/chat/completions", json={
-            "model": model, "max_tokens": 400, "temperature": temperature,
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user}]})
-        r.raise_for_status()
-        data = r.json()
-        u = data.get("usage") or {}
-        call.cost += u.get("cost") or 0.0      # 부대비용도 잰다 — 나레이터만
-        call.calls += 1                        # 재면 총비용을 과소보고한다
-        return data["choices"][0]["message"]["content"] or ""
-    call.cost, call.calls = 0.0, 0
-    return call
-
-
-def make_judge_llm() -> LlmFn:
-    return _mk_llm(JUDGE_MODEL, 0.0)
-
-
-def make_director_llm() -> LlmFn:
-    return _mk_llm(DIRECTOR_MODEL, 0.7)
 
 
 def _count(text: str) -> int:
@@ -182,51 +153,6 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
     # 해제로 동작한다 — 중간 system(req-005의 2534자)도, 연속 user(req-006)도
     # 그대로 실린다. 둘 다 끄지 않으면 우리 와이어만 다른 모양이 된다.
     return reformat(msgs, fold_mid_system=False, alternate=False)
-
-
-def _call_upstream(variant: str, session: str, key: str,
-                   msgs: List[Dict]) -> Dict:
-    """일시 오류(5xx·타임아웃)는 재시도 — 한 번의 502가 100턴 런을 죽였다
-    (night2-drm 실측: 프록시 업스트림 ReadTimeout → 502 → 즉사)."""
-    for attempt in range(3):
-        try:
-            return _call_upstream_once(variant, session, key, msgs)
-        except (httpx.HTTPStatusError, httpx.TransportError) as e:
-            if (isinstance(e, httpx.HTTPStatusError)
-                    and e.response.status_code < 500):
-                raise                          # 4xx는 우리 잘못 — 즉시 전파
-            if attempt == 2:
-                raise
-            time.sleep(15 * (attempt + 1))
-    raise RuntimeError("unreachable")
-
-
-def _call_upstream_once(variant: str, session: str, key: str,
-                        msgs: List[Dict]) -> Dict:
-    t0 = time.time()
-    if variant == "dreaming":
-        r = httpx.post(PROXY + "/v1/chat/completions", timeout=300,
-                       headers={"x-dreaming-session-id": session},
-                       json={"model": MODEL, "max_tokens": MAX_TOKENS,
-                             "messages": msgs})
-    else:
-        r = httpx.post(UPSTREAM + "/chat/completions", timeout=300,
-                       headers={"Authorization": f"Bearer {key}"},
-                       json={"model": MODEL, "max_tokens": MAX_TOKENS,
-                             "messages": msgs, "usage": {"include": True}})
-    r.raise_for_status()
-    d = r.json()
-    u = d.get("usage", {})
-    det = u.get("prompt_tokens_details", {})
-    cached = det.get("cached_tokens", 0) or u.get("prompt_cache_hit_tokens", 0)
-    choice = d["choices"][0]
-    # content는 None일 수 있다 (프로바이더 필터 등) — 빈 응답은 리롤 게이트가
-    # language_drift로 걷어내도록 ""로 강제한다 (실측: pilot80b가 None에 죽음)
-    return {"reply": choice["message"]["content"] or "",
-            "finish": choice.get("finish_reason", ""),
-            "prompt": u.get("prompt_tokens", 0), "cached": cached,
-            "completion": u.get("completion_tokens", 0),
-            "cost": u.get("cost", 0.0), "sec": round(time.time() - t0, 1)}
 
 
 # 실유저가 리롤로 걷어내는 응답 — 남겨두면 디렉터가 캐릭터 대사를 지어내며
