@@ -87,7 +87,7 @@ prefix = os.environ["SESSION_PREFIX"]
 tot = 0.0
 for p in sorted(glob.glob(f"dreaming_data/eval/v2-{prefix}-*-r0-run0.json")):
     r = json.load(open(p)); t = r["totals"]
-    c = t["cost"] + t.get("cost_director", 0) + t.get("cost_judge", 0)
+    c = t["cost"] + t.get("cost_lucid", t.get("cost_director", 0)) + t.get("cost_judge", 0)
     tot += c
     litm = [x for x in r["probes"] if x.get("in_window")]
     ev = [x for x in r["probes"] if not x.get("in_window")]

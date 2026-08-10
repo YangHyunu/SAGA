@@ -25,7 +25,7 @@ import re
 from typing import Dict, List, Optional
 
 from benchmarks.eval import prompts
-from benchmarks.eval.director import DirFact, LlmFn
+from benchmarks.eval.lucid import DirFact, LlmFn
 from dreaming.numerals import korean_spellings
 
 _WS = re.compile(r"\s+")

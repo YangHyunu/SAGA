@@ -36,6 +36,7 @@ from benchmarks.eval.config import (DATA, EVAL_DIR, HYPA_EXPORT, MAX_CONTEXT,
                                     MAX_REROLL_STREAK, MAX_TOKENS, MODEL,
                                     NPC_EVENT_RETRY, NPC_EVENT_TURN, NPC_NAME,
                                     PROBE_EVERY, TOGGLES, TURNS, UPDATE_EVENTS)
+from benchmarks.eval import config
 from benchmarks.eval import prompts
 # 별칭 재노출(이 파일 안에서는 안 쓰임) — 기존 테스트(run2._DIRECT_SYS 등)가
 # 이 이름으로 내용을 검증한다. 실제 호출부는 override_from 반영을 위해
@@ -54,7 +55,7 @@ from benchmarks.eval.prompts import (BEATS as _BEATS,  # noqa: F401
 # 쓰임) — 기존 테스트·스크립트가 run2._key 등으로 참조한다.
 from benchmarks.eval import transport
 from benchmarks.eval.transport import (call_upstream as _call_upstream,  # noqa: F401
-                                       key as _key, make_director_llm,
+                                       key as _key, make_lucid_llm,
                                        make_judge_llm)
 # 별칭 재노출 — 기존 테스트가 run2._count, run2._FULL_HISTORY 등으로 참조.
 from benchmarks.eval.windowing import (FULL_HISTORY as _FULL_HISTORY,
@@ -66,10 +67,10 @@ from benchmarks.eval.quality import (abort_reroll_count,
                                      reply_flaw,  # noqa: F401
                                      reroll_until_clean)
 
-from benchmarks.eval.director import (DirFact, Ledger, LlmFn, extract_facts,
-                                      make_false_premise, make_probe,
-                                      _probe_mentions_fact_object,
-                                      probe_plan)
+from benchmarks.eval.lucid import (DirFact, Ledger, LlmFn, extract_facts,
+                                   make_false_premise, make_probe,
+                                   _probe_mentions_fact_object,
+                                   probe_plan)
 from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
 from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
@@ -236,7 +237,7 @@ def _play_turn(i: int, utext: str, variant: str, history: List[Dict],
 
 def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
                   wrong: str, utext: str, st: Dict, dir_sec: float,
-                  director: LlmFn, ledger: Ledger, judge: LlmFn, card: Dict,
+                  lucid: LlmFn, ledger: Ledger, judge: LlmFn, card: Dict,
                   variant: str, session: str, kept_start_msg: int,
                   win_start: Optional[int], use_window: List[Dict],
                   turns: List[Dict], probes: List[Dict]) -> None:
@@ -244,11 +245,11 @@ def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
     # 이번 턴이 프로브면 오라클+judge 이중 채점을 기록한다.
     t_ext = time.time()
     if ptype is None:
-        ledger.add(extract_facts(director, utext, st["reply"], i))
+        ledger.add(extract_facts(lucid, utext, st["reply"], i))
     ext_sec = round(time.time() - t_ext, 1)
 
     turns.append({"turn": i, "user": utext, **st,
-                  "sec_director": dir_sec, "sec_extract": ext_sec,
+                  "sec_lucid": dir_sec, "sec_extract": ext_sec,
                   "ptype": ptype})
     if fact is not None:
         o = oracle_pass(st["reply"], fact.value, wrong_value=wrong,
@@ -291,7 +292,7 @@ def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
 
 def _collect_totals(variant: str, session: str, run_no: int,
                     prompt_set: Dict[str, object], turns: List[Dict],
-                    probes: List[Dict], ledger: Ledger, director: LlmFn,
+                    probes: List[Dict], ledger: Ledger, lucid: LlmFn,
                     judge: LlmFn, hypa_cost0: float, hypa_truncated0: int,
                     aborted: str) -> Dict:
     # totals 집계: probes/turns에서 판정·비용을 합산해 최종 result를 조립.
@@ -311,8 +312,9 @@ def _collect_totals(variant: str, session: str, run_no: int,
                          # 리롤 2회로도 못 걷어낸 병리 턴 — 0이어야 한다
                          "flawed": sum(1 for t in turns if t.get("flaw")),
                          "cost": round(sum(t["cost"] for t in turns), 4),
-                         "cost_director": round(director.cost, 4),
-                         "director_calls": director.calls,
+                         "cost_lucid": round(lucid.cost, 4),
+                         "lucid_calls": lucid.calls,
+                         "lucid_model": config.LUCID_MODEL,
                          "cost_judge": round(judge.cost, 4),
                          "judge_calls": judge.calls,
                          # hypa 요약 콜 — 모듈 전역 누적이라 런 시작 대비 증분
@@ -334,7 +336,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     preset = decode_risup(preset_path)
     card = _load_json(card_path)
     key = _key()
-    director = make_director_llm()
+    lucid = make_lucid_llm()
     judge = make_judge_llm()
     ledger = Ledger()
     history: List[Dict] = []
@@ -376,10 +378,10 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             if plan:
                 _, fact = plan[0]
         if fact is not None and ptype == "false":
-            utext, wrong = make_false_premise(director, fact,
+            utext, wrong = make_false_premise(lucid, fact,
                                               scene=last_reply, style=few_shot)
         elif fact is not None:
-            utext = make_probe(director, fact,
+            utext = make_probe(lucid, fact,
                                scene=last_reply, style=few_shot)
         else:
             ptype = None                       # eligible 없으면 필러로 강등
@@ -393,7 +395,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             npc_due = (i == NPC_EVENT_TURN
                        or (NPC_EVENT_TURN < i <= NPC_EVENT_RETRY
                            and not npc_in_reply))
-            utext = director(
+            utext = lucid(
                 dir_sys + f"\n[작품 설정]\n{card.get('description', '')[:2000]}",
                 f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")
         dir_sec = round(time.time() - t_dir, 1)
@@ -417,7 +419,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                          else 0)
 
         _record_probe(i=i, ptype=ptype, fact=fact, wrong=wrong, utext=utext,
-                      st=st, dir_sec=dir_sec, director=director,
+                      st=st, dir_sec=dir_sec, lucid=lucid,
                       ledger=ledger, judge=judge, card=card, variant=variant,
                       session=session, kept_start_msg=kept_start_msg,
                       win_start=win_start, use_window=use_window,
@@ -434,7 +436,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
 
     result = _collect_totals(variant=variant, session=session, run_no=run_no,
                              prompt_set=prompt_set, turns=turns,
-                             probes=probes, ledger=ledger, director=director,
+                             probes=probes, ledger=ledger, lucid=lucid,
                              judge=judge, hypa_cost0=hypa_cost0,
                              hypa_truncated0=hypa_truncated0,
                              aborted=aborted)
@@ -478,10 +480,10 @@ def main() -> None:
                      args.max_context, reroll, edit, args.ttl_wait,
                      args.turns, args.probe_every)
         t = r["totals"]
-        grand = (t["cost"] + t.get("cost_director", 0) + t.get("cost_judge", 0)
+        grand = (t["cost"] + t.get("cost_lucid", 0) + t.get("cost_judge", 0)
                  + t.get("cost_hypa", 0))
         print(f"[run{n}] {t['judge_pass']}/{t['probes']} "
-              f"나레이터 ${t['cost']} + 디렉터 ${t.get('cost_director', 0)} "
+              f"나레이터 ${t['cost']} + Lucid ${t.get('cost_lucid', 0)} "
               f"+ judge ${t.get('cost_judge', 0)} "
               f"+ hypa ${t.get('cost_hypa', 0)} = ${round(grand, 4)}",
               flush=True)

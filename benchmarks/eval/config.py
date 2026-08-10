@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DATA = ROOT / "dreaming_data"
@@ -12,8 +13,18 @@ UPSTREAM = os.environ.get("DREAMING_EVAL_UPSTREAM",
 MODEL = os.environ.get("DREAMING_EVAL_MODEL", "deepseek/deepseek-v4-pro")
 JUDGE_MODEL = os.environ.get("DREAMING_EVAL_JUDGE",
                              "anthropic/claude-sonnet-4.5")
-DIRECTOR_MODEL = os.environ.get("DREAMING_EVAL_DIRECTOR",
-                                "google/gemini-3-flash-preview")
+_LUCID_ENV = os.environ.get("DREAMING_EVAL_LUCID")
+_OLD_DIRECTOR_ENV = os.environ.get("DREAMING_EVAL_DIRECTOR")
+if _LUCID_ENV is not None:
+    LUCID_MODEL = _LUCID_ENV
+elif _OLD_DIRECTOR_ENV is not None:
+    # 구 env 폴백 — 셸에 남은 DREAMING_EVAL_DIRECTOR export가 조용히 기본
+    # 모델로 떨어뜨려 런 전체가 다른 모델로 도는 사고를 막는다.
+    print("DREAMING_EVAL_LUCID 미설정 — 구 env DREAMING_EVAL_DIRECTOR로 "
+         "폴백함 (권장: DREAMING_EVAL_LUCID로 이전)", file=sys.stderr)
+    LUCID_MODEL = _OLD_DIRECTOR_ENV
+else:
+    LUCID_MODEL = "google/gemini-3-flash-preview"
 HYPA_EXPORT = os.environ.get(
     "DREAMING_EVAL_HYPA_EXPORT",
     str(pathlib.Path.home() / "Downloads" / "뮈토스6.2"

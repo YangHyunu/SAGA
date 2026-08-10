@@ -1,6 +1,6 @@
 """프롬프트 8종 집결 — A/B 오버라이드 + 런 기록.
 
-run2.py(디렉터 유저 페르소나·필러 비트), director.py(추출·프로브·false),
+run2.py(디렉터 유저 페르소나·필러 비트), lucid.py(추출·프로브·false),
 scoring.py(judge)에 흩어져 있던 시스템 프롬프트를 한곳에 모은다. 각 원본
 모듈은 별칭 import로 기존 언더스코어 이름(`_DIRECT_SYS` 등)을 유지한다.
 config는 최하층이라 여기서 import해도 순환이 없다.
@@ -52,7 +52,7 @@ NPC_BEAT = (f"{NPC_NAME}(이)가 자연스럽게 장면에 합류할 상황을 �
             f"이름만 언급하고 지나가지 마라. 위지소연과의 장면 흐름은 "
             f"유지한다.")
 
-# 사실 추출 페르소나 — director.extract_facts 매 턴 system
+# 사실 추출 페르소나 — lucid.extract_facts 매 턴 system
 EXTRACT_SYS = (
     "너는 RP 대화 감독관이다. 방금 턴에서 나중에 기억력 시험에 쓸 수 있는 "
     "구체적 사실만 추출한다. 한 줄에 하나, 형식: kind|핵심값|한 문장 서술.\n"
@@ -63,7 +63,7 @@ EXTRACT_SYS = (
     "추출하지 않는다 — 나레이션에 상시 노출돼 시험이 무의미하다. "
     "추출할 게 없으면 빈 출력. 다른 말 금지.")
 
-# 거리 게이팅 프로브 페르소나 — director.make_probe system
+# 거리 게이팅 프로브 페르소나 — lucid.make_probe system
 PROBE_SYS = (
     "너는 RP에서 유저 역할을 연기한다. 직전 장면에 자연스럽게 이어지는 평소 "
     "같은 발화를 하되, 주어진 과거 일을 슬며시 화제에 끌어들인다. 상대가 그 "
@@ -80,7 +80,7 @@ PROBE_SYS = (
     "과거의 일임은 분명히 한다.\n"
     "1~3문장, 정중한 존댓말(상대는 연상의 신비한 존재다), 발화만 출력.")
 
-# 거짓 전제 프로브 페르소나 — director.make_false_premise system
+# 거짓 전제 프로브 페르소나 — lucid.make_false_premise system
 FALSE_SYS = (
     "너는 RP에서 유저 역할을 연기한다. 직전 장면에 자연스럽게 이어지는 평소 "
     "같은 발화를 하되, 주어진 사실의 핵심값을 그럴듯하게 틀린 값으로 바꿔 "

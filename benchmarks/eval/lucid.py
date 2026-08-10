@@ -1,4 +1,4 @@
-"""디렉터: 동적 사실 추출 + 거리 게이팅 프로브.
+"""Lucid(유저 시뮬레이터): 동적 사실 추출 + 거리 게이팅 프로브.
 
 The Seed DIRECTOR 방식 (EVAL2 §3): 사실을 미리 심지 않고, 롤플레이가 자연히
 만든 사실(가격·인명·관계·사건)을 턴마다 추출해 원장에 쌓고, 가시 창 밖으로
@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 from benchmarks.eval import prompts
-# 별칭 재노출 — 기존 테스트(director._PROBE_SYS 등)가 이 이름으로 내용을
+# 별칭 재노출 — 기존 테스트(lucid._PROBE_SYS 등)가 이 이름으로 내용을
 # 검증한다. 실제 호출부는 override_from이 반영되도록 prompts.X(점 접근)를
 # 쓴다 — 이 별칭은 이 파일 안에서는 안 쓰인다 (재노출 목적).
 from benchmarks.eval.prompts import (EXTRACT_SYS as _EXTRACT_SYS,  # noqa: F401

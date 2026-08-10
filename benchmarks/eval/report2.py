@@ -120,7 +120,7 @@ def aggregate(results: List[Dict]) -> Dict:
 
 
 def render(agg: Dict, results: List[Dict]) -> str:
-    lines = ["# 디렉터 벤치 v2 결과", ""]
+    lines = ["# Lucid 벤치 v2 결과", ""]
     lines.append("| variant | " + " | ".join(_TYPES) + " | $ (mean) |")
     lines.append("|" + "---|" * (len(_TYPES) + 2))
     for variant, a in sorted(agg.items()):

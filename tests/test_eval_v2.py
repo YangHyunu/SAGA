@@ -1,7 +1,7 @@
 """평가 v2 — 충실도/디렉터 순수 함수 (EVAL2.md, 실캡처 형태 기준)."""
 import json
 
-from benchmarks.eval.director import (
+from benchmarks.eval.lucid import (
     DirFact,
     Ledger,
     eligible,
@@ -39,7 +39,7 @@ def test_extract_facts_parses_lines_and_skips_garbage():
 
 def test_extract_prompt_demands_noun_values():
     # 파일럿 50턴: 값 "시장에 가기로 함"(문장형)이 recent 대조군을 오판시킴
-    from benchmarks.eval.director import _EXTRACT_SYS
+    from benchmarks.eval.lucid import _EXTRACT_SYS
     assert "명사형" in _EXTRACT_SYS and "문장형" in _EXTRACT_SYS
 
 
@@ -494,7 +494,7 @@ def test_probe_schedule_rotates_all_types_on_long_run():
 def _res(variant, run, ok):
     return {"variant": variant, "run": run, "session": "s", "model": "m",
             "turns": [{"turn": 0, "cost": 0.01, "sec": 1.0,
-                       "sec_director": 0.5, "sec_extract": 0.3,
+                       "sec_lucid": 0.5, "sec_extract": 0.3,
                        "ptype": None, "user": "u", "reply": "r",
                        "prompt": 100, "cached": 50}],
             "ledger": [],
@@ -726,19 +726,19 @@ def test_aggregate_excludes_oracle_na_from_rates():
 
 def test_probe_prompt_forbids_time_anchoring():
     """'방금 뭐라고 했지?' — 18턴 전 일을 방금이라 부르는 오류 방지."""
-    from benchmarks.eval.director import _PROBE_SYS
+    from benchmarks.eval.lucid import _PROBE_SYS
     assert "방금" in _PROBE_SYS and "시점" in _PROBE_SYS
 
 
 def test_probe_prompt_forbids_ambiguous_referent():
     """T19 실측: '그게 누구였더라' — 지시대상이 모호해 무엇을 묻는지 불명."""
-    from benchmarks.eval.director import _PROBE_SYS
+    from benchmarks.eval.lucid import _PROBE_SYS
     assert "지시대상" in _PROBE_SYS
 
 
 def test_probe_mentions_fact_object_catches_real_drift_case():
     """T49 실측: '저고리' → '옷감' 대상 명사 치환 드리프트 재현."""
-    from benchmarks.eval.director import DirFact, _probe_mentions_fact_object
+    from benchmarks.eval.lucid import DirFact, _probe_mentions_fact_object
     fact = DirFact(fid="x", kind="exact", value="분홍색",
                    text="소연은 분홍색이 섞인 한복 저고리를 입고 있다.", turn=10)
     drifted = "그때 그 옷감 색이 참 곱다고 생각했는데..."      # 실측 T49 재현
@@ -749,13 +749,13 @@ def test_probe_mentions_fact_object_catches_real_drift_case():
 
 def test_probe_prompt_requires_vague_past_anchor():
     """'그때'·'처음에' 같은 막연한 과거 지시어를 강제해 지시대상 모호성도 줄인다."""
-    from benchmarks.eval.director import _PROBE_SYS
+    from benchmarks.eval.lucid import _PROBE_SYS
     assert "그때" in _PROBE_SYS and "처음에" in _PROBE_SYS
 
 
 def test_extract_prompt_excludes_self_appearance_facts():
     """vanilla '회색 눈동자' 151회/98턴 — 상시 노출 신체 특징은 시험 무의미."""
-    from benchmarks.eval.director import _EXTRACT_SYS
+    from benchmarks.eval.lucid import _EXTRACT_SYS
     assert "외모" in _EXTRACT_SYS and "신체 특징" in _EXTRACT_SYS
 
 
@@ -782,7 +782,7 @@ def test_recent_dialogue_gives_last_pairs_with_roles():
     assert "질문3" in ctx and "응답4" in ctx and "질문2" not in ctx
 
 
-def test_director_sys_forbids_card_knowledge_preemption():
+def test_lucid_sys_forbids_card_knowledge_preemption():
     from benchmarks.eval.run2 import _DIRECT_SYS
     assert "먼저 입에 올리지" in _DIRECT_SYS
 
@@ -811,7 +811,7 @@ def test_reply_flaw_catches_preset_guard_leak():
     assert reply_flaw(leaked) == "guard_leak"
 
 
-def test_director_sys_forbids_character_impersonation():
+def test_lucid_sys_forbids_character_impersonation():
     from benchmarks.eval.run2 import _DIRECT_SYS
     assert "대신 쓰지 마라" in _DIRECT_SYS
 
@@ -982,16 +982,16 @@ def test_call_upstream_retries_transient_5xx(monkeypatch):
     assert calls["n"] == 1                     # 재시도 없음
 
 
-def test_director_prompts_use_polite_speech():
+def test_lucid_prompts_use_polite_speech():
     # 유저 피드백: 렌(27)이 연상 신녀(31)에게 첫만남부터 반말 — 부자연.
     # 디렉터·프로브·오염 프롬프트 전부 존댓말로 통일한다.
     from benchmarks.eval.run2 import _DIRECT_SYS
-    from benchmarks.eval.director import _PROBE_SYS, _FALSE_SYS
+    from benchmarks.eval.lucid import _PROBE_SYS, _FALSE_SYS
     for sys_prompt in (_DIRECT_SYS, _PROBE_SYS, _FALSE_SYS):
         assert "존댓말" in sys_prompt and "반말 채팅체" not in sys_prompt
 
 
-def test_director_sys_keeps_introduced_npcs():
+def test_lucid_sys_keeps_introduced_npcs():
     # 유저 피드백: 등장한 NPC(당채련)를 한 턴 만에 흘려보냄 — 실제 유저라면
     # 상호작용한다. 무시·조기 퇴장 금지 규칙.
     from benchmarks.eval.run2 import _DIRECT_SYS
@@ -1123,7 +1123,7 @@ def test_run_once_offline_with_fake_narrator(tmp_path, monkeypatch):
                 "cached": 0, "cost": 0.0, "sec": 0.1}
 
     def _stub_llm(reply):
-        # totals가 director.cost/.calls, judge.cost/.calls를 읽는다 —
+        # totals가 lucid.cost/.calls, judge.cost/.calls를 읽는다 —
         # 맨 람다는 이 속성이 없어 AttributeError로 죽는다.
         def f(system, user):
             f.calls += 1
@@ -1132,11 +1132,11 @@ def test_run_once_offline_with_fake_narrator(tmp_path, monkeypatch):
         return f
 
     # run_once 본문은 run2 모듈 전역(임포트 시점 바인딩)을 참조한다 — 다른
-    # 시임(make_director_llm/EVAL_DIR)과 같은 이유로 transport.key가 아니라
+    # 시임(make_lucid_llm/EVAL_DIR)과 같은 이유로 transport.key가 아니라
     # run2._key를 패치해야 실제로 걸린다. (안 하면 로컬 .env의 진짜 키를
     # 읽어 시도하고, .env가 없는 환경에선 SystemExit로 죽는다.)
     monkeypatch.setattr(run2, "_key", lambda: "offline")
-    monkeypatch.setattr(run2, "make_director_llm",
+    monkeypatch.setattr(run2, "make_lucid_llm",
                         lambda: _stub_llm("장터를 함께 걷자고 말한다"))
     monkeypatch.setattr(run2, "make_judge_llm", lambda: _stub_llm("PASS"))
     monkeypatch.setattr(run2, "EVAL_DIR", tmp_path)
@@ -1162,7 +1162,7 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
     반환하고, run_once(run2.py:394-396)가 그 자리에서 break한다.
 
     test_run_once_offline_with_fake_narrator와 같은 글롭+skip·call_fn/
-    director·judge 팩토리·EVAL_DIR monkeypatch 패턴을 재사용하고,
+    lucid·judge 팩토리·EVAL_DIR monkeypatch 패턴을 재사용하고,
     variant만 "hypa"로 바꿔 hypa.hypa_step을 항상 에러를 내는 스텁으로
     교체한다.
     """
@@ -1185,7 +1185,7 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
                 "cached": 0, "cost": 0.0, "sec": 0.1}
 
     def _stub_llm(reply):
-        # totals가 director.cost/.calls, judge.cost/.calls를 읽는다 —
+        # totals가 lucid.cost/.calls, judge.cost/.calls를 읽는다 —
         # 맨 람다는 이 속성이 없어 AttributeError로 죽는다.
         def f(system, user):
             f.calls += 1
@@ -1198,7 +1198,7 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
         return None, history, 0, data, "요약 실패 T0: 토큰 초과 (stub)"
 
     monkeypatch.setattr(run2, "_key", lambda: "offline")
-    monkeypatch.setattr(run2, "make_director_llm",
+    monkeypatch.setattr(run2, "make_lucid_llm",
                         lambda: _stub_llm("장터를 함께 걷자고 말한다"))
     monkeypatch.setattr(run2, "make_judge_llm", lambda: _stub_llm("PASS"))
     monkeypatch.setattr(run2, "EVAL_DIR", tmp_path)
@@ -1212,3 +1212,49 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
     assert out["totals"]["aborted"]
     assert out["turns"]
     assert "hypa_error" in out["turns"][-1]
+
+
+# ---- config.LUCID_MODEL / totals["lucid_model"] (Task 0) ----
+
+def _totals_stub_llm():
+    def f(system, user):
+        return ""
+    f.cost, f.calls = 0.0, 0
+    return f
+
+
+def test_collect_totals_includes_lucid_model():
+    """totals["lucid_model"]이 config.LUCID_MODEL과 일치 — 나레이터(MODEL)와
+    별도 축으로 totals 안에 박제된다 (D6)."""
+    from benchmarks.eval import config, run2
+
+    result = run2._collect_totals(
+        variant="vanilla", session="s", run_no=0, prompt_set={},
+        turns=[], probes=[], ledger=Ledger(), lucid=_totals_stub_llm(),
+        judge=_totals_stub_llm(), hypa_cost0=0.0, hypa_truncated0=0,
+        aborted="")
+    assert result["totals"]["lucid_model"] == config.LUCID_MODEL
+
+
+def test_config_lucid_model_falls_back_to_old_director_env(monkeypatch,
+                                                            capsys):
+    """구 env(DREAMING_EVAL_DIRECTOR)만 설정 시 폴백 + 경고 1회.
+
+    config.py는 import 시점에 env를 읽으므로 importlib.reload가 필요하다.
+    transport.py의 LUCID_MODEL 별칭은 import 시점 스냅샷이라 config를
+    reload해도 안 바뀐다 (CLAUDE.md §5) — 그래서 config.LUCID_MODEL을 직접
+    단언한다. reload는 모듈 전역을 실제로 바꾸므로, 다른 테스트로 상태가
+    새지 않도록 끝에서 env를 정리하고 다시 reload해 원상복구한다.
+    """
+    import importlib
+    from benchmarks.eval import config
+
+    monkeypatch.delenv("DREAMING_EVAL_LUCID", raising=False)
+    monkeypatch.setenv("DREAMING_EVAL_DIRECTOR", "old/model-name")
+    try:
+        importlib.reload(config)
+        assert config.LUCID_MODEL == "old/model-name"
+        assert "DREAMING_EVAL_DIRECTOR" in capsys.readouterr().err
+    finally:
+        monkeypatch.delenv("DREAMING_EVAL_DIRECTOR", raising=False)
+        importlib.reload(config)          # 모듈 전역 원복 — 상태 누수 방지

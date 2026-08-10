@@ -223,7 +223,7 @@ def test_summarize_call_pins_params_and_accumulates_cost(monkeypatch):
     monkeypatch.setattr(hypa, "SUMMARY_COST", 0.0)
     assert hypa._summarize_call([{"role": "user", "content": "x"}]) == "요약"
     body = captured["json"]
-    assert body["model"] == hypa._director_model()
+    assert body["model"] == hypa._lucid_model()
     assert body["max_tokens"] == 8192
     assert body["temperature"] == 0.0
     assert body["usage"] == {"include": True}
