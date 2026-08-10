@@ -1,46 +1,55 @@
-# 회수 축 복원 (지식 검색 + keyExcerpts) Implementation Plan
+# 회수 축 복원 (지식 검색 + keyExcerpts) Implementation Plan — v2
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 스펙 §3.1-2(지식 검색)와 §6.2(keyExcerpts)의 미구현 회수 축을 복원한다 — 기억 실패 8건 중 검색실패 3건·활용실패 1건이 이 축의 부재 탓이다 (docs/FINDINGS-2026-08-10-fix-run.md §4).
+> **v2 개정 이력**: v1을 Sonnet5(구현 정합성)·Opus5(설계 리스크) 이중 리뷰 후 개정.
+> 반영: 랩 turn 좌표계 PAD 버그, 데이터 경로 env화, 게이트를 T39 단독+예산 곡선으로
+> 재정의, scene_query를 유저턴+직전응답600자로 교체, 태스크 순서 1→랩→배선,
+> keyExcerpts Tier2 병합 5개(스펙 §6.2 원안, 유저 확정), clean_excerpts 검증-후-컷,
+> ExtractedEpisode import, 첫 요청 프리필 가드. 리뷰가 안전 판정한 것: 재드림
+> byte-stability, 주입 재귀 오염 없음, 리롤 랭킹 요동 없음, 랭킹 변동의 캐시 영향 0.
 
-**Architecture:** 두 갈래. ① 지식 블록의 fact 선별을 "pinned+최신순 스택"에서 "어휘 랭킹(IDF+문자 bigram)"으로 교체 — 쿼리는 최근 장면(마지막 비-system 메시지들), LLM 0콜, 인덱스 없이 요청 시 즉석 계산. ② Dreamer가 에피소드를 접을 때 결정적 원문 인용(keyExcerpts, 유닛당 ≤3개 ≤400자)을 원문 대조 검증 후 Episode에 보존하고, Tier1 청크 조립에 포함 — 캐시되는 프리픽스에 살므로 턴당 추가 비용 ~0.
+**Goal:** 스펙 §3.1-2(지식 검색)와 §6.2(keyExcerpts)의 미구현 회수 축을 복원한다. 실측 기대 효과는 정직하게: 검색실패 3건 중 어휘로 잡히는 **T39 회복**이 게이트고, T29·T99는 매칭 모호/이미 주입 중이라 진단만, T59(패러프레이즈)는 예산 곡선으로 절단 근거를 만든다 (docs/FINDINGS-2026-08-10-fix-run.md §4).
+
+**Architecture:** 두 갈래. ① 지식 블록의 fact 선별을 "pinned+최신순 스택"에서 "어휘 랭킹(IDF+문자 bigram)"으로 교체 — 쿼리는 마지막 유저 턴+직전 응답 600자 캡, LLM 0콜, 인덱스 없이 요청 시 즉석 계산. ② Dreamer가 에피소드를 접을 때 결정적 원문 인용(keyExcerpts, 유닛당 ≤3개 ≤400자, 원문 substring 검증)을 Episode에 보존하고 Tier1 청크에 렌더, **Tier2 병합 시 5개 캡으로 생존**(스펙 §6.2 원안) — 캐시되는 프리픽스에 살므로 턴당 추가 비용은 read 0.1×.
 
 **Tech Stack:** Python 3.13, pydantic v2, pytest. 신규 의존성 없음.
 
 ## Global Constraints
 
-- **Track B 파일 표면 수정 금지**: `benchmarks/eval/{prompts.py, run2.py, quality.py, lucid.py}`, `benchmarks/eval/prompts/` — 다른 세션이 진행 중 (FINDINGS §5 트랙 분리). 신규 파일 추가는 허용.
+- **Track B 파일 표면 수정 금지**: `benchmarks/eval/` 전체 — 다른 세션 진행 중 (FINDINGS §5). 랩은 `benchmarks/retrieval_lab.py`(eval/ 밖 신규 파일)에 둔다.
 - **동기 경로 LLM 0콜** (스펙 §2): 검색·랭킹에 LLM/임베딩 호출 금지.
-- **덴스·하이브리드 검색 도입 금지**: fix-drm-r0 오프라인 실측에서 기각됨 (FINDINGS §4 — 덴스가 어휘를 깎음, T29 1위→9위). 어휘 단독.
-- **청크 byte-stable** (스펙 §6.1): 기존 에피소드(key_excerpts 없음)의 조립 바이트가 변하면 안 된다 — 필드 기본값 `[]`일 때 조립 결과는 현재와 동일해야 함.
+- **덴스·하이브리드 검색 도입 금지**: fix-drm-r0 실측 기각 (FINDINGS §4 — 덴스가 어휘를 깎음, T29 1위→9위). 어휘 단독.
+- **청크 byte-stable** (스펙 §6.1): 기존 에피소드(`key_excerpts=[]`)의 Tier1·Tier2 조립 바이트 불변. (리뷰 검증: 재드림은 새 uuid Episode를 추가할 뿐이고 `build_compression`은 최선 기록을 채택하므로 기존 청크는 안 바뀜 — 발췌는 크기만 키우고 새 불안정 클래스를 만들지 않는다.)
 - 테스트 실행: `python3 -m pytest` (이 머신에 `python` 없음).
 - 커밋 메시지는 저장소 관례(한국어, `feat(dreaming):` 등) 유지. 각 커밋 끝에 `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
-- `dreaming_data/`는 로컬 전용(gitignore) — Task 3의 랩은 데이터 없으면 skip되게.
+- `dreaming_data/`는 gitignore — **메인 체크아웃(`/Users/yanghyeon-u/Desktop/RISU_ENE/dreaming_data`)에만 실존**하고 워크트리엔 없다. 랩·스모크는 `DREAMING_DATA_DIR` env로 경로를 받고, 없으면 명시적으로 skip.
 
 ## 배경 (실행자가 알아야 할 최소 컨텍스트)
 
 - Dreaming = RisuAI 리버스 프록시. 매 요청 프롬프트를 [system → 청크(접힌 과거, 캐시) → 원문 꼬리 → 지식 블록(캐시 밖) → 유저 입력]으로 조립한다.
-- 지식 블록은 `dreaming/sync.py:render_knowledge()`가 만든다. 현재 fact를 **pinned 우선+최신순**으로 예산(6000자)까지 채운다 — 관련성 개념이 없다. 스펙 §3.1-2는 "현재 장면 기준으로 관련분만 선별"을 요구한다. 이 갭이 이 플랜의 본체.
-- 실측 데이터 `dreaming_data/fix-drm-r0/`: 100턴 런의 산출물. `facts/` 353개(confirmed 329), `raw/` 99턴 원문(`user_text`/`assistant_text`/`turn_number`), 프로브 결과는 `dreaming_data/eval/v2-fix-drm-r0-run0.json`.
-- 알려진 한계(고치지 않음): T59류 패러프레이즈 질문("그때 그것 덕분에 몸이 따뜻해졌던")은 어휘로 못 잡는다 — 실측에서 덴스도 못 잡았다(순위 152/329). 이 플랜의 목표는 검색실패 3건 중 어휘로 잡히는 것(T29·T39)+활용실패(T99)의 회복이지 전건 회복이 아니다.
+- 지식 블록은 `dreaming/sync.py:render_knowledge()`가 만든다. 현재 fact를 **pinned 우선+최신순**으로 예산(6000자)까지 채운다 — 관련성 개념이 없다. 스펙 §3.1-2는 "현재 장면 기준 관련분 선별"을 요구한다. 이 갭이 본체.
+- 실측 데이터 `$DREAMING_DATA_DIR/fix-drm-r0/`: 100턴 런 산출물. `facts/` 353개(pinned∪confirmed 329), `raw/` 99턴 원문. **주의: raw의 `turn_number`는 1025~1123** (`_BASELINE_PAD=1024`, dreaming/identity.py) — 프로브의 `turn`(19~99)과 좌표계가 다르다.
+- 프로브: `$DREAMING_DATA_DIR/eval/v2-fix-drm-r0-run0.json`의 `probes` 리스트 9개. 필드: `turn`, `ptype`, `fact`(정답 명제), `value`(정답 값), `question`(전문), `miss_cause` 등 (실물 확인 완료).
+- **게이트가 T39 단독인 이유** (리뷰 실측): T29 정답값 `렌`은 fact 48개에 부분문자열 매칭 → 순위 무의미. T99 `십자 표식`은 현행 최신순으로도 이미 주입됨(rank 2) → 랭킹 무관. T59는 패러프레이즈라 어휘 한계(순위 ~247/329, 덴스도 152위 실패). **T39 `산 아래 마을`은 매칭 fact 정확히 1개 + 최신순 328/329위로 잘리던 케이스** — 랭킹이 실제로 살리는 유일한 비모호 표본.
+- 알려진 비용 (리뷰 실측): 발췌 3×400자 상주 시 Tier1 청크 4~5배 팽창 → 리빌드 상각 **+~860자/턴 uncached (+11%)**. 감수하는 트레이드다 — 대안(hot zone 주입)은 턴당 전액 과금이라 더 비싸다.
 
 ## File Structure
 
 | 파일 | 책임 |
 |---|---|
-| `dreaming/retrieval.py` (신규) | 어휘 피처 추출 + fact 랭킹. 순수 함수, 저장소·LLM 무의존 |
-| `dreaming/sync.py` (수정) | `render_knowledge`가 랭킹 순서로 fact를 채움. 쿼리 텍스트 추출 헬퍼 |
-| `dreaming/records.py` (수정) | `Episode.key_excerpts` 필드 추가 |
-| `dreaming/dreamer.py` (수정) | 추출 스키마·프롬프트에 key_excerpts 추가 + 원문 대조 검증 |
-| `dreaming/chunks.py` (수정) | Tier1 조립에 발췌 포함 (Tier2는 제외) |
-| `benchmarks/eval/retrieval_lab.py` (신규) | fix-drm-r0 대상 오프라인 순위 측정 (라이브 런 없이 $0 반복) |
-| `docs/dreaming/SPEC.md` (수정) | §6.3 프로바이더별 TTL 주석, §5 예산 실측 각주 |
+| `dreaming/retrieval.py` (신규) | 어휘 피처·fact 랭킹·장면 쿼리 조립. 순수 함수, 저장소·LLM 무의존 |
+| `benchmarks/retrieval_lab.py` (신규) | fix-drm-r0 대상 오프라인 측정 — 실제 `render_knowledge` 경로로 IN/OUT + 예산 곡선 |
+| `dreaming/sync.py` (수정) | `render_knowledge`에 쿼리 랭킹 배선 + 호출부 (첫 요청 프리필 가드 포함) |
+| `dreaming/records.py` (수정) | `Episode.key_excerpts` 필드 |
+| `dreaming/dreamer.py` (수정) | 추출 스키마·프롬프트 + `clean_excerpts` 검증 |
+| `dreaming/chunks.py` (수정) | Tier1 발췌 렌더 + Tier2 병합 5개 캡 |
+| `docs/dreaming/SPEC.md` (수정) | §6.3 프로바이더 주석, §5 예산 각주 |
 | 테스트 | `tests/test_dreaming_retrieval.py` (신규), `tests/test_dreaming_sync.py`, `tests/test_dreaming_records.py`, `tests/test_dreaming_extraction.py`, `tests/test_dreaming_chunks.py` (수정) |
 
 ---
 
-### Task 1: 어휘 랭킹 모듈 `dreaming/retrieval.py`
+### Task 1: 어휘 랭킹 + 장면 쿼리 모듈 `dreaming/retrieval.py`
 
 **Files:**
 - Create: `dreaming/retrieval.py`
@@ -48,14 +57,14 @@
 
 **Interfaces:**
 - Consumes: `dreaming.records.Fact` (필드: `claim: str`, `entities: List[str]`, `pinned: bool`, `recorded_at: str`)
-- Produces: `features(text: str) -> Set[str]`, `rank_facts(facts: List[Fact], query: str) -> List[Fact]` — Task 2가 이 시그니처 그대로 사용
+- Produces: `features(text: str) -> Set[str]`, `rank_facts(facts: List[Fact], query: str) -> List[Fact]`, `scene_query(messages: List[Dict]) -> str` — Task 2(랩)와 Task 3(배선)이 이 시그니처 그대로 사용
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 ```python
-"""tests/test_dreaming_retrieval.py — 어휘 랭킹 (스펙 §3.1-2)."""
+"""tests/test_dreaming_retrieval.py — 어휘 랭킹 + 장면 쿼리 (스펙 §3.1-2)."""
 from dreaming.records import Fact
-from dreaming.retrieval import features, rank_facts
+from dreaming.retrieval import features, rank_facts, scene_query
 
 
 def _fact(claim, **kw):
@@ -110,6 +119,27 @@ def test_동점은_최신순():
     b = _fact("무관한 사실 둘", recorded_at="2026-06-01T00:00:00+00:00")
     ranked = rank_facts([a, b], "강돌")   # 둘 다 점수 0
     assert ranked[0] is b
+
+
+def test_scene_query_마지막유저_플러스_직전응답600():
+    msgs = [{"role": "system", "content": "카드"},
+            {"role": "user", "content": "이전 질문"},
+            {"role": "assistant", "content": "긴 응답 " * 300},   # 1500자+
+            {"role": "user", "content": "강돌 얘기"}]
+    q = scene_query(msgs)
+    assert "카드" not in q and "이전 질문" not in q
+    assert q.endswith("강돌 얘기")
+    assert len(q) <= 600 + 1 + len("강돌 얘기")   # 직전 응답은 600자 캡
+
+
+def test_scene_query_유저턴만_있으면_그것만():
+    assert scene_query([{"role": "user", "content": "안녕"}]) == "안녕"
+
+
+def test_scene_query_비문자열_content_무시():
+    msgs = [{"role": "user", "content": [{"type": "text"}]},
+            {"role": "user", "content": "진짜 질문"}]
+    assert scene_query(msgs) == "진짜 질문"
 ```
 
 - [ ] **Step 2: 실패 확인**
@@ -120,7 +150,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'dreaming.retrieval'`
 - [ ] **Step 3: 구현**
 
 ```python
-"""dreaming/retrieval.py — 지식 검색: 어휘 랭킹 (스펙 §3.1-2).
+"""dreaming/retrieval.py — 지식 검색: 어휘 랭킹 + 장면 쿼리 (스펙 §3.1-2).
 
 fix-drm-r0 오프라인 실측(docs/FINDINGS-2026-08-10-fix-run.md §4)에서
 어휘(IDF+bigram)가 덴스(bge-m3)·RRF 하이브리드를 이겼다 — 한국어 RP는
@@ -138,6 +168,12 @@ from typing import Dict, List, Set
 from dreaming.records import Fact
 
 _RUN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
+
+# 직전 assistant 응답의 쿼리 참여 상한. 플랜 리뷰 실측: 유저 턴 평균 206자
+# vs 어시스턴트 1,925자라 장면 전체(2400자)를 쿼리로 쓰면 ~90%가 모델
+# 산문이 되어 정답 순위가 오히려 밀렸다 (T39 1위→33위). 유저턴+직전응답
+# 600자 캡이 4개 프로브 중 3개에서 최선이었다.
+_PREV_ASSISTANT_CAP = 600
 
 
 def features(text: str) -> Set[str]:
@@ -178,38 +214,203 @@ def rank_facts(facts: List[Fact], query: str) -> List[Fact]:
                                   facts[i].recorded_at),
                    reverse=True)
     return [facts[i] for i in order]
+
+
+def scene_query(messages: List[Dict]) -> str:
+    """지식 검색 쿼리 = 마지막 유저 턴 + 직전 assistant 응답 600자 캡.
+
+    직전 응답을 붙이는 이유: 대명사 질문("그거 어디 씀?")의 선행사가
+    직전 응답에 있다. 600자 캡인 이유: 위 _PREV_ASSISTANT_CAP 주석.
+    """
+    cur = ""
+    prev_a = ""
+    for m in reversed(messages):
+        c = m.get("content")
+        if not isinstance(c, str) or not c.strip():
+            continue
+        role = m.get("role")
+        if not cur:
+            if role == "user":
+                cur = c
+            continue
+        if role == "assistant":
+            prev_a = c[-_PREV_ASSISTANT_CAP:]
+            break
+    return (prev_a + "\n" + cur) if prev_a else cur
 ```
 
 - [ ] **Step 4: 통과 확인**
 
 Run: `python3 -m pytest tests/test_dreaming_retrieval.py -q`
-Expected: 7 passed
+Expected: 10 passed
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add dreaming/retrieval.py tests/test_dreaming_retrieval.py
-git commit -m "feat(dreaming): 어휘 랭킹 모듈 — 지식 검색의 랭커 (스펙 §3.1-2)
+git commit -m "feat(dreaming): 어휘 랭킹 + 장면 쿼리 — 지식 검색의 랭커 (스펙 §3.1-2)
 
 fix-drm-r0 실측(FINDINGS §4)에서 이긴 IDF+문자 bigram 단독. 덴스·하이브리드는
-실측 기각으로 미도입. LLM 0콜, 인덱스 없이 요청 시 즉석 계산.
+실측 기각으로 미도입. 쿼리는 유저턴+직전응답 600자 캡 — 장면 전체는 모델
+산문이 쿼리를 희석해 실측 열등. LLM 0콜, 인덱스 없이 즉석 계산.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 2: `render_knowledge` 랭킹 배선 + 쿼리 추출
+### Task 2: 오프라인 검색 랩 — 실제 렌더 경로로 측정
+
+**Files:**
+- Create: `benchmarks/retrieval_lab.py` (eval/ 밖 — Track B 표면 회피)
+- Test: `tests/test_dreaming_retrieval.py`에 스모크 1개 추가
+
+**Interfaces:**
+- Consumes: Task 1 `rank_facts`·`scene_query`, `dreaming.sync.render_knowledge`(현행 시그니처 — Task 3 배선 전엔 query 파라미터가 없으므로 **이 태스크는 Task 3 이후 재실행이 본측정**이고, 배선 전 실행은 baseline 측정이다), `dreaming.store.MemoryStore`, `dreaming.storage.JsonDirStorage`
+- Produces: 실행 스크립트. 완료 기준 #2의 측정 도구
+
+- [ ] **Step 1: 랩 스크립트 작성**
+
+```python
+"""benchmarks/retrieval_lab.py — 검색 오프라인 측정 ($0, LLM 0콜).
+
+fix-drm-r0 스토어에 대해 **실제 render_knowledge 경로**로 프로브 정답의
+IN/OUT과 필요 예산(budget_needed)을 잰다. FINDINGS §4 어휘 실측의 방향성
+근사 — 정확한 순위 재현이 아니라 예산 결정의 근거 산출이 목적이다.
+
+게이트 해석 주의 (플랜 리뷰 실측):
+- T39만 비모호 (value 매칭 fact 정확히 1개 + 최신순에서 잘리던 케이스)
+- T29는 value '렌'이 fact 48개에 걸려 순위 무의미 → 진단용
+- T99는 현행 최신순으로도 이미 IN → 랭킹 무관
+- T19·49·69·79·89는 추출실패 — 스토어에 정답 없음 (Track A 몫)
+
+실행: DREAMING_DATA_DIR=/path/to/dreaming_data python3 -m benchmarks.retrieval_lab
+      (메인 체크아웃에서는 env 생략 가능 — 기본값 ./dreaming_data)
+"""
+from __future__ import annotations
+
+import inspect
+import json
+import os
+import sys
+from pathlib import Path
+
+from dreaming.retrieval import scene_query
+from dreaming.storage import JsonDirStorage
+from dreaming.store import MemoryStore
+from dreaming.sync import render_knowledge
+
+DATA_ROOT = Path(os.environ.get("DREAMING_DATA_DIR", "dreaming_data"))
+SESSION = "fix-drm-r0"
+RUN = DATA_ROOT / "eval" / "v2-fix-drm-r0-run0.json"
+BUDGET_CHARS = 6000            # assembly.HOT_ZONE_CHAR_BUDGET와 동일
+
+
+def _render(store, query: str, budget: int) -> str:
+    """Task 3 배선 전(query 파라미터 없음)에도 baseline 측정이 되게 분기."""
+    if "query" in inspect.signature(render_knowledge).parameters:
+        return render_knowledge(store, query=query, budget=budget)
+    return render_knowledge(store, budget=budget)
+
+
+def budget_needed(store, query: str, answer: str) -> int | None:
+    """정답이 지식 블록에 들어가는 최소 예산 (이분 탐색, 실제 렌더 경로)."""
+    lo, hi = 200, 30000
+    if answer not in _render(store, query, hi):
+        return None
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if answer in _render(store, query, mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def main() -> int:
+    if not RUN.is_file():
+        print(f"skip: 데이터 없음 ({RUN}) — DREAMING_DATA_DIR로 메인 체크아웃의 "
+              "dreaming_data를 지정하라")
+        return 0
+    store = MemoryStore(JsonDirStorage(DATA_ROOT), SESSION)
+    raws = sorted((row for _, row in store._storage.scan(f"{SESSION}/raw")),
+                  key=lambda r: r["turn_number"])
+    pad = raws[0]["turn_number"] - 1           # _BASELINE_PAD 좌표계 유도
+    raw_by_rel = {r["turn_number"] - pad: r for r in raws}
+    facts = [f for f in store.list_facts() if f.pinned or f.status == "confirmed"]
+    print(f"facts(주입 대상)={len(facts)}  pad={pad}")
+
+    probes = json.load(open(RUN))["probes"]
+    for p in probes:
+        prev = raw_by_rel.get(p["turn"] - 1)   # 프로브 직전 턴 (상대 좌표)
+        msgs = ([{"role": "assistant", "content": prev["assistant_text"]}]
+                if prev else []) + [{"role": "user", "content": p["question"]}]
+        query = scene_query(msgs)
+        text = _render(store, query, BUDGET_CHARS)
+        matches = sum(1 for f in facts if p["value"] in f.claim)
+        need = budget_needed(store, query, p["value"])
+        status = ("∅스토어에없음" if need is None
+                  else ("IN " if p["value"] in text else "OUT")
+                  + f" need={need}")
+        print(f"T{p['turn']:>3} [{p['ptype']:>7}] {status} "
+              f"(value매칭 {matches}개) {p['question'][:36]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+- [ ] **Step 2: 스모크 테스트 추가** — `tests/test_dreaming_retrieval.py` 끝에:
+
+```python
+import os
+from pathlib import Path
+
+import pytest
+
+_DATA = Path(os.environ.get("DREAMING_DATA_DIR", "dreaming_data"))
+
+
+@pytest.mark.skipif(not (_DATA / "fix-drm-r0" / "facts").is_dir(),
+                    reason="로컬 실측 데이터 없음")
+def test_retrieval_lab_실데이터_로드():
+    from dreaming.storage import JsonDirStorage
+    from dreaming.store import MemoryStore
+    ms = MemoryStore(JsonDirStorage(_DATA), "fix-drm-r0")
+    assert len(ms.list_facts()) > 300
+```
+
+- [ ] **Step 3: baseline 실행 (배선 전 — 현행 최신순의 성적표)**
+
+Run: `DREAMING_DATA_DIR=/Users/yanghyeon-u/Desktop/RISU_ENE/dreaming_data python3 -m benchmarks.retrieval_lab`
+Expected: T39 `OUT` (최신순 328/329로 잘림 — 리뷰 실측), T99 `IN`(이미 주입 중). **출력 전문을 플랜 하단 "실행 후기"에 baseline으로 기록.**
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add benchmarks/retrieval_lab.py tests/test_dreaming_retrieval.py
+git commit -m "feat(bench): 검색 오프라인 랩 — 실렌더 경로 IN/OUT + 필요예산 곡선
+
+라이브 런 없이 \$0 측정. PAD 좌표계 유도로 probe turn(상대)↔raw
+turn_number(1024 패딩) 정합. 게이트는 T39 단독 (유일한 비모호 표본).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 3: `render_knowledge` 랭킹 배선 (+ 첫 요청 프리필 가드)
 
 **Files:**
 - Modify: `dreaming/sync.py` — `render_knowledge()` (33행 부근), `process_request()`의 `clip_knowledge(render_knowledge(self._store))` 호출부 (182행 부근)
 - Test: `tests/test_dreaming_sync.py` (기존 파일에 추가)
 
 **Interfaces:**
-- Consumes: Task 1의 `rank_facts(facts, query)`
-- Produces: `render_knowledge(store, query: str = "") -> str` (예산 파라미터·블록 구조는 불변), `scene_query(messages: List[Dict]) -> str` — 이후 태스크는 이를 몰라도 됨
+- Consumes: Task 1의 `rank_facts`, `scene_query`
+- Produces: `render_knowledge(store, query: str = "", budget: int = HOT_ZONE_CHAR_BUDGET) -> str` — 기존 호출자(`benchmarks/cardsim/bench.py:241`, `benchmarks/longmemeval/run_dreaming.py:120`)는 위치 인자 없이 호출하므로 무해 (리뷰 전수 조사 완료)
 
-- [ ] **Step 1: 실패하는 테스트 작성** — `tests/test_dreaming_sync.py`의 "render_knowledge" 섹션에 추가. 파일 상단 import에 `scene_query` 추가 필요. 기존 fixture 패턴은 `MemoryStore(JsonDirStorage(tmp_path), "sess1")` (같은 파일 `test_render_includes_state_pinned_facts_main_actors` 참조):
+- [ ] **Step 1: 실패하는 테스트 작성** — `tests/test_dreaming_sync.py`의 render_knowledge 섹션에 추가. fixture 패턴은 같은 파일 `test_render_includes_state_pinned_facts_main_actors` 참조 (`MemoryStore(JsonDirStorage(tmp_path), "sess1")`):
 
 ```python
 def test_render_knowledge_쿼리_관련_사실이_최신순을_이긴다(tmp_path):
@@ -233,54 +434,16 @@ def test_render_knowledge_쿼리_없으면_최신순_유지(tmp_path):
                       recorded_at="2026-06-01T00:00:00+00:00"))
     text = render_knowledge(ms)    # query 기본값 "" — 기존 동작 보존
     assert text.index("새 사실") < text.index("옛 사실")
-
-
-def test_scene_query_system_제외_최근_메시지만():
-    msgs = [{"role": "system", "content": "카드"},
-            {"role": "user", "content": "옛말 " * 3000},   # 캡 검증용 장문
-            {"role": "assistant", "content": "응답A"},
-            {"role": "user", "content": "강돌 얘기"}]
-    q = scene_query(msgs)
-    assert "카드" not in q
-    assert "강돌 얘기" in q
-    assert len(q) <= 2400
 ```
 
 - [ ] **Step 2: 실패 확인**
 
-Run: `python3 -m pytest tests/test_dreaming_sync.py -q -k "render_knowledge_쿼리 or scene_query"`
-Expected: FAIL — `scene_query` 미정의 / 쿼리 파라미터 없음
+Run: `python3 -m pytest tests/test_dreaming_sync.py -q -k "쿼리"`
+Expected: FAIL — `render_knowledge() got an unexpected keyword argument 'query'`
 
 - [ ] **Step 3: 구현** — `dreaming/sync.py`:
 
-```python
-from dreaming.retrieval import rank_facts   # 파일 상단 import에 추가
-
-_QUERY_CHAR_CAP = 2400   # 최근 장면 쿼리 상한 — 마지막 user + 직전 응답이면 충분
-
-
-def scene_query(messages: List[Dict]) -> str:
-    """지식 검색 쿼리 = 현재 장면 (스펙 §3.1-2 "현재 장면 기준").
-
-    마지막 비-system 메시지들에서 뒤에서부터 모은다. 유저 질문만이 아니라
-    직전 응답까지 포함해야 대명사 질문("그거 어디 씀?")의 선행사가 잡힌다.
-    """
-    parts: List[str] = []
-    total = 0
-    for m in reversed(messages):
-        if m.get("role") == "system":
-            continue
-        c = m.get("content")
-        if not isinstance(c, str) or not c.strip():
-            continue
-        parts.append(c)
-        total += len(c)
-        if len(parts) >= 4 or total >= _QUERY_CHAR_CAP:
-            break
-    return "\n".join(reversed(parts))[-_QUERY_CHAR_CAP:]
-```
-
-`render_knowledge` 수정 — 시그니처에 `query: str = ""` 추가, fact 정렬 한 줄 교체:
+import에 `from dreaming.retrieval import rank_facts, scene_query` 추가. `render_knowledge` 수정 — 시그니처에 `query: str = ""` 추가(2번째 파라미터), fact 정렬 한 줄 교체:
 
 ```python
 def render_knowledge(store: MemoryStore, query: str = "",
@@ -292,150 +455,38 @@ def render_knowledge(store: MemoryStore, query: str = "",
     ...  # room 루프 그대로 (랭킹 순서로 예산까지 채움)
 ```
 
-기존 docstring의 "pinned 우선, 그 안에서 최신순" 문장은 "pinned 우선, 그 안에서 장면 관련도순(어휘 랭킹, 빈 쿼리면 최신순)"으로 갱신. 호출부(182행 부근):
+docstring의 "pinned 우선, 그 안에서 최신순"은 "pinned 우선, 그 안에서 장면 관련도순(어휘 랭킹, 빈 쿼리면 최신순)"으로 갱신. 호출부(182행 부근) — **첫 요청 가드 포함**:
 
 ```python
-knowledge = clip_knowledge(render_knowledge(self._store,
-                                            query=scene_query(messages)))
+        # 첫 요청은 tail_fp를 못 배워 프리셋 프리필이 messages에 섞여 있다
+        # (위 first_request 계산과 동일 조건) — 쿼리가 영문 보일러플레이트로
+        # 오염되므로 빈 쿼리(=최신순 폴백)로 렌더한다.
+        query = "" if first_request else scene_query(messages)
+        knowledge = clip_knowledge(render_knowledge(self._store, query=query))
 ```
+
+주의: `first_request` 변수는 이미 같은 함수 상단에 있다 (`first_request = not state.get("prev_fp")`). `scene_query`가 받는 `messages`는 `scaffold.split` 이후(꼬리 제거본)이다.
 
 - [ ] **Step 4: 통과 확인 + 전체 회귀**
 
-Run: `python3 -m pytest tests/test_dreaming_sync.py tests/test_dreaming_retrieval.py -q` 후 `python3 -m pytest tests/ -q`
-Expected: 전부 PASS (기존 render_knowledge 테스트 중 최신순을 가정한 게 깨지면 — 그 테스트가 빈 쿼리 경로인지 확인. 빈 쿼리면 동작 불변이어야 하므로 구현 버그다. 쿼리 있는 경로를 가정한 기존 테스트는 없다.)
+Run: `python3 -m pytest tests/ -q`
+Expected: 전부 PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: 본측정 — 랩 재실행**
+
+Run: `DREAMING_DATA_DIR=/Users/yanghyeon-u/Desktop/RISU_ENE/dreaming_data python3 -m benchmarks.retrieval_lab`
+Expected (게이트): **T39 `IN`** (need ≤ 6000). 추가 산출: 전 프로브 `need` 값 = 예산 곡선 — T59의 need(리뷰 예측 ~8,250)를 확인해 "6000 유지 vs 상향" 결정 근거로 실행 후기에 기록. T29·T99는 진단 참고만 (게이트 아님 — 매칭 모호/이미 IN).
+게이트 실패 시: 쿼리 조립(`_PREV_ASSISTANT_CAP`)을 조정해 볼 수 있으나, 2회 안에 안 되면 멈추고 baseline·본측정 출력과 함께 보고.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add dreaming/sync.py tests/test_dreaming_sync.py
 git commit -m "feat(dreaming): 지식 블록 fact 선별을 장면-어휘 랭킹으로 — 스펙 §3.1-2 복원
 
-최신순 스택이 예산(6000자)에서 잘리며 정답 사실 58%를 버렸다(FINDINGS §4
-검색실패 3건). 이제 최근 장면을 쿼리로 관련분부터 채운다. 빈 쿼리는 기존
-동작(핀+최신순) 그대로 — 초반 턴 안전.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
-```
-
----
-
-### Task 3: 오프라인 검색 랩 — fix-drm-r0 실측 재현
-
-**Files:**
-- Create: `benchmarks/eval/retrieval_lab.py`
-- Test: `tests/test_dreaming_retrieval.py`에 스모크 1개 추가
-
-**Interfaces:**
-- Consumes: Task 1 `rank_facts`, `dreaming_data/fix-drm-r0/{facts,raw}/*.json`, `dreaming_data/eval/v2-fix-drm-r0-run0.json`
-- Produces: 실행 스크립트 (라이브러리 아님). 성공 기준의 측정 도구
-
-- [ ] **Step 1: 데이터 구조 (검증 완료 — 탐색 불필요)**
-
-`v2-fix-drm-r0-run0.json`은 dict이고 `probes` 키에 레코드 9개. 각 레코드 필드 (2026-08-10 실물 확인): `turn`(int), `ptype`("recent"/"false"/…), `fact`(정답 명제), `value`(정답 값 문자열), `question`(프로브 질문 전문), `miss_cause`, `oracle`/`judge`. 프로브 턴은 19·29·39·49·59·69·79·89·99 — 이 중 검색 관심 대상은 **29·39·59·99** (나머지는 추출실패로 스토어에 정답이 없어 검색 무의미. FINDINGS §4).
-
-- [ ] **Step 2: 랩 스크립트 작성**
-
-```python
-"""benchmarks/eval/retrieval_lab.py — 검색 랭킹 오프라인 실측 ($0, LLM 0콜).
-
-fix-drm-r0 스토어(353 fact) + 프로브에 대해 rank_facts의 정답 순위를 잰다.
-FINDINGS §4의 어휘 실측(T29=1, T39=30, T59=328, T99=2)을 재현·개선 확인.
-
-실행: python3 -m benchmarks.eval.retrieval_lab
-"""
-from __future__ import annotations
-
-import glob
-import json
-import sys
-from pathlib import Path
-
-from dreaming.records import Fact
-from dreaming.retrieval import rank_facts
-
-DATA = Path("dreaming_data/fix-drm-r0")
-RUN = Path("dreaming_data/eval/v2-fix-drm-r0-run0.json")
-BUDGET_CHARS = 6000            # HOT_ZONE_CHAR_BUDGET와 동일
-
-
-def load_facts() -> list[Fact]:
-    return [Fact.model_validate(json.load(open(p)))
-            for p in glob.glob(str(DATA / "facts" / "*.json"))]
-
-
-def load_raw() -> dict[int, dict]:
-    rows = [json.load(open(p)) for p in glob.glob(str(DATA / "raw" / "*.json"))]
-    return {r["turn_number"]: r for r in rows}
-
-
-def load_probes() -> list[dict]:
-    """[{turn, question, answer, ptype}] — 구조는 Task 3 Step 1 참조."""
-    d = json.load(open(RUN))
-    return [{"turn": p["turn"], "question": p["question"],
-             "answer": p["value"], "ptype": p["ptype"]}
-            for p in d["probes"]]
-
-
-def budget_cut(ranked: list[Fact]) -> int:
-    """예산 안에 들어가는 fact 개수 (render_knowledge의 room 루프 근사)."""
-    room, count = BUDGET_CHARS, 0
-    for f in ranked:
-        line = len(f"- {f.claim}") + 1
-        if line > room:
-            break
-        room -= line
-        count += 1
-    return count
-
-
-def main() -> int:
-    facts, raw = load_facts(), load_raw()
-    print(f"facts={len(facts)}")
-    for p in load_probes():
-        # 쿼리 = 질문 + 프로브 직전 턴 원문 (라이브의 scene_query 근사)
-        prev = raw.get(p["turn"] - 1)
-        query = (prev["assistant_text"][-1200:] + "\n" if prev else "") + p["question"]
-        ranked = rank_facts(facts, query)
-        cut = budget_cut(ranked)
-        hit = [i for i, f in enumerate(ranked) if p["answer"] in f.claim]
-        rank = (hit[0] + 1) if hit else None
-        status = "∅스토어에없음" if rank is None else (
-            "IN " if rank <= cut else "OUT") + f" rank={rank}/{len(facts)}"
-        print(f"T{p['turn']:>3} [{p['ptype']:>7}] {status} "
-              f"(budget_cut={cut}) {p['question'][:40]}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-- [ ] **Step 3: 스모크 테스트 추가** — `tests/test_dreaming_retrieval.py`:
-
-```python
-import pytest
-from pathlib import Path
-
-
-@pytest.mark.skipif(not Path("dreaming_data/fix-drm-r0/facts").is_dir(),
-                    reason="로컬 실측 데이터 없음")
-def test_retrieval_lab_실데이터_로드():
-    from benchmarks.eval.retrieval_lab import load_facts
-    assert len(load_facts()) > 300
-```
-
-- [ ] **Step 4: 실행 + 결과 기록**
-
-Run: `python3 -m benchmarks.eval.retrieval_lab`
-Expected: T29·T39·T99가 `IN`(예산 내), T59는 `OUT` 허용 (알려진 한계). **결과 숫자를 이 플랜 파일 하단 "실행 후기"에 기록.** T29나 T39가 `OUT`이면 쿼리 조립(직전 턴 포함 범위)을 조정하고 재실행 — 그래도 안 되면 멈추고 결과와 함께 보고.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add benchmarks/eval/retrieval_lab.py tests/test_dreaming_retrieval.py
-git commit -m "feat(eval): 검색 랭킹 오프라인 랩 — fix-drm-r0 프로브 순위 실측
-
-라이브 런 없이 rank_facts 반복 측정. FINDINGS §4 어휘 실측 재현 도구.
+최신순 스택이 예산(6000자)에서 잘리며 정답 사실을 버렸다(FINDINGS §4,
+T39 실측 328/329위). 이제 유저턴+직전응답 쿼리로 관련분부터 채운다.
+빈 쿼리·첫 요청(프리필 미분리)은 기존 최신순 폴백.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -450,7 +501,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Test: `tests/test_dreaming_extraction.py`, `tests/test_dreaming_records.py` (기존 파일에 추가)
 
 **Interfaces:**
-- Consumes: `apply_extraction(store, ext, raw_by_turn)` 기존 시그니처 (raw_by_turn: `{turn: {"user_text", "assistant_text", ...}}`)
+- Consumes: `apply_extraction(store, ext, raw_by_turn)` 기존 시그니처 (raw_by_turn: `{turn: {"user_text", "assistant_text", "user_hash", ...}}`)
 - Produces: `Episode.key_excerpts: List[str]`, `clean_excerpts(excerpts: List[str], source_text: str) -> List[str]` — Task 5가 `Episode.key_excerpts`를 소비
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -462,9 +513,10 @@ def test_episode_key_excerpts_기본값_빈리스트():
     assert ep.key_excerpts == []
 ```
 
-`tests/test_dreaming_extraction.py`에 추가 (기존 fixture 패턴 준수):
+`tests/test_dreaming_extraction.py`에 추가. **주의: 이 파일의 기존 import(46행 부근)는 `DreamExtraction, ExtractedNumber, apply_extraction, verify_numbers`뿐 — `ExtractedEpisode`와 `clean_excerpts`를 import에 추가해야 한다** (리뷰 지적: 누락 시 NameError):
+
 ```python
-from dreaming.dreamer import clean_excerpts
+from dreaming.dreamer import ExtractedEpisode, clean_excerpts   # 기존 import에 병합
 
 
 def test_clean_excerpts_원문에_있으면_통과():
@@ -483,14 +535,21 @@ def test_clean_excerpts_공백_정규화_후_대조():
         == ["약속은 보름달이 뜨는 밤이다"]
 
 
-def test_clean_excerpts_최대_3개_각_400자():
+def test_clean_excerpts_검증_후_컷_그리고_중복제거():
+    # 리뷰 지적 반영: [:3]을 검증 전에 하면 유효 인용이 인덱스 3 이후일 때 유실
+    src = "진짜 하나. 진짜 둘. 진짜 셋."
+    out = clean_excerpts(["가짜", "가짜", "가짜", "진짜 하나.", "진짜 하나.",
+                          "진짜 둘.", "진짜 셋."], src)
+    assert out == ["진짜 하나.", "진짜 둘.", "진짜 셋."]   # 검증 통과분에서 3개, 중복 1회
+
+
+def test_clean_excerpts_400자_캡():
     src = "가" * 2000
-    out = clean_excerpts(["가" * 500] * 5, src)
-    assert len(out) == 3 and all(len(x) <= 400 for x in out)
+    out = clean_excerpts(["가" * 500], src)
+    assert out == ["가" * 400]
 
 
 def test_apply_extraction_에피소드에_검증된_발췌만_저장(tmp_path):
-    # store/raw_by_turn 준비는 같은 파일의 기존 apply_extraction 테스트와 동일 방식
     ms = MemoryStore(JsonDirStorage(tmp_path), "s")
     raw_by_turn = {1: {"turn_number": 1, "user_hash": "h1",
                        "user_text": "차 좀 줘",
@@ -506,7 +565,7 @@ def test_apply_extraction_에피소드에_검증된_발췌만_저장(tmp_path):
 - [ ] **Step 2: 실패 확인**
 
 Run: `python3 -m pytest tests/test_dreaming_extraction.py tests/test_dreaming_records.py -q`
-Expected: FAIL — `key_excerpts` 필드 없음 / `clean_excerpts` 미정의
+Expected: FAIL — `key_excerpts` 필드 없음 / `clean_excerpts` import 불가
 
 - [ ] **Step 3: 구현**
 
@@ -526,24 +585,28 @@ Expected: FAIL — `key_excerpts` 필드 없음 / `clean_excerpts` 미정의
   **원문 그대로 복사** (최대 3개, 각 400자 이내). 수치·약속·비법·해독법·아이템
   전달처럼 요약하면 디테일이 죽는 문장만. 원문에 없는 문장은 폐기된다.
 ```
-검증 헬퍼 (모듈 레벨, WygLore 파라미터 — 스펙 §6.2):
+검증 헬퍼 (모듈 레벨, WygLore 파라미터 — 스펙 §6.2). **검증 통과분에서 3개를 뽑는다 (검증 전 컷 금지) + 중복 제거**:
 ```python
 _WS_RE = re.compile(r"\s+")
-EXCERPT_MAX = 3        # 유닛당 3개 (스펙 §6.2, WygLore)
-EXCERPT_CHAR_CAP = 400  # 400자 게이트
+EXCERPT_MAX = 3          # 유닛당 3개 (스펙 §6.2, WygLore). 병합 시 5개 캡은
+                         # chunks.EXCERPT_MERGE_MAX (dreamer→chunks 순환 방지)
+EXCERPT_CHAR_CAP = 400   # 400자 게이트
 
 
 def clean_excerpts(excerpts: List[str], source_text: str) -> List[str]:
     """원문 substring 검증 — 지어낸 인용 폐기 (공백 정규화 후 대조).
 
     verify_numbers와 같은 철학: LLM 출력은 원문 대조를 통과해야 저장된다.
+    컷은 검증 뒤에 한다 — 앞에서 자르면 유효 인용이 인덱스 3 이후일 때 유실.
     """
     src = _WS_RE.sub(" ", source_text)
     out: List[str] = []
-    for ex in excerpts[:EXCERPT_MAX]:
+    for ex in excerpts:
         ex = _WS_RE.sub(" ", ex).strip()[:EXCERPT_CHAR_CAP]
-        if ex and ex in src:
+        if ex and ex in src and ex not in out:
             out.append(ex)
+        if len(out) >= EXCERPT_MAX:
+            break
     return out
 ```
 `apply_extraction` 에피소드 루프 — `save_episode` 직전에:
@@ -568,22 +631,23 @@ git add dreaming/records.py dreaming/dreamer.py tests/test_dreaming_records.py t
 git commit -m "feat(dreaming): keyExcerpts 추출 — 결정적 원문 보존 (스펙 §6.2)
 
 에피소드 접힘 = 디테일 사망이던 것을 유닛당 3개·400자 원문 인용으로 보상.
-인용은 원문 substring 검증 통과분만 저장 (verify_numbers와 같은 철학).
+인용은 원문 substring 검증 통과분만 저장 (verify_numbers와 같은 철학),
+검증 후 컷 + 중복 제거.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 5: Tier1 청크 조립에 발췌 포함
+### Task 5: 청크 조립 — Tier1 발췌 렌더 + Tier2 병합 5개
 
 **Files:**
-- Modify: `dreaming/chunks.py` — `assemble_tier1()` (39행 부근)
+- Modify: `dreaming/chunks.py` — `assemble_tier1()`·`assemble_tier2()` (39·46행 부근)
 - Test: `tests/test_dreaming_chunks.py` (기존 파일에 추가)
 
 **Interfaces:**
 - Consumes: Task 4의 `Episode.key_excerpts`
-- Produces: 없음 (말단)
+- Produces: `chunks.EXCERPT_MERGE_MAX = 5` (모듈 로컬 상수 — dreamer가 chunks를 이미 import하므로 역방향은 순환)
 
 - [ ] **Step 1: 실패하는 테스트 작성** — `tests/test_dreaming_chunks.py`에 추가:
 
@@ -600,25 +664,39 @@ def test_tier1_발췌_없으면_기존_바이트_그대로():
     assert "원문:" not in assemble_tier1(ep)   # byte-stable — 구 에피소드 불변
 
 
-def test_tier2_발췌_미포함():
-    ep = Episode(range_start="a", range_end="b", title="거래", summary="요약.",
-                 key_excerpts=["은검을 300골드에 팔았다"])
+def test_tier2_병합_발췌_5개_캡():
+    # 스펙 §6.2: "유닛당 3, 병합 시 5" — 챕터로 접혀도 발췌 5개는 생존
+    eps = [Episode(range_start=f"a{i}", range_end=f"b{i}", title=f"장{i}",
+                   summary="요약.", key_excerpts=[f"발췌{i}-1", f"발췌{i}-2"])
+           for i in range(4)]                   # 총 발췌 8개
+    out = assemble_tier2(eps)
+    assert out.count("원문:") == 5              # 연대순 선착 5개
+    assert '원문: "발췌0-1"' in out and '원문: "발췌2-1"' in out
+    assert "발췌3-2" not in out
+
+
+def test_tier2_발췌_없으면_기존_바이트_그대로():
+    ep = Episode(range_start="a", range_end="b", title="거래", summary="요약.")
     assert "원문:" not in assemble_tier2([ep])
 ```
 
 - [ ] **Step 2: 실패 확인**
 
 Run: `python3 -m pytest tests/test_dreaming_chunks.py -q -k 발췌`
-Expected: FAIL — tier1에 원문 줄 없음
+Expected: FAIL — 원문 줄 미생성
 
-- [ ] **Step 3: 구현** — `assemble_tier1`:
+- [ ] **Step 3: 구현** — `dreaming/chunks.py`. **`dreaming/dreamer.py:18`이 이미 chunks를 import하므로 역방향 import는 순환이다 (확인 완료)** — 상수는 chunks.py 모듈 상단 상수 블록에 둔다:
 
 ```python
+EXCERPT_MERGE_MAX = 5   # 챕터 병합 시 발췌 캡 (스펙 §6.2 "병합 시 5")
+
+
 def assemble_tier1(ep: Episode) -> str:
     """에피소드 청크 (~70% 압축): 제목 + 요약 + 결정적 원문 + 미회수 복선.
 
     발췌는 캐시되는 프리픽스에 살므로 턴당 추가 비용은 read 0.1×뿐이다.
-    Tier2 승격 시 발췌는 버려진다 — 먼 과거의 디테일 회수는 지식 검색 몫.
+    상주 비용 실측(플랜 리뷰): 리빌드 상각 +~860자/턴 uncached (+11%) —
+    hot zone 주입(턴당 전액)보다 싸서 감수한다.
     """
     lines = [f"[지난 이야기 · {ep.title}]", ep.summary.strip()]
     for ex in ep.key_excerpts:
@@ -626,20 +704,32 @@ def assemble_tier1(ep: Episode) -> str:
     if ep.open_threads:
         lines.append("남은 실마리: " + " / ".join(ep.open_threads))
     return "\n".join(lines)
+
+
+def assemble_tier2(episodes: List[Episode]) -> str:
+    """챕터 청크 (~90% 압축): 에피소드당 한 줄 + 병합 발췌 5개 (스펙 §6.2)."""
+    lines = ["[지난 장 요약]"]
+    for ep in episodes:
+        lines.append(f"- {ep.title}: {_one_line(ep.summary)[:100]}")
+    merged = [ex for ep in episodes for ex in ep.key_excerpts]
+    for ex in merged[:EXCERPT_MERGE_MAX]:      # 병합 시 5 — 연대순 선착
+        lines.append(f'원문: "{ex}"')
+    return "\n".join(lines)
 ```
 
 - [ ] **Step 4: 통과 확인 + 전체 회귀**
 
-Run: `python3 -m pytest tests/test_dreaming_chunks.py -q` 후 `python3 -m pytest tests/ -q`
+Run: `python3 -m pytest tests/ -q`
 Expected: 전부 PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add dreaming/chunks.py tests/test_dreaming_chunks.py
-git commit -m "feat(dreaming): Tier1 청크에 keyExcerpts 렌더 — 접힌 과거의 디테일 보존
+git commit -m "feat(dreaming): 청크에 keyExcerpts 렌더 — Tier1 유닛당 3, Tier2 병합 5 (스펙 §6.2)
 
-발췌 없는 구 에피소드는 조립 바이트 불변 (캐시 안전).
+발췌 없는 구 에피소드는 두 티어 모두 조립 바이트 불변 (캐시 안전).
+챕터로 접혀도 결정적 원문 5개는 생존 — 먼 과거 디테일의 마지막 방어선.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -667,7 +757,8 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```markdown
 - 주입 예산 실측 (fix-drm-r0, 100턴): confirmed fact 329개 = 약 14K자(≈7~9K tok).
   "선별 ≤2K"는 비용 상한이지 물리 한계가 아니다 — 예산은 `HOT_ZONE_CHAR_BUDGET`
-  파라미터로 두고, 상향 여부는 retrieval_lab의 예산 내 적중률로 결정한다.
+  파라미터로 두고, 상향 여부는 benchmarks/retrieval_lab.py의 프로브별 필요예산
+  곡선으로 결정한다 (T59류 패러프레이즈 포함 여부가 관건).
 ```
 
 - [ ] **Step 3: Commit**
@@ -683,13 +774,16 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ## 명시적 Out of Scope
 
-- **Track A** (Dreamer 추출실패 4건 — T19·69·79·89): fact가 스토어에 없어 검색으로 회수 불가. 별도 플랜.
-- **벤치 고정 건초더미** (4변형 동일 히스토리·동일 질문): 별도 플랜. 이 플랜 완료 전 야간 본런 재실행 금지.
-- 덴스/임베딩 검색, Actor `knows[]` POV 게이팅, Tier3 시놉시스, pinned 승격 지연: 스펙엔 있으나 이번 범위 아님.
+- **Track A** (Dreamer 추출실패 4건 — T19·69·79·89 + **에피소드가 전부 1턴짜리인 경계 품질 문제**): fact가 스토어에 없거나 에피소드 입도가 잘못된 건 검색·발췌로 못 고침. 별도 플랜. keyExcerpts의 실효 사거리도 에피소드 입도가 고쳐져야 늘어난다.
+- **벤치 고정 건초더미** (4변형 동일 히스토리·동일 질문): 별도 플랜. **이 플랜 완료 전 야간 본런 재실행 금지.**
+- **T59(패러프레이즈) 회수**: 어휘 한계로 이번 범위에서 명시적 절단. 단, Task 3 Step 5의 예산 곡선(need 값)으로 "예산 상향 시 회수 가능한가"의 숫자를 남긴다 — 절단이 상수 6000의 결과인지 물리 한계인지 구분하기 위해.
+- 덴스/임베딩 검색, Actor `knows[]` POV 게이팅, Tier3 시놉시스, pinned 승격 지연.
 
 ## 완료 기준
 
 1. `python3 -m pytest tests/ -q` 전부 PASS.
-2. retrieval_lab: T29·T39·T99 예산 내 `IN` (T59는 `OUT` 허용 — 알려진 한계로 기록).
-3. 구 에피소드(발췌 없음)의 Tier1 조립 바이트 불변.
-4. 실행 후기(플랜 결함·결과 숫자)를 이 파일 하단에 기록 — CLAUDE.md 플랜 후기 규약.
+2. retrieval_lab 본측정(Task 3 Step 5): **T39 `IN`** (need ≤ 6000). T29·T99는 진단 참고 (게이트 아님 — 매칭 모호 48개/이미 IN).
+3. 구 에피소드(발췌 없음)의 Tier1·Tier2 조립 바이트 불변.
+4. 예산 곡선(전 프로브 need 값)이 실행 후기에 기록됨 — 6000 유지/상향 결정의 근거.
+5. **효과 범위의 정직한 명시**: 이 플랜의 완료 = 유닛테스트 + 오프라인 순위 개선. 실제 기억 개선 주장은 벤치 재설계(고정 건초더미) 후에만 가능 (FINDINGS §3 — 현행 프로브 벤치는 무효 판정). 벤치 재설계 후에도 개선이 없으면 랭킹 배선(Task 3)은 revert 후보다.
+6. 실행 후기(플랜 결함·결과 숫자)를 이 파일 하단에 기록 — CLAUDE.md 플랜 후기 규약.
