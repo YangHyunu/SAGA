@@ -1519,3 +1519,69 @@ def test_gate_g9_always_lands_in_warnings_never_failed():
         out = gates.evaluate(result)
         assert "G9" not in [gid for gid, _ in out["failed"]]
         assert "G9" in [gid for gid, _ in out["warnings"]]
+
+
+# ---- main() exit code (Task 2 리뷰 수정: 스모크가 게이트-only 실패를 용인) ----
+#
+# night_run.sh의 dreaming 스모크 단계는 run2.py의 프로세스 종료 코드로
+# "본런을 시작해도 되는가"를 판단한다. G1(compression_planned)은 업스트림
+# 압축 버그(DREAMING_FLAW.md)가 살아있는 한 dreaming 런마다 항상 실패하므로,
+# "게이트만 실패(크래시·중단 없음)"와 "진짜 크래시/중단"을 exit 코드로
+# 구분하지 않으면 스모크가 매일 밤 "실패"로 오판돼 100턴 본런이 영구
+# 스킵된다. 아래 두 테스트는 run2.run_once를 스텁으로 갈아끼워 프리셋/카드
+# 파일 없이 main()의 종료 코드 분기만 검증한다 — 이 워크트리엔
+# dreaming_data/프리셋이 없어 glob+skip 픽스처에 의존하면 이 회귀를 못
+# 잡는다(스킵되어 버리므로).
+
+def test_main_exits_with_gate_only_code_when_gates_fail_but_no_abort(
+        monkeypatch):
+    """중단(aborted) 없이 게이트만 실패하면 main()이 GATE_ONLY_EXIT(2)로
+    종료한다 — night_run.sh 스모크가 이 코드를 용인해 본런을 시작해야
+    한다. 이 구분이 없어져 다시 일반 SystemExit(문자열, 실질 exit 1)로
+    합쳐지면 이 테스트가 실패한다."""
+    import sys
+
+    import pytest
+
+    from benchmarks.eval import run2
+
+    def fake_run_once(*args, **kwargs):
+        return {"totals": {"probes": 1, "judge_pass": 0, "cost": 0.0,
+                           "aborted": ""},
+                "gates": {"failed": [("G1", "꿈 사이클 미확인")],
+                         "warnings": [("G9", "미검증")]}}
+
+    monkeypatch.setattr(run2, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["run2.py", "preset.risup", "card.json", "dreaming",
+         "--session", "gate-only-test", "--turns", "1"])
+    with pytest.raises(SystemExit) as exc:
+        run2.main()
+    assert exc.value.code == run2.GATE_ONLY_EXIT
+    assert run2.GATE_ONLY_EXIT == 2
+
+
+def test_main_exits_with_distinct_code_on_abort_not_gate_only(monkeypatch):
+    """진짜 중단(aborted)은 GATE_ONLY_EXIT과 다른 코드로 종료해야 한다 —
+    스모크 단계가 크래시/중단까지 용인해버리면 안 되므로."""
+    import sys
+
+    import pytest
+
+    from benchmarks.eval import run2
+
+    def fake_run_once(*args, **kwargs):
+        return {"totals": {"probes": 0, "judge_pass": 0, "cost": 0.0,
+                           "aborted": "누적 리롤 10회 (T5) — 프로바이더 거부 반복, "
+                                      "런 중단"},
+                "gates": {"failed": [], "warnings": [("G9", "미검증")]}}
+
+    monkeypatch.setattr(run2, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["run2.py", "preset.risup", "card.json", "dreaming",
+         "--session", "abort-test", "--turns", "1"])
+    with pytest.raises(SystemExit) as exc:
+        run2.main()
+    assert exc.value.code != run2.GATE_ONLY_EXIT

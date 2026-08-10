@@ -29,6 +29,7 @@ import argparse
 import json
 import pathlib
 import shutil
+import sys
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -544,6 +545,14 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     return result
 
 
+# 크래시/중단(SystemExit 문자열 → exit 1)과 "완주했지만 게이트 실패"를 exit
+# 코드로 구분한다. G1(compression_planned)은 업스트림 압축 버그
+# (DREAMING_FLAW.md)가 살아있는 한 dreaming 런마다 계속 빨간불이라, 스모크
+# 단계(night_run.sh)가 "실행 가능한가"만 확인하려면 이 코드를 용인해야
+# 한다 — exit 1(진짜 크래시·abort·격리)까지 삼키면 안 된다.
+GATE_ONLY_EXIT = 2
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("preset")
@@ -595,10 +604,18 @@ def main() -> None:
             print(f"[run{n}] 게이트 실패: "
                   + ", ".join(gid for gid, _ in failed_gates), flush=True)
         if t.get("aborted"):
-            # 부분 결과는 이미 저장됨 — 비정상 종료로 상위 스크립트에 알린다
+            # 부분 결과는 이미 저장됨 — 비정상 종료(exit 1)로 상위
+            # 스크립트에 알린다. 크래시/중단은 게이트 실패보다 심각하므로
+            # GATE_ONLY_EXIT이 아니라 기본 exit 1로 구분해서 알린다.
             raise SystemExit(f"런 중단: {t['aborted']}")
     if gate_failed:
-        raise SystemExit("런 유효성 게이트 실패 — 결과 JSON의 gates.failed 참고")
+        # 여기 도달했다는 건 위에서 abort로 죽지 않았다는 뜻 — 런은
+        # 완주했지만 유효성 게이트가 하나 이상 실패했다는 신호를 exit
+        # 1과 구분되는 코드로 낸다(GATE_ONLY_EXIT). night_run.sh 스모크
+        # 단계는 이 코드를 용인하고, 본런은 여전히 비영점으로 보고 감지한다.
+        print("런 유효성 게이트 실패 — 결과 JSON의 gates.failed 참고",
+              flush=True)
+        sys.exit(GATE_ONLY_EXIT)
 
 
 if __name__ == "__main__":

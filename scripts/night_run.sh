@@ -51,21 +51,28 @@ sleep 3
 kill -0 $PROXY_PID 2>/dev/null || { say "프록시 기동 실패 — 나머지 3변형은 계속"; PROXY_PID=""; }
 
 # ── dreaming: 스모크 관통 확인 + 격리 게이트 통과 후에만 본런 ──
+# run2.py exit code: 0=완전 정상, 2=완주했지만 런 유효성 게이트 실패
+# (GATE_ONLY_EXIT — 예: 압축 버그가 살아있는 한 G1은 항상 빨간불),
+# 그 외 비영점=크래시/중단/격리. 스모크는 "실행 가능한가"만 확인하는
+# 단계라 2는 용인하고, 그 외 비영점만 실패로 본다 — 본런(run_variant)은
+# 게이트 실패를 그대로 exit 2로 보고해 상위에서 감지할 수 있게 둔다.
 SMOKE_SESSION="${SESSION_PREFIX}-smoke"
 PID_D=""
 if [ -n "$PROXY_PID" ]; then
-  if python3 -u -m benchmarks.eval.run2 "$PRESET" "$CARD" dreaming \
+  python3 -u -m benchmarks.eval.run2 "$PRESET" "$CARD" dreaming \
        --session "$SMOKE_SESSION" --turns "$SMOKE_TURNS" \
-       --trim-tokens "$TRIM_TOKENS" --reset >> "$LOG" 2>&1; then
+       --trim-tokens "$TRIM_TOKENS" --reset >> "$LOG" 2>&1
+  SMOKE_EXIT=$?
+  if [ "$SMOKE_EXIT" -eq 0 ] || [ "$SMOKE_EXIT" -eq 2 ]; then
     QCOUNT=$(ls "dreaming_data/${SMOKE_SESSION}/quarantine/" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$QCOUNT" -eq 0 ]; then
-      say "dreaming 스모크 통과 (격리 0건) — ${TURNS}턴 시작"
+      say "dreaming 스모크 통과 (격리 0건, exit ${SMOKE_EXIT}) — ${TURNS}턴 시작"
       run_variant dreaming drm & PID_D=$!
     else
       say "dreaming 스모크 격리 ${QCOUNT}건 — 본런 건너뜀 (아침에 dreaming_data/${SMOKE_SESSION}/quarantine/ 확인)"
     fi
   else
-    say "dreaming 스모크 실패 — 본런 건너뜀 (아침에 proxy-8790.log 확인)"
+    say "dreaming 스모크 실패 (exit ${SMOKE_EXIT}) — 본런 건너뜀 (아침에 proxy-8790.log 확인)"
   fi
 fi
 
