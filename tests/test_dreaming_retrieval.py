@@ -76,3 +76,20 @@ def test_scene_query_비문자열_content_무시():
     msgs = [{"role": "user", "content": [{"type": "text"}]},
             {"role": "user", "content": "진짜 질문"}]
     assert scene_query(msgs) == "진짜 질문"
+
+
+import os
+from pathlib import Path
+
+import pytest
+
+_DATA = Path(os.environ.get("DREAMING_DATA_DIR", "dreaming_data"))
+
+
+@pytest.mark.skipif(not (_DATA / "fix-drm-r0" / "facts").is_dir(),
+                    reason="로컬 실측 데이터 없음")
+def test_retrieval_lab_실데이터_로드():
+    from dreaming.storage import JsonDirStorage
+    from dreaming.store import MemoryStore
+    ms = MemoryStore(JsonDirStorage(_DATA), "fix-drm-r0")
+    assert len(ms.list_facts()) > 300
