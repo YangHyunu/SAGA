@@ -13,7 +13,7 @@ HypaV3 대조군은 RisuAI 클라이언트가 필요해 플러그인 단계로 �
 from __future__ import annotations
 
 import copy
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from benchmarks.cardsim.lorebook import Card, activate, build_messages
 
@@ -34,13 +34,19 @@ def _bigrams(text: str) -> set:
     return {t[i:i + 2] for i in range(len(t) - 1)}
 
 
-def retrieve_turns(history: List[Dict], query: str, k: int = 3) -> List[str]:
-    """트림으로 잘릴 과거 pair에서 질의와 겹치는 top-k 발췌 (결정론)."""
-    kept = trim_window(history)
+def retrieve_turns(history: List[Dict], query: str, k: int = 3,
+                   window: Optional[List[Dict]] = None) -> List[str]:
+    """트림으로 잘릴 과거 pair에서 질의와 겹치는 top-k 발췌 (결정론).
+
+    window: 호출자가 실제 전송하는 창 (history의 suffix). 넘기면 그 경계
+    밖을 잘린 구간으로 본다 — run2처럼 token_trim으로 창을 자르는 호출자는
+    반드시 넘겨야 발췌가 실창과 겹치지 않는다. 없으면 trim_window 기준.
+    """
+    kept = trim_window(history) if window is None else window
     cut = history[:len(history) - len(kept)]
     q = _bigrams(query)
     scored = []
-    for i in range(0, len(cut) - 1, 2):
+    for i in range(len(cut) - 1):
         if cut[i]["role"] != "user" or cut[i + 1]["role"] != "assistant":
             continue
         text = f"유저: {cut[i]['content']}\n캐릭터: {cut[i + 1]['content']}"
