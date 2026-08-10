@@ -230,3 +230,35 @@ def test_default_window_start_keeps_existing_behavior():
     msgs = _msgs(4)
     assert apply_compression(msgs, _PLAN) == \
         apply_compression(msgs, _PLAN, window_start_turn=0)
+
+
+# ------------------------------------------------------------------ #
+# 발췌 렌더링 (Task 5)
+# ------------------------------------------------------------------ #
+
+def test_tier1_발췌_포함():
+    ep = Episode(range_start="a", range_end="b", title="거래", summary="요약.",
+                 key_excerpts=["은검을 300골드에 팔았다"])
+    out = assemble_tier1(ep)
+    assert '원문: "은검을 300골드에 팔았다"' in out
+
+
+def test_tier1_발췌_없으면_기존_바이트_그대로():
+    ep = Episode(range_start="a", range_end="b", title="거래", summary="요약.")
+    assert "원문:" not in assemble_tier1(ep)   # byte-stable — 구 에피소드 불변
+
+
+def test_tier2_병합_발췌_5개_캡():
+    # 스펙 §6.2: "유닛당 3, 병합 시 5" — 챕터로 접혀도 발췌 5개는 생존
+    eps = [Episode(range_start=f"a{i}", range_end=f"b{i}", title=f"장{i}",
+                   summary="요약.", key_excerpts=[f"발췌{i}-1", f"발췌{i}-2"])
+           for i in range(4)]                   # 총 발췌 8개
+    out = assemble_tier2(eps)
+    assert out.count("원문:") == 5              # 연대순 선착 5개
+    assert '원문: "발췌0-1"' in out and '원문: "발췌2-1"' in out
+    assert "발췌3-2" not in out
+
+
+def test_tier2_발췌_없으면_기존_바이트_그대로():
+    ep = Episode(range_start="a", range_end="b", title="거래", summary="요약.")
+    assert "원문:" not in assemble_tier2([ep])
