@@ -747,6 +747,103 @@ def test_probe_mentions_fact_object_catches_real_drift_case():
     assert _probe_mentions_fact_object(fact, faithful) is True
 
 
+# ---- Task 1: 정답 유출 차단 — 마스킹 + 하드 게이트 (D5/I1·I2) ----
+
+def test_mask_value_replaces_value_and_preserves_rest():
+    from benchmarks.eval.lucid import mask_value
+    text = "찻값으로 250골드를 냈다."
+    masked = mask_value(text, "250골드")
+    assert "250골드" not in masked
+    assert "찻값으로" in masked and "냈다" in masked
+
+
+def test_mask_value_skips_single_char_value():
+    """1글자 값은 마스킹하지 않는다 — 무관한 글자까지 지워 fact.text가
+    훼손되는 사고를 막는 가드."""
+    from benchmarks.eval.lucid import mask_value
+    text = "그는 문을 열었다."
+    assert mask_value(text, "문") == text
+
+
+def test_probe_user_masked_output_hides_value():
+    from benchmarks.eval.lucid import DirFact, _probe_user
+    fact = DirFact(fid="x", kind="exact", value="250골드",
+                   text="찻값으로 250골드를 냈다.", turn=1)
+    out = _probe_user(fact, scene="", style="")
+    assert "250골드" not in out
+
+
+def test_probe_leaks_value_catches_korean_numeral_variant():
+    """표기 변형("250"/"이백오십")까지 잡는다 — 마스킹(리터럴)과의 비대칭."""
+    from benchmarks.eval.lucid import DirFact, probe_leaks_value
+    fact = DirFact(fid="x", kind="exact", value="250", text="가격", turn=1)
+    assert probe_leaks_value("그때 이백오십 냥 얘기 있었잖아요.", fact) is True
+    assert probe_leaks_value("그때 그 얘기 있었잖아요.", fact) is False
+
+
+def test_probe_leak_retry_then_clean_records_normally():
+    """1회 누출 후 재생성이 깨끗하면 정상 기록 — fact는 그대로, 필러로
+    강등되지 않는다."""
+    from benchmarks.eval import run2
+
+    fact = DirFact(fid="x", kind="exact", value="250골드",
+                   text="찻값", turn=1)
+    replies = iter(["250골드 얘기 있잖아요.", "그때 찻값 얘기, 기억나세요?"])
+
+    def fake_lucid(system, user):
+        return next(replies)
+
+    ptype, out_fact, utext, wrong, retries, dropped = run2._resolve_probe_turn(
+        20, "recall", fact, fake_lucid, "직전 장면", "", [], "", {})
+    assert retries == 1 and dropped == 0
+    assert out_fact is fact
+    assert ptype == "recall"
+    assert utext == "그때 찻값 얘기, 기억나세요?"
+    assert wrong == ""
+
+
+def test_probe_leak_twice_demotes_to_filler_and_frees_fact():
+    """2회 연속 누출이면 필러로 강등하고 fact.probed를 되돌린다 — 사실을
+    태우지 않고 미출제 풀에 남긴다."""
+    from benchmarks.eval import run2
+
+    fact = DirFact(fid="x", kind="exact", value="250골드",
+                   text="찻값", turn=1)
+    fact.probed = True             # probe_plan이 이미 마킹해 뒀다고 가정
+    replies = iter(["250골드 얘기 있잖아요.", "250골드였나...",
+                    "그냥 지나가는 안부 인사."])
+
+    def fake_lucid(system, user):
+        return next(replies)
+
+    ptype, out_fact, utext, wrong, retries, dropped = run2._resolve_probe_turn(
+        20, "recall", fact, fake_lucid, "직전 장면", "", [], "",
+        {"description": ""})
+    assert retries == 1 and dropped == 1
+    assert out_fact is None
+    assert ptype is None
+    assert fact.probed is False
+    assert utext == "그냥 지나가는 안부 인사."
+
+
+def test_matching_module_avoids_lucid_scoring_import_cycle():
+    """matching.py 소스에 benchmarks.eval import가 없고, lucid를 프로세스의
+    첫 import로 해도 순환 없이 성공한다 (A1 회귀)."""
+    import pathlib
+    import subprocess
+    import sys
+
+    from benchmarks.eval import matching
+    src = pathlib.Path(matching.__file__).read_text()
+    assert "benchmarks.eval" not in src
+
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-c", "import benchmarks.eval.lucid"],
+        capture_output=True, text=True, cwd=str(repo_root))
+    assert result.returncode == 0, result.stderr
+
+
 def test_probe_prompt_requires_vague_past_anchor():
     """'그때'·'처음에' 같은 막연한 과거 지시어를 강제해 지시대상 모호성도 줄인다."""
     from benchmarks.eval.lucid import _PROBE_SYS

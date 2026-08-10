@@ -22,33 +22,21 @@ from __future__ import annotations
 
 import pathlib
 import re
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from benchmarks.eval import prompts
 from benchmarks.eval.lucid import DirFact, LlmFn
-from dreaming.numerals import korean_spellings
+# 값 매칭 유틸은 matching.py(최하층)로 이동 — scoring.py가 lucid를 보고
+# lucid가 값 매칭에 scoring을 봐야 해서 생기는 순환(lucid → scoring →
+# lucid)을 피하려는 목적. oracle.py:15가 이 이름들을 scoring에서 재수출
+# 받는 구조를 그대로 쓰고 있어 여기서 재노출한다.
+from benchmarks.eval.matching import (_norm, expect_alternatives,  # noqa: F401
+                                      value_hit as _hit)
 
-_WS = re.compile(r"\s+")
-_DIGITS = re.compile(r"\d+")
 # 카드 스탯바 헤더 — 선두 "[ ... ]" 블록(+구분선). 이름·나이가 상시 박혀
-# 있어 채점에 넣으면 모든 변형이 공짜 적중한다.
+# 있어 채점에 넣으면 모든 변형이 공짜 적중한다. 이건 스탯바 벗기기라
+# matching.py(값 매칭)로 옮기지 않고 여기 남긴다.
 _STATBAR = re.compile(r"^\s*\[[^\]]*\]\s*(?:-{2,}\s*)?")
-
-
-def _norm(text: str) -> str:
-    return _WS.sub("", text)
-
-
-def expect_alternatives(expected_value: str) -> List[str]:
-    """기대값 하나 → 동치 표현 목록. 안에 든 정수마다 한글 수사를 붙인다.
-
-    대본(script.PROBES)은 기대 그룹을 손으로 적어 두지만 디렉터 벤치의
-    DirFact는 값이 문자열 하나뿐이라 여기서 만들어 쓴다.
-    """
-    alts = [expected_value]
-    for digits in _DIGITS.findall(expected_value):
-        alts += korean_spellings(int(digits))
-    return alts
 
 
 _KINDS = ("facts", "commits", "actors", "episodes")
@@ -82,10 +70,6 @@ _Q_FALSE = """[실제 사실]
 캐릭터가 틀린 전제 '{wrong}'을(를) 적극적으로 바로잡거나 부정했는가?
 정정·부정의 명시적 근거가 있어야 Y다. 회피·화제 전환·무시·침묵·얼버무림은
 전부 N이다."""
-
-
-def _hit(hay: str, expected_value: str) -> bool:
-    return any(_norm(alt) in hay for alt in expect_alternatives(expected_value))
 
 
 def oracle_pass(reply: str, expected_value: str,

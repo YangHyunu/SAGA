@@ -12,7 +12,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-from benchmarks.eval import prompts
+from benchmarks.eval import matching, prompts
 # 별칭 재노출 — 기존 테스트(lucid._PROBE_SYS 등)가 이 이름으로 내용을
 # 검증한다. 실제 호출부는 override_from이 반영되도록 prompts.X(점 접근)를
 # 쓴다 — 이 별칭은 이 파일 안에서는 안 쓰인다 (재노출 목적).
@@ -86,14 +86,44 @@ def eligible(ledger: Ledger, turn_now: int, kind: Optional[str] = None,
             if turn_now - f.turn >= min_age]
 
 
-def _probe_user(fact: DirFact, scene: str, style: str) -> str:
+def mask_value(text: str, value: str) -> str:
+    """text 안의 value 리터럴 출현을 마스킹 문자로 치환.
+
+    가드: value가 2자 미만이면 마스킹하지 않고 원문을 그대로 반환한다 —
+    짧은 값이 무관한 글자까지 지워 fact.text를 훼손하는 사고를 막는다.
+
+    비대칭 주의(알려진 절충, D5): 이 마스킹은 리터럴 치환이지만
+    probe_leaks_value 게이트는 한글 수사 변형("250"/"이백오십")까지 잡는다.
+    그래서 변형 표기를 가진 값은 마스킹돼도 게이트에 걸려 재생성으로 몰릴
+    수 있다 — probe_leak_retries로 그 빈도를 관측하고, 높으면 후속에서
+    마스킹을 변형까지 확장한다.
+    """
+    if len(value) < 2:
+        return text
+    return text.replace(value, "◻︎")
+
+
+def _probe_user(fact: DirFact, scene: str, style: str, mask: bool = True) -> str:
     parts = []
     if scene:
         parts.append(f"[직전 캐릭터 응답 — 여기에 이어서 말한다]\n{scene[-800:]}")
     if style:
         parts.append(f"[유저 문체 예시]\n{style}")
-    parts.append(f"[과거 사실]\n{fact.text} (핵심값: {fact.value})")
+    if mask:
+        parts.append(f"[과거 사실]\n{mask_value(fact.text, fact.value)}")
+    else:
+        # make_false_premise 전용 — 오염값을 만들려면 원값이 필요하다(I2).
+        parts.append(f"[과거 사실]\n{fact.text} (핵심값: {fact.value})")
     return "\n".join(parts)
+
+
+def probe_leaks_value(utext: str, fact: DirFact) -> bool:
+    """생성된 프로브 발화가 정답(한글 수사 변형 포함)을 그대로 담았는지.
+
+    matching.value_hit은 hay가 이미 _norm 처리된 문자열이길 요구한다
+    (matching.py 계약) — 여기서 정규화해 넘긴다.
+    """
+    return matching.value_hit(matching._norm(utext), fact.value)
 
 
 _PARTICLES = ("에게서", "에서", "으로", "이라서", "이지만", "하고", "까지",
@@ -128,7 +158,9 @@ def make_probe(llm: LlmFn, fact: DirFact, scene: str = "",
 
 def make_false_premise(llm: LlmFn, fact: DirFact, scene: str = "",
                        style: str = "") -> Tuple[str, str]:
-    raw = llm(prompts.FALSE_SYS, _probe_user(fact, scene, style))
+    # mask=False: 오염값을 그럴듯하게 지어내려면 프롬프트에 원값이 있어야
+    # 한다(I2 예외) — 발화 자체에는 오염값만 실리게 하는 건 FALSE_SYS의 몫.
+    raw = llm(prompts.FALSE_SYS, _probe_user(fact, scene, style, mask=False))
     q, wrong = "", ""
     for line in raw.splitlines():
         if line.startswith("질문:"):

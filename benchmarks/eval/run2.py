@@ -70,7 +70,7 @@ from benchmarks.eval.quality import (abort_reroll_count,
 from benchmarks.eval.lucid import (DirFact, Ledger, LlmFn, extract_facts,
                                    make_false_premise, make_probe,
                                    _probe_mentions_fact_object,
-                                   probe_plan)
+                                   probe_leaks_value, probe_plan)
 from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
 from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
@@ -145,6 +145,69 @@ def recent_dialogue(history: List[Dict], pairs: int = 3) -> str:
     return "\n\n".join(
         f"[{'렌' if m['role'] == 'user' else '캐릭터'}]\n{m['content'][-600:]}"
         for m in tail)
+
+
+def _filler_turn(i: int, history: List[Dict], last_reply: str, dir_sys: str,
+                 card: Dict, lucid: LlmFn) -> str:
+    """프로브 자격이 없는(또는 누출로 강등된) 턴의 필러 유저 발화 생성.
+
+    run_once 본문 else 분기에서 추출 — probe_plan 자격이 없는 턴뿐 아니라
+    누출 2연속으로 강등된 프로브 턴도 이걸 재사용해야 해서 별도 함수로 뺐다.
+    """
+    ctx = recent_dialogue(history) or f"[캐릭터]\n{last_reply[-600:]}"
+    # T41에 무조건 한 번, T45까지는 **캐릭터가** 아직 안 등장시켰을
+    # 때만 재유도 — 유저 발화까지 검사하면 T41 디렉터가 이름을 말한
+    # 순간 retry가 영구 봉쇄된다 (실측: retry 죽은 코드였음).
+    # 등장 후 유지는 스케줄이 아니라 DIRECT_SYS 조연 조항에 맡긴다.
+    npc_in_reply = any(NPC_NAME in m["content"] for m in history
+                       if m["role"] == "assistant")
+    npc_due = (i == NPC_EVENT_TURN
+              or (NPC_EVENT_TURN < i <= NPC_EVENT_RETRY
+                  and not npc_in_reply))
+    return lucid(
+        dir_sys + f"\n[작품 설정]\n{card.get('description', '')[:2000]}",
+        f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")
+
+
+def _probe_text(lucid: LlmFn, fact: DirFact, ptype: Optional[str],
+                last_reply: str, few_shot: str) -> Tuple[str, str]:
+    """프로브/오염 발화 생성 한 번. false는 (발화, 오염값), 나머지는 오염값 없음."""
+    if ptype == "false":
+        return make_false_premise(lucid, fact, scene=last_reply, style=few_shot)
+    return make_probe(lucid, fact, scene=last_reply, style=few_shot), ""
+
+
+def _resolve_probe_turn(i: int, ptype: Optional[str], fact: Optional[DirFact],
+                        lucid: LlmFn, last_reply: str, few_shot: str,
+                        history: List[Dict], dir_sys: str, card: Dict
+                        ) -> Tuple[Optional[str], Optional[DirFact], str, str,
+                                  int, int]:
+    """이번 턴의 유저 발화를 정한다 — 프로브 생성 + 누출 하드 게이트(D5/I1·I2).
+
+    fact가 있으면 프로브/false 발화를 만들고 probe_leaks_value로 정답 유출을
+    검사한다. 새면 1회만 재생성한다. 재생성도 새면(그리고 자격 있는 fact가
+    애초에 없었으면) 이 턴을 _filler_turn으로 강등한다 — 이때 fact.probed를
+    되돌려 사실을 태우지 않고 미출제 풀에 남긴다. false 프로브도 참값
+    기준으로 검사한다 — 발화에는 오염값만 실려야 하니까(I2).
+
+    반환: (ptype, fact, utext, wrong, leak_retries, leak_dropped). 마지막
+    둘은 이번 턴에 벌어진 재시도/강등 건수(0 또는 1) — 호출부가 누적한다.
+    """
+    retries, dropped = 0, 0
+    wrong = ""
+    if fact is not None:
+        utext, wrong = _probe_text(lucid, fact, ptype, last_reply, few_shot)
+        if probe_leaks_value(utext, fact):
+            retries = 1
+            utext, wrong = _probe_text(lucid, fact, ptype, last_reply, few_shot)
+            if probe_leaks_value(utext, fact):
+                dropped = 1
+                fact.probed = False        # 태우지 않고 미출제 풀로 되돌림
+                fact = None
+    if fact is None:
+        ptype = None                       # eligible 없거나 누출로 강등 — 필러로
+        utext = _filler_turn(i, history, last_reply, dir_sys, card, lucid)
+    return ptype, fact, utext, wrong, retries, dropped
 
 
 def _load_json(path: str) -> Dict:
@@ -294,7 +357,8 @@ def _collect_totals(variant: str, session: str, run_no: int,
                     prompt_set: Dict[str, object], turns: List[Dict],
                     probes: List[Dict], ledger: Ledger, lucid: LlmFn,
                     judge: LlmFn, hypa_cost0: float, hypa_truncated0: int,
-                    aborted: str) -> Dict:
+                    aborted: str, probe_leak_retries: int = 0,
+                    probe_leak_dropped: int = 0) -> Dict:
     # totals 집계: probes/turns에서 판정·비용을 합산해 최종 result를 조립.
     passed = sum(1 for p in probes if p["judge"] is True)
     unparsed = sum(1 for p in probes if p["judge"] is None)
@@ -320,7 +384,10 @@ def _collect_totals(variant: str, session: str, run_no: int,
                          # hypa 요약 콜 — 모듈 전역 누적이라 런 시작 대비 증분
                          "cost_hypa": round(hypa.SUMMARY_COST - hypa_cost0, 4),
                          "hypa_truncated": hypa.SUMMARY_TRUNCATED - hypa_truncated0,
-                         "aborted": aborted}}
+                         "aborted": aborted,
+                         # 0이 정상 — D5 누출 하드 게이트가 걸린 횟수.
+                         "probe_leak_retries": probe_leak_retries,
+                         "probe_leak_dropped": probe_leak_dropped}}
     return result
 
 
@@ -350,6 +417,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         dir_sys += f"\n[실제 유저 발화 예시 — 문체 참고]\n{few_shot}"
     turns, probes = [], []
     total_rerolls, reroll_streak, aborted = 0, 0, ""
+    probe_leak_retries, probe_leak_dropped = 0, 0
     sched = probe_schedule(total_turns, probe_every)
     # hypa 상태 — 요약은 세션 안에서 누적된다 (data.summaries).
     hypa_S = hypa.load_hypa_settings(HYPA_EXPORT) if variant == "hypa" else None
@@ -377,27 +445,11 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             plan = probe_plan(ledger, i, {ptype: 1})
             if plan:
                 _, fact = plan[0]
-        if fact is not None and ptype == "false":
-            utext, wrong = make_false_premise(lucid, fact,
-                                              scene=last_reply, style=few_shot)
-        elif fact is not None:
-            utext = make_probe(lucid, fact,
-                               scene=last_reply, style=few_shot)
-        else:
-            ptype = None                       # eligible 없으면 필러로 강등
-            ctx = recent_dialogue(history) or f"[캐릭터]\n{last_reply[-600:]}"
-            # T41에 무조건 한 번, T45까지는 **캐릭터가** 아직 안 등장시켰을
-            # 때만 재유도 — 유저 발화까지 검사하면 T41 디렉터가 이름을 말한
-            # 순간 retry가 영구 봉쇄된다 (실측: retry 죽은 코드였음).
-            # 등장 후 유지는 스케줄이 아니라 DIRECT_SYS 조연 조항에 맡긴다.
-            npc_in_reply = any(NPC_NAME in m["content"] for m in history
-                               if m["role"] == "assistant")
-            npc_due = (i == NPC_EVENT_TURN
-                       or (NPC_EVENT_TURN < i <= NPC_EVENT_RETRY
-                           and not npc_in_reply))
-            utext = lucid(
-                dir_sys + f"\n[작품 설정]\n{card.get('description', '')[:2000]}",
-                f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")
+        ptype, fact, utext, wrong, leak_retries, leak_dropped = (
+            _resolve_probe_turn(i, ptype, fact, lucid, last_reply, few_shot,
+                               history, dir_sys, card))
+        probe_leak_retries += leak_retries
+        probe_leak_dropped += leak_dropped
         dir_sec = round(time.time() - t_dir, 1)
 
         rerolls_before = total_rerolls
@@ -439,7 +491,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                              probes=probes, ledger=ledger, lucid=lucid,
                              judge=judge, hypa_cost0=hypa_cost0,
                              hypa_truncated0=hypa_truncated0,
-                             aborted=aborted)
+                             aborted=aborted,
+                             probe_leak_retries=probe_leak_retries,
+                             probe_leak_dropped=probe_leak_dropped)
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1))
