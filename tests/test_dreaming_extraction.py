@@ -44,7 +44,8 @@ def test_prompt_contains_turns_existing_ids_and_is_deterministic():
 # ------------------------------------------------------------------ #
 
 from dreaming.dreamer import (DreamExtraction, ExtractedNumber,
-                              apply_extraction, verify_numbers)
+                              apply_extraction, verify_numbers, ExtractedEpisode,
+                              clean_excerpts)
 from dreaming.storage import JsonDirStorage
 from dreaming.store import MemoryStore
 
@@ -247,3 +248,50 @@ def test_episode_range_from_raw_hashes(tmp_path):
     assert len(eps) == 1
     assert eps[0].range_start == "u0" and eps[0].range_end == "u0"
     assert eps[0].start_turn == 0 and eps[0].end_turn == 0
+
+
+# ------------------------------------------------------------------ #
+# keyExcerpts: 원문 대조 검증 (스펙 §6.2)
+# ------------------------------------------------------------------ #
+
+def test_clean_excerpts_원문에_있으면_통과():
+    src = "소연이 말했다. 생강과 꿀을 우린 차는 몸을 데운다. 그리고 떠났다."
+    assert clean_excerpts(["생강과 꿀을 우린 차는 몸을 데운다."], src) == \
+        ["생강과 꿀을 우린 차는 몸을 데운다."]
+
+
+def test_clean_excerpts_지어낸_인용은_폐기():
+    assert clean_excerpts(["원문에 없는 문장"], "실제 원문 텍스트") == []
+
+
+def test_clean_excerpts_공백_정규화_후_대조():
+    src = "약속은  보름달이\n뜨는 밤이다"
+    assert clean_excerpts(["약속은 보름달이 뜨는 밤이다"], src) \
+        == ["약속은 보름달이 뜨는 밤이다"]
+
+
+def test_clean_excerpts_검증_후_컷_그리고_중복제거():
+    # 리뷰 지적 반영: [:3]을 검증 전에 하면 유효 인용이 인덱스 3 이후일 때 유실
+    src = "진짜 하나. 진짜 둘. 진짜 셋."
+    out = clean_excerpts(["가짜", "가짜", "가짜", "진짜 하나.", "진짜 하나.",
+                          "진짜 둘.", "진짜 셋."], src)
+    assert out == ["진짜 하나.", "진짜 둘.", "진짜 셋."]   # 검증 통과분에서 3개, 중복 1회
+
+
+def test_clean_excerpts_400자_캡():
+    src = "가" * 2000
+    out = clean_excerpts(["가" * 500], src)
+    assert out == ["가" * 400]
+
+
+def test_apply_extraction_에피소드에_검증된_발췌만_저장(tmp_path):
+    ms = MemoryStore(JsonDirStorage(tmp_path), "s")
+    raw_by_turn = {1: {"turn_number": 1, "user_hash": "h1",
+                       "user_text": "차 좀 줘",
+                       "assistant_text": "생강과 꿀을 우린 차를 내밀었다"}}
+    ext = DreamExtraction(episodes=[ExtractedEpisode(
+        start_turn=1, end_turn=1, title="차", summary="차를 마셨다",
+        key_excerpts=["생강과 꿀을 우린 차를 내밀었다", "지어낸 인용문"])])
+    apply_extraction(ms, ext, raw_by_turn)
+    (ep,) = ms.list_episodes()
+    assert ep.key_excerpts == ["생강과 꿀을 우린 차를 내밀었다"]

@@ -107,3 +107,14 @@ def test_actor_rejects_unknown_tier():
 
     with pytest.raises(ValidationError):
         Actor(names=["리사"], tier="villain")
+
+
+# ------------------------------------------------------------------ #
+# Episode.key_excerpts (스펙 §6.2)
+# ------------------------------------------------------------------ #
+
+def test_episode_key_excerpts_기본값_빈리스트():
+    from dreaming.records import Episode
+
+    ep = Episode(range_start="a", range_end="b", title="t", summary="s")
+    assert ep.key_excerpts == []

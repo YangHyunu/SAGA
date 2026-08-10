@@ -69,6 +69,7 @@ class ExtractedEpisode(BaseModel):
     title: str
     summary: str
     open_threads: List[str] = []
+    key_excerpts: List[str] = []
 
 
 class DreamExtraction(BaseModel):
@@ -99,7 +100,8 @@ _SYSTEM = """너는 RP 세션 로그에서 구조화 지식을 추출하는 분�
 
 스키마:
 {
-  "episodes": [{"start_turn": int, "end_turn": int, "title": str, "summary": str, "open_threads": [str]}],
+  "episodes": [{"start_turn": int, "end_turn": int, "title": str, "summary": str,
+              "open_threads": [str], "key_excerpts": [str]}],
   "facts": [{"claim": str, "kind": "persistent|scene", "entities": [str],
              "numbers": [{"name": str, "value": number, "unit": str}],
              "evidence_turn": int, "action": "ADD|UPDATE|DELETE|NOOP",
@@ -116,6 +118,9 @@ _SYSTEM = """너는 RP 세션 로그에서 구조화 지식을 추출하는 분�
   새 사실은 ADD이며 target_fact_id는 null. id를 지어내지 마라.
 - commits는 수치·상태 변화만 (소지금, 위치, 시각 등). 서술은 fact로.
 - episodes는 장면 경계로 나눈다. open_threads엔 미회수 복선만.
+- key_excerpts: 그 에피소드에서 나중에 정확히 되짚어야 할 결정적 원문 문장을
+  **원문 그대로 복사** (최대 3개, 각 400자 이내). 수치·약속·비법·해독법·아이템
+  전달처럼 요약하면 디테일이 죽는 문장만. 원문에 없는 문장은 폐기된다.
 - learned_by는 그 사실을 알게 된 인물 이름 목록.
 - fact는 시간이 지나도 참인 지속 정보만 (신상·관계·약속·소유·세계 설정).
   일회성 장면 묘사·순간 동작·감정 표현·표정 변화, 그리고 날씨·온도 같은
@@ -168,6 +173,29 @@ def verify_numbers(numbers: List[ExtractedNumber], text: str) -> bool:
             continue
         return False
     return True
+
+
+_WS_RE = re.compile(r"\s+")
+EXCERPT_MAX = 3          # 유닛당 3개 (스펙 §6.2, WygLore). 병합 시 5개 캡은
+                         # chunks.EXCERPT_MERGE_MAX (dreamer→chunks 순환 방지)
+EXCERPT_CHAR_CAP = 400   # 400자 게이트
+
+
+def clean_excerpts(excerpts: List[str], source_text: str) -> List[str]:
+    """원문 substring 검증 — 지어낸 인용 폐기 (공백 정규화 후 대조).
+
+    verify_numbers와 같은 철학: LLM 출력은 원문 대조를 통과해야 저장된다.
+    컷은 검증 뒤에 한다 — 앞에서 자르면 유효 인용이 인덱스 3 이후일 때 유실.
+    """
+    src = _WS_RE.sub(" ", source_text)
+    out: List[str] = []
+    for ex in excerpts:
+        ex = _WS_RE.sub(" ", ex).strip()[:EXCERPT_CHAR_CAP]
+        if ex and ex in src and ex not in out:
+            out.append(ex)
+        if len(out) >= EXCERPT_MAX:
+            break
+    return out
 
 
 def _turn_text(raw: Dict) -> str:
@@ -280,10 +308,16 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
         end = raw_by_turn.get(ep.end_turn)
         if start is None or end is None:
             continue
+        span = [raw_by_turn[t] for t in range(ep.start_turn, ep.end_turn + 1)
+                if t in raw_by_turn]
+        source = " ".join(r["user_text"] + " " + r["assistant_text"]
+                          for r in span)
+        excerpts = clean_excerpts(ep.key_excerpts, source)
         store.save_episode(Episode(
             range_start=start["user_hash"], range_end=end["user_hash"],
             start_turn=ep.start_turn, end_turn=ep.end_turn,
             title=ep.title, summary=ep.summary, open_threads=ep.open_threads,
+            key_excerpts=excerpts,
         ))
         report["episodes"] += 1
 
