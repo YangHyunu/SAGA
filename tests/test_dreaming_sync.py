@@ -79,6 +79,29 @@ def test_render_is_deterministic(tmp_path):
     assert render_knowledge(ms) == render_knowledge(ms)
 
 
+def test_render_knowledge_쿼리_관련_사실이_최신순을_이긴다(tmp_path):
+    ms = MemoryStore(JsonDirStorage(tmp_path), "sess1")
+    ms.save_fact(Fact(claim="잿빛 강돌은 돌 관의 십자 표식에 끼우는 열쇠다",
+                      status="confirmed",
+                      recorded_at="2026-01-01T00:00:00+00:00"))
+    for i in range(400):   # 예산 6000자 초과 유도 — 최신순이면 강돌이 잘린다
+        ms.save_fact(Fact(claim=f"무관한 최신 사실 {i:03d} " + "채움" * 10,
+                          status="confirmed",
+                          recorded_at=f"2026-06-01T00:{i // 60:02d}:{i % 60:02d}+00:00"))
+    text = render_knowledge(ms, query="그 강돌을 관에 끼우면 어떻게 되지?")
+    assert "강돌" in text          # 쿼리 없던 시절엔 예산에 밀려 탈락하던 사실
+
+
+def test_render_knowledge_쿼리_없으면_최신순_유지(tmp_path):
+    ms = MemoryStore(JsonDirStorage(tmp_path), "sess1")
+    ms.save_fact(Fact(claim="옛 사실", status="confirmed",
+                      recorded_at="2026-01-01T00:00:00+00:00"))
+    ms.save_fact(Fact(claim="새 사실", status="confirmed",
+                      recorded_at="2026-06-01T00:00:00+00:00"))
+    text = render_knowledge(ms)    # query 기본값 "" — 기존 동작 보존
+    assert text.index("새 사실") < text.index("옛 사실")
+
+
 # ------------------------------------------------------------------ #
 # SyncPath
 # ------------------------------------------------------------------ #

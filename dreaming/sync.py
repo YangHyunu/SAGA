@@ -16,6 +16,7 @@ from dreaming.identity import PairLedger, Verdict
 from dreaming.lore_shift import shift_keyed
 from dreaming.marking import mark_cache
 from dreaming.resolver import SessionResolver
+from dreaming.retrieval import rank_facts, scene_query
 from dreaming.storage import Storage
 from dreaming import scaffold
 from dreaming.store import MemoryStore
@@ -30,13 +31,14 @@ _FACT_HEADER = "[확정 사실]\n"
 _MISALIGN_LIMIT = 3
 
 
-def render_knowledge(store: MemoryStore,
+def render_knowledge(store: MemoryStore, query: str = "",
                      budget: int = HOT_ZONE_CHAR_BUDGET) -> str:
     """지식 3블록 렌더 — 상태·인물 먼저 확보하고 사실에 잔여 예산을 준다.
 
-    사실은 **pinned 우선, 그 안에서 최신순**이다. 오름차순으로 앞에서 자르면
-    초반 사실에 영구 고정돼 이후 배운 게 하나도 안 들어간다 (실측: confirmed
-    179개 중 인덱스 0~19만 주입 — docs/DREAMING_FLAW.md §3).
+    사실은 **pinned 우선, 그 안에서 장면 관련도순**이다(어휘 랭킹, 빈
+    쿼리면 최신순). 오름차순으로 앞에서 자르면 초반 사실에 영구 고정돼
+    이후 배운 게 하나도 안 들어간다 (실측: confirmed 179개 중 인덱스
+    0~19만 주입 — docs/DREAMING_FLAW.md §3).
 
     예산을 사실이 다 먹게 두면 뒤에 붙는 인물 블록을 clip_knowledge가 통째로
     날린다. 그래서 개수 상한이 아니라 **잔여 예산**으로 자른다.
@@ -56,7 +58,7 @@ def render_knowledge(store: MemoryStore,
 
     facts = [f for f in store.list_facts()
              if f.pinned or f.status == "confirmed"]
-    facts.sort(key=lambda f: (f.pinned, f.recorded_at), reverse=True)
+    facts = rank_facts(facts, query)
     room = budget - len(_FACT_HEADER)
     for block in (state_block, actor_block):
         if block:
@@ -179,7 +181,11 @@ class SyncPath:
             # 기록은 격리 버퍼로 (스펙 §3.1)
             return messages + tail, verdict
         out, _ = shift_keyed(messages, self._keyed_lore)   # 1안 (스펙 §5)
-        knowledge = clip_knowledge(render_knowledge(self._store))
+        # 첫 요청은 tail_fp를 못 배워 프리셋 프리필이 messages에 섞여 있다
+        # (위 first_request 계산과 동일 조건) — 쿼리가 영문 보일러플레이트로
+        # 오염되므로 빈 쿼리(=최신순 폴백)로 렌더한다.
+        query = "" if first_request else scene_query(messages)
+        knowledge = clip_knowledge(render_knowledge(self._store, query=query))
         bp2 = None
         plan = self._storage.get(f"{self._session}/compression", "plan")
         if (plan is not None and verdict.aligned
