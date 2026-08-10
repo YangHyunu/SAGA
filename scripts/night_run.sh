@@ -14,6 +14,10 @@ SESSION_PREFIX="${SESSION_PREFIX:-night}"
 TURNS="${TURNS:-100}"
 SMOKE_TURNS="${SMOKE_TURNS:-6}"
 TRIM_TOKENS="${TRIM_TOKENS:-100000}"
+# TTL 재압축 창구(C11/C12) 개방 — 기본 ON. 100턴 기준 i%10==9가 10회
+# 걸리고 매회 305초 대기 → 10 × 305s = 3050s = +51분. 1시 디버깅처럼
+# 그 대기가 필요 없을 때만 TTL_WAIT=0으로 끈다.
+TTL_WAIT="${TTL_WAIT:-1}"
 export DREAMING_EVAL_MAX_TOKENS="${DREAMING_EVAL_MAX_TOKENS:-30000}"
 # 추론 예산 4000 토큰 상한 — effort=max는 flash에서 추론이 1K~19K로
 # 폭주해 턴당 400s+·업스트림 행까지 발생 (2026-08-10 발사 중단 실측).
@@ -24,11 +28,14 @@ LOG="dreaming_data/eval/${SESSION_PREFIX}-run.log"
 say() { echo "[$(date +%H:%M:%S)] $1" | tee -a "$LOG"; }
 
 say "=== 야간 비교런: 4변형 각 1런 ${TURNS}턴 @${TRIM_TOKENS} (세션=${SESSION_PREFIX}) ==="
+[ "$TTL_WAIT" = "1" ] && say "TTL_WAIT=1 — ${TURNS}턴 기준 10회 × 305초 = +51분 추가 소요"
 
 run_variant() {
+  local ttl_flag=()
+  [ "$TTL_WAIT" = "1" ] && ttl_flag=(--ttl-wait)
   python3 -u -m benchmarks.eval.run2 "$PRESET" "$CARD" "$1" \
     --session "${SESSION_PREFIX}-$2" --runs 1 --turns "$TURNS" \
-    --trim-tokens "$TRIM_TOKENS" --reset \
+    --trim-tokens "$TRIM_TOKENS" --reset "${ttl_flag[@]}" \
     >> "dreaming_data/eval/${SESSION_PREFIX}-$2.log" 2>&1
   say "변형 $1 종료 (exit $?)"
 }
@@ -51,6 +58,11 @@ sleep 3
 kill -0 $PROXY_PID 2>/dev/null || { say "프록시 기동 실패 — 나머지 3변형은 계속"; PROXY_PID=""; }
 
 # ── dreaming: 스모크 관통 확인 + 격리 게이트 통과 후에만 본런 ──
+# 스모크는 run_variant()를 안 거치는 별도 호출이라 --ttl-wait이 자연히
+# 안 붙는다 — 붙여도 SMOKE_TURNS=6에선 i%10==9가 안 걸려 무의미하고,
+# 스모크의 목적 자체가 "실행 가능한가"만 보는 빠른 확인이라 51분 대기와
+# 안 어울린다. 위 run_variant()와 이 블록이 분리 상태를 유지하는 한
+# 손대지 않아도 계속 배제된다.
 # run2.py exit code: 0=완전 정상, 2=완주했지만 런 유효성 게이트 실패
 # (GATE_ONLY_EXIT — 예: 압축 버그가 살아있는 한 G1은 항상 빨간불),
 # 그 외 비영점=크래시/중단/격리. 스모크는 "실행 가능한가"만 확인하는

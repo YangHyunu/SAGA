@@ -514,7 +514,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                                            2 * total_turns // 3):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
         if ttl_wait and i % 10 == 9:
-            time.sleep(305)                    # TTL 5m 만료 재현 (옵션)
+            # C11/C12 개방용. 이걸 끄면 TTL 재압축 창구는 미시험이며
+            # 캐시율은 과대측정 (EVAL2.md:93).
+            time.sleep(305)
         if reroll_streak >= MAX_REROLL_STREAK:
             aborted = (f"연속 {reroll_streak}턴 품질 게이트 실패 (T{i + 1}, "
                        f"누적 리롤 {total_rerolls}회) — 런 중단")

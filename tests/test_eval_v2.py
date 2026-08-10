@@ -1311,6 +1311,99 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
     assert "hypa_error" in out["turns"][-1]
 
 
+# ---- --ttl-wait → time.sleep(305) 트리거 (Task 3, C11/C12 개방) ----
+
+def _ttl_wait_offline_setup(tmp_path, monkeypatch):
+    """run_once를 오프라인으로 재사용하는 공용 셋업 — 완전 합성 프리셋/카드.
+
+    두 실물 의존을 모두 피한다: (1) dreaming_data/eval/card-soyeon-v2.json은
+    이 워크트리에 없어 다른 오프라인 run_once 테스트 4건이 스킵되고,
+    (2) decode_risup은 external/risuai/src/ts/rpack/rpack_map.bin(gitignore
+    심링크, 이 워크트리엔 없음)을 읽어 심링크 없인 실프리셋도 못 연다
+    (실측 확인). assemble()은 preset["promptTemplate"]만 읽으므로
+    (preset2wire.py:185, 다른 preset[...] 접근 없음 grep 확인) 최소
+    합성 프리셋으로 충분 — decode_risup 자체를 패치해 심링크/실물 파일
+    의존을 없앤다. card도 build_wire/assemble이 card.get(..., 기본값)만
+    참조해(preset2wire.py:183, 197-217) 빈 필드를 허용하므로 최소 합성.
+    """
+    import json
+
+    from benchmarks.eval import run2
+
+    fake_preset = {"promptTemplate": [
+        {"type": "plain", "role": "system", "text": "You are Soyeon."},
+        {"type": "chat", "rangeStart": 0, "rangeEnd": "end"}]}
+    card_path = tmp_path / "card.json"
+    card_path.write_text(json.dumps(
+        {"description": "테스트용 소연 카드", "user_name": "렌",
+         "name": "소연", "greeting": "안녕, 렌."}, ensure_ascii=False))
+
+    def fake_call(variant, session, key, msgs):
+        return {"reply": "…소연은 조용히 고개를 끄덕였다.", "prompt": 100,
+                "cached": 0, "cost": 0.0, "sec": 0.1}
+
+    def _stub_llm(reply):
+        def f(system, user):
+            f.calls += 1
+            return reply
+        f.cost, f.calls = 0.0, 0
+        return f
+
+    sleep_calls: list = []
+    monkeypatch.setattr(run2, "_key", lambda: "offline")
+    monkeypatch.setattr(run2, "decode_risup", lambda path: fake_preset)
+    monkeypatch.setattr(run2, "make_lucid_llm",
+                        lambda: _stub_llm("장터를 함께 걷자고 말한다"))
+    monkeypatch.setattr(run2, "make_judge_llm", lambda: _stub_llm("PASS"))
+    monkeypatch.setattr(run2, "EVAL_DIR", tmp_path)
+    # run2.py는 `time.sleep(...)`를 모듈 전역 `time`(dot 접근)으로 부른다
+    # (transport.py의 기존 스파이 패턴, test_eval_v2.py:1048과 동일 이유) —
+    # run2.time을 패치해야 실제 호출부에 닿는다.
+    monkeypatch.setattr(run2.time, "sleep", lambda s: sleep_calls.append(s))
+    return run2, str(card_path), fake_call, sleep_calls
+
+
+def test_run_once_ttl_wait_no_305_before_threshold(tmp_path, monkeypatch):
+    """total_turns=3, ttl_wait=True → i % 10 == 9 미도달이라 sleep(305) 0회.
+
+    variant="dreaming"을 일부러 골랐다: dreaming 변형은 ttl_wait와 무관하게
+    total_turns//3(=1)·2*total_turns//3(=2)에서 sleep(12)(유휴 Dreamer
+    트리거, run2.py:509-511)를 쏜다 — 감사에서 확인된 함정. 스파이 원시
+    호출 수만 보면(raw sleep_calls에 12가 2번 찍힘) "sleep 호출 없음" 같은
+    순진한 단언이 거짓으로 실패한다. 그래서 인자를 305로 필터링한 결과만
+    확인한다 — 이게 실제로 ttl_wait 트리거만 골라내는 유일한 방법이다.
+    """
+    run2, card_path, fake_call, sleep_calls = (
+        _ttl_wait_offline_setup(tmp_path, monkeypatch))
+
+    out = run2.run_once("unused.risup", card_path, "dreaming", "ttl-below",
+                        0, 45000, [], [], True,
+                        total_turns=3, probe_every=9999, call_fn=fake_call)
+    assert not out["totals"]["aborted"]
+    assert [s for s in sleep_calls if s == 305] == []
+    # 대조: dreaming의 무관한 sleep(12)은 실제로 뜬다 — 필터 없이는
+    # 이 테스트 의도가 raw count로 오판정됨을 스스로 증명.
+    assert sleep_calls.count(12) == 2
+
+
+def test_run_once_ttl_wait_sleeps_305_at_threshold(tmp_path, monkeypatch):
+    """total_turns=10, ttl_wait=True → i=9에서 i % 10 == 9 충족, sleep(305) 1회.
+
+    같은 이유로 variant="dreaming" 유지: total_turns//3(=3)·
+    2*total_turns//3(=6)에서 sleep(12)가 2번 더 섞여 뜬다(raw 호출 3회:
+    12, 12, 305). 305 필터를 거친 결과만 1회여야 정답.
+    """
+    run2, card_path, fake_call, sleep_calls = (
+        _ttl_wait_offline_setup(tmp_path, monkeypatch))
+
+    out = run2.run_once("unused.risup", card_path, "dreaming", "ttl-at",
+                        0, 45000, [], [], True,
+                        total_turns=10, probe_every=9999, call_fn=fake_call)
+    assert not out["totals"]["aborted"]
+    assert [s for s in sleep_calls if s == 305] == [305]
+    assert sleep_calls.count(12) == 2
+
+
 # ---- config.LUCID_MODEL / totals["lucid_model"] (Task 0) ----
 
 def _totals_stub_llm():
