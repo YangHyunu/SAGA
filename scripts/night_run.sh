@@ -1,8 +1,10 @@
 #!/bin/zsh
-# 야간 비교런: vanilla/trim/hypa/dreaming 각 1런 @ maxContext 32K.
+# 야간 비교런: vanilla/trim/hypa/dreaming 각 1런 @ maxContext 100K.
 # 목적: 아침에 변형별 실패 지점(LITM vs evict) 비교.
 # dreaming은 스모크런 후 격리(quarantine) 0건일 때만 본런을 시작한다 —
 # night2-drm-r0 사고(105/106턴 격리)가 100턴을 다 태운 뒤에야 발견된 재발 방지.
+# 2026-08-10 확정 세팅: 100K(2026 실사용 관측·프리셋 기본값 사이 대표) +
+# reasoning=max + 캡 30K(뮈토스 maxResponse 충실). cost-probe 실측 근거.
 set -u
 WT="/Users/yanghyeon-u/Desktop/RISU_ENE/.claude/worktrees/annyeong-3b2696"
 cd "$WT" || exit 1
@@ -11,7 +13,11 @@ CARD="dreaming_data/eval/card-soyeon-v2.json"
 SESSION_PREFIX="${SESSION_PREFIX:-night}"
 TURNS="${TURNS:-100}"
 SMOKE_TURNS="${SMOKE_TURNS:-6}"
-TRIM_TOKENS="${TRIM_TOKENS:-32000}"
+TRIM_TOKENS="${TRIM_TOKENS:-100000}"
+export DREAMING_EVAL_MAX_TOKENS="${DREAMING_EVAL_MAX_TOKENS:-30000}"
+export DREAMING_EVAL_REASONING="${DREAMING_EVAL_REASONING:-max}"
+# 나레이터 flash — 유저 실사용 확인(Pro와 체감 무차이) + 저비용 100턴 테스트.
+export DREAMING_EVAL_MODEL="${DREAMING_EVAL_MODEL:-deepseek/deepseek-v4-flash-0731}"
 LOG="dreaming_data/eval/${SESSION_PREFIX}-run.log"
 say() { echo "[$(date +%H:%M:%S)] $1" | tee -a "$LOG"; }
 

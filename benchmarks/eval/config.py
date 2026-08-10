@@ -34,7 +34,13 @@ NPC_EVENT_RETRY = 44          # 이때까지 미등장이면 다시 유도
 # 캡처에서 RisuAI가 실제로 보낸 값이 4000이다 (capture-mythos req-001).
 # 실측 완성 평균은 771토큰이라 캡이 물리지 않는다 — 절단은 기억 실패로
 # 오인되는 교란이라 finish_reason을 턴마다 기록해 0%임을 증명한다.
-MAX_TOKENS = 4000
+# 2026-08-10: 분량 밴드(1500–3000단어) 시나리오는 한글 완성이 4000을 넘을 수
+# 있어 env로 상향한다. 트림 예산식(max_context − 고정부 − MAX_TOKENS − 50)에도
+# 들어가므로 RisuAI의 maxResponse 선점과 같은 의미를 가진다.
+MAX_TOKENS = int(os.environ.get("DREAMING_EVAL_MAX_TOKENS", "4000"))
+# OpenRouter reasoning 파라미터 (예: "high", "max"). 빈 값이면 미전송 —
+# 기존 런과의 비교성을 위해 기본 off. night_run/스모크에서 env로 켠다.
+REASONING_EFFORT = os.environ.get("DREAMING_EVAL_REASONING", "")
 # 프로바이더가 거부(NSFW 등)를 반복하면 리롤 비용만 태운다 — 런 전체
 # 누적 리롤이 이 값에 닿으면 결과를 저장하고 런을 중단한다.
 MAX_RUN_REROLLS = 10
@@ -53,10 +59,15 @@ TOGGLES = {"mythos_response_language": "1",           # 🇰🇷 한국어
            # (chatVar.svelte.ts:15 vs 35, parser.svelte.ts:1284).
            "mythos_user_character_authorship": "0",   # 🛡️ 보호 — 캡처 req-005 확인
            "mythos_input_authority": "0",             # 🔨 사실 확정
-           "mythos_prose_register": "0",              # 🤷 미지정
-           "mythos_narrative_pov": "0",               # 🤷 자율
+           # 2026-08-10 유저 확정 시나리오: 웹소설·3인칭 초점·1500–3000단어·
+           # 독백 강화·믿을 수 없는 화자. 고정부 +254tok(실카드 포함 11,810tok
+           # 실측). 분량 밴드 단위는 **단어** — 완성 길이·비용에 직결.
+           "mythos_prose_register": "2",              # 📱 웹소설
+           "mythos_narrative_pov": "6",               # 🤖 주요 캐릭터 3인칭
            "mythos_narrative_pacing": "0",            # 🤷 자율
-           "mythos_response_length_band": "0",        # 🤷 미지정
+           "mythos_response_length_band": "2",        # 📝 1500–3000단어
+           "mythos_internal_monologue_emphasis": "1", # 🧩 내면 독백 강화
+           "mythos_unreliable_narrator": "1",         # 🤥 믿을 수 없는 화자
            "mythos_size_scenario": "0",               # 🤷 미지정
            "mythos_genre_ero": "1",
            "mythos_mature_content_guidance": "1",

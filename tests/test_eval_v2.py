@@ -635,12 +635,32 @@ def test_assembly_is_byte_identical_to_real_capture():
 
     셋 다 저작물이라 레포에 없다. 로컬에서 와이어를 건드렸을 때 바이트가
     어긋나면 여기서 잡힌다.
+
+    토글은 **캡처 당시 세트**로 박제한다 — config.TOGGLES는 벤치 시나리오라
+    바뀔 수 있고(2026-08-10 웹소설 시나리오 전환), 이 테스트의 기준은 캡처
+    req-005/006을 떴을 때의 클라이언트 상태다.
     """
     import glob
     import pathlib
     import pytest
     from benchmarks.eval.preset2wire import decode_risup
     from benchmarks.eval.run2 import build_wire
+
+    capture_toggles = {
+        "mythos_response_language": "1",
+        "mythos_execution_mode": "0",
+        "mythos_user_persona_usage": "0",
+        "mythos_bot_structure": "0",
+        "mythos_user_character_authorship": "0",
+        "mythos_input_authority": "0",
+        "mythos_prose_register": "0",
+        "mythos_narrative_pov": "0",
+        "mythos_narrative_pacing": "0",
+        "mythos_response_length_band": "0",
+        "mythos_size_scenario": "0",
+        "mythos_genre_ero": "1",
+        "mythos_mature_content_guidance": "1",
+        "mythos_domain_neutral_rendering_prefill": "1"}
 
     preset_glob = str(pathlib.Path.home() / "Downloads" / "뮈토스6.2" / "**"
                       / "*DeepSeek*_preset.risup")
@@ -658,7 +678,8 @@ def test_assembly_is_byte_identical_to_real_capture():
         tail = max(i for i, m in enumerate(cap) if m["role"] == "system")
         window = [{"role": m["role"], "content": m["content"]}
                   for m in cap[1:tail] if m["role"] != "system"]
-        assert build_wire(preset, card, window) == cap, cap_path
+        assert build_wire(preset, card, window,
+                          toggles=capture_toggles) == cap, cap_path
 
 
 def test_probe_gets_scene_and_style_context():
@@ -742,10 +763,12 @@ def test_beat_rotation_and_update_events():
     """5턴마다 이야기 미는 비트, UPDATE_EVENTS가 비트보다 우선."""
     from benchmarks.eval.run2 import UPDATE_EVENTS, pick_beat
     assert pick_beat(0) == "자연스럽게 이어간다."
-    assert "장소" in pick_beat(4) or "장면" in pick_beat(4)
-    assert pick_beat(4) != pick_beat(9)                 # 회전
+    # 비트 위상 i%5==2 — 프로브 그리드(i%10==9)와 안 겹치게 (pick_beat 주석)
+    assert "장소" in pick_beat(2) or "장면" in pick_beat(2)
+    assert pick_beat(2) != pick_beat(7)                 # 회전
+    assert pick_beat(9) == "자연스럽게 이어간다."       # 프로브 턴은 비트 없음
     for e in UPDATE_EVENTS:
-        assert "지불" in pick_beat(e)
+        assert "지불" in pick_beat(e)                   # 12%5==2여도 갱신이 우선
 
 
 def test_recent_dialogue_gives_last_pairs_with_roles():

@@ -93,14 +93,19 @@ def probe_schedule(total: int, every: int = PROBE_EVERY) -> List[Optional[str]]:
 
 
 def build_wire(preset: Dict, card: Dict, window: List[Dict],
-               memory: str = "") -> List[Dict]:
+               memory: str = "", toggles: Optional[Dict[str, str]] = None
+               ) -> List[Dict]:
     """뮈토스 조립 + reformater.
 
     memory는 hypa 요약 블록 — 프리셋의 memory 카드(promptTemplate[35] 'Past
     Summary') 자리에 들어간다. 즉 chat 히스토리보다 앞, 시스템 프롬프트
     한가운데다 (index.svelte.ts:1429-1443). 캐시 파괴 병리의 구조적 원인이다.
+
+    toggles: 기본은 config.TOGGLES(현행 시나리오). 실캡처 재현 테스트처럼
+    캡처 당시 토글로 조립해야 할 때만 명시한다.
     """
-    msgs = assemble(preset, TOGGLES, window, memory=memory,
+    msgs = assemble(preset, toggles if toggles is not None else TOGGLES,
+                    window, memory=memory,
                     card={"description": card.get("description", ""),
                           "persona": card.get("persona", ""),
                           "lore": card.get("lore", []),
@@ -118,12 +123,17 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
 
 
 def pick_beat(i: int, npc_due: bool = False) -> str:
-    """턴 i의 필러 지시. NPC 이벤트 > UPDATE_EVENTS > 5턴 주기 비트 > 평서."""
+    """턴 i의 필러 지시. NPC 이벤트 > UPDATE_EVENTS > 5턴 주기 비트 > 평서.
+
+    비트 위상은 i%5==2 — 프로브 그리드(i%10==9)와 겹치면 프로브가 비트를
+    먹어서 i%5==4였을 때 비트 절반(특히 갈등 비트)이 소실됐다 (20턴 스모크
+    실측: 갈등 0회, 소꿉놀이 정체). UPDATE_EVENTS(12)와 1회 겹침은 감수.
+    """
     if npc_due:
         return prompts.NPC_BEAT
     if i in UPDATE_EVENTS:
         return prompts.UPDATE_BEAT
-    if i % 5 == 4:
+    if i % 5 == 2:
         return prompts.BEATS[(i // 5) % len(prompts.BEATS)]
     return "자연스럽게 이어간다."
 
@@ -374,11 +384,15 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
         else:
             ptype = None                       # eligible 없으면 필러로 강등
             ctx = recent_dialogue(history) or f"[캐릭터]\n{last_reply[-600:]}"
-            # T41에 무조건 한 번, T45까지는 히스토리에 이름 없을 때만 재유도
+            # T41에 무조건 한 번, T45까지는 **캐릭터가** 아직 안 등장시켰을
+            # 때만 재유도 — 유저 발화까지 검사하면 T41 디렉터가 이름을 말한
+            # 순간 retry가 영구 봉쇄된다 (실측: retry 죽은 코드였음).
+            # 등장 후 유지는 스케줄이 아니라 DIRECT_SYS 조연 조항에 맡긴다.
+            npc_in_reply = any(NPC_NAME in m["content"] for m in history
+                               if m["role"] == "assistant")
             npc_due = (i == NPC_EVENT_TURN
                        or (NPC_EVENT_TURN < i <= NPC_EVENT_RETRY
-                           and not any(NPC_NAME in m["content"]
-                                       for m in history)))
+                           and not npc_in_reply))
             utext = director(
                 dir_sys + f"\n[작품 설정]\n{card.get('description', '')[:2000]}",
                 f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")

@@ -76,16 +76,16 @@ def call_upstream(variant: str, session: str, key: str,
 def call_upstream_once(variant: str, session: str, key: str,
                        msgs: List[Dict]) -> Dict:
     t0 = time.time()
+    body: Dict = {"model": MODEL, "max_tokens": MAX_TOKENS, "messages": msgs}
+    if config.REASONING_EFFORT:            # 미설정이면 필드 자체를 안 보낸다
+        body["reasoning"] = {"effort": config.REASONING_EFFORT}
     if variant == "dreaming":
         r = httpx.post(PROXY + "/v1/chat/completions", timeout=300,
-                       headers={"x-dreaming-session-id": session},
-                       json={"model": MODEL, "max_tokens": MAX_TOKENS,
-                             "messages": msgs})
+                       headers={"x-dreaming-session-id": session}, json=body)
     else:
         r = httpx.post(UPSTREAM + "/chat/completions", timeout=300,
                        headers={"Authorization": f"Bearer {key}"},
-                       json={"model": MODEL, "max_tokens": MAX_TOKENS,
-                             "messages": msgs, "usage": {"include": True}})
+                       json={**body, "usage": {"include": True}})
     r.raise_for_status()
     d = r.json()
     u = d.get("usage", {})
