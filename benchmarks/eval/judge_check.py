@@ -28,7 +28,7 @@ import pathlib
 import sys
 from typing import Dict, List, Tuple
 
-from benchmarks.eval.director import LlmFn
+from benchmarks.eval.lucid import LlmFn
 from benchmarks.eval.scoring import judge_pass
 
 GATE = 0.95           # human2가 없을 때만 쓰는 대체 기준선

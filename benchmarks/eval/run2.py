@@ -29,6 +29,7 @@ import argparse
 import json
 import pathlib
 import shutil
+import sys
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -36,12 +37,12 @@ from benchmarks.eval.config import (DATA, EVAL_DIR, HYPA_EXPORT, MAX_CONTEXT,
                                     MAX_REROLL_STREAK, MAX_TOKENS, MODEL,
                                     NPC_EVENT_RETRY, NPC_EVENT_TURN, NPC_NAME,
                                     PROBE_EVERY, TOGGLES, TURNS, UPDATE_EVENTS)
+from benchmarks.eval import config
 from benchmarks.eval import prompts
-# 별칭 재노출(이 파일 안에서는 안 쓰임) — 기존 테스트(run2._DIRECT_SYS 등)가
+# 별칭 재노출(이 파일 안에서는 안 쓰임) — 기존 테스트(run2._BEATS 등)가
 # 이 이름으로 내용을 검증한다. 실제 호출부는 override_from 반영을 위해
 # prompts.X(점 접근)를 쓴다.
 from benchmarks.eval.prompts import (BEATS as _BEATS,  # noqa: F401
-                                     DIRECT_SYS as _DIRECT_SYS,  # noqa: F401
                                      NPC_BEAT as _NPC_BEAT,  # noqa: F401
                                      UPDATE_BEAT as _UPDATE_BEAT)  # noqa: F401
 # transport 모듈 자체를 쓴다 — run_once의 call_fn 심은
@@ -54,7 +55,7 @@ from benchmarks.eval.prompts import (BEATS as _BEATS,  # noqa: F401
 # 쓰임) — 기존 테스트·스크립트가 run2._key 등으로 참조한다.
 from benchmarks.eval import transport
 from benchmarks.eval.transport import (call_upstream as _call_upstream,  # noqa: F401
-                                       key as _key, make_director_llm,
+                                       key as _key, make_lucid_llm,
                                        make_judge_llm)
 # 별칭 재노출 — 기존 테스트가 run2._count, run2._FULL_HISTORY 등으로 참조.
 from benchmarks.eval.windowing import (FULL_HISTORY as _FULL_HISTORY,
@@ -66,14 +67,14 @@ from benchmarks.eval.quality import (abort_reroll_count,
                                      reply_flaw,  # noqa: F401
                                      reroll_until_clean)
 
-from benchmarks.eval.director import (DirFact, Ledger, LlmFn, extract_facts,
-                                      make_false_premise, make_probe,
-                                      _probe_mentions_fact_object,
-                                      probe_plan)
+from benchmarks.eval.lucid import (DirFact, Ledger, LlmFn, count_unprotectable,
+                                   extract_facts, make_false_premise,
+                                   make_probe, _probe_mentions_fact_object,
+                                   probe_leaks_value, probe_plan)
 from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
 from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
-from benchmarks.eval import hypa
+from benchmarks.eval import gates, hypa
 
 
 def probe_schedule(total: int, every: int = PROBE_EVERY) -> List[Optional[str]]:
@@ -144,6 +145,69 @@ def recent_dialogue(history: List[Dict], pairs: int = 3) -> str:
     return "\n\n".join(
         f"[{'렌' if m['role'] == 'user' else '캐릭터'}]\n{m['content'][-600:]}"
         for m in tail)
+
+
+def _filler_turn(i: int, history: List[Dict], last_reply: str, dir_sys: str,
+                 card: Dict, lucid: LlmFn) -> str:
+    """프로브 자격이 없는(또는 누출로 강등된) 턴의 필러 유저 발화 생성.
+
+    run_once 본문 else 분기에서 추출 — probe_plan 자격이 없는 턴뿐 아니라
+    누출 2연속으로 강등된 프로브 턴도 이걸 재사용해야 해서 별도 함수로 뺐다.
+    """
+    ctx = recent_dialogue(history) or f"[캐릭터]\n{last_reply[-600:]}"
+    # T41에 무조건 한 번, T45까지는 **캐릭터가** 아직 안 등장시켰을
+    # 때만 재유도 — 유저 발화까지 검사하면 T41 디렉터가 이름을 말한
+    # 순간 retry가 영구 봉쇄된다 (실측: retry 죽은 코드였음).
+    # 등장 후 유지는 스케줄이 아니라 DIRECT_SYS 조연 조항에 맡긴다.
+    npc_in_reply = any(NPC_NAME in m["content"] for m in history
+                       if m["role"] == "assistant")
+    npc_due = (i == NPC_EVENT_TURN
+              or (NPC_EVENT_TURN < i <= NPC_EVENT_RETRY
+                  and not npc_in_reply))
+    return lucid(
+        dir_sys + f"\n[작품 설정]\n{card.get('description', '')[:2000]}",
+        f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")
+
+
+def _probe_text(lucid: LlmFn, fact: DirFact, ptype: Optional[str],
+                last_reply: str, few_shot: str) -> Tuple[str, str]:
+    """프로브/오염 발화 생성 한 번. false는 (발화, 오염값), 나머지는 오염값 없음."""
+    if ptype == "false":
+        return make_false_premise(lucid, fact, scene=last_reply, style=few_shot)
+    return make_probe(lucid, fact, scene=last_reply, style=few_shot), ""
+
+
+def _resolve_probe_turn(i: int, ptype: Optional[str], fact: Optional[DirFact],
+                        lucid: LlmFn, last_reply: str, few_shot: str,
+                        history: List[Dict], dir_sys: str, card: Dict
+                        ) -> Tuple[Optional[str], Optional[DirFact], str, str,
+                                  int, int]:
+    """이번 턴의 유저 발화를 정한다 — 프로브 생성 + 누출 하드 게이트(D5/I1·I2).
+
+    fact가 있으면 프로브/false 발화를 만들고 probe_leaks_value로 정답 유출을
+    검사한다. 새면 1회만 재생성한다. 재생성도 새면(그리고 자격 있는 fact가
+    애초에 없었으면) 이 턴을 _filler_turn으로 강등한다 — 이때 fact.probed를
+    되돌려 사실을 태우지 않고 미출제 풀에 남긴다. false 프로브도 참값
+    기준으로 검사한다 — 발화에는 오염값만 실려야 하니까(I2).
+
+    반환: (ptype, fact, utext, wrong, leak_retries, leak_dropped). 마지막
+    둘은 이번 턴에 벌어진 재시도/강등 건수(0 또는 1) — 호출부가 누적한다.
+    """
+    retries, dropped = 0, 0
+    wrong = ""
+    if fact is not None:
+        utext, wrong = _probe_text(lucid, fact, ptype, last_reply, few_shot)
+        if probe_leaks_value(utext, fact):
+            retries = 1
+            utext, wrong = _probe_text(lucid, fact, ptype, last_reply, few_shot)
+            if probe_leaks_value(utext, fact):
+                dropped = 1
+                fact.probed = False        # 태우지 않고 미출제 풀로 되돌림
+                fact = None
+    if fact is None:
+        ptype = None                       # eligible 없거나 누출로 강등 — 필러로
+        utext = _filler_turn(i, history, last_reply, dir_sys, card, lucid)
+    return ptype, fact, utext, wrong, retries, dropped
 
 
 def _load_json(path: str) -> Dict:
@@ -236,7 +300,7 @@ def _play_turn(i: int, utext: str, variant: str, history: List[Dict],
 
 def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
                   wrong: str, utext: str, st: Dict, dir_sec: float,
-                  director: LlmFn, ledger: Ledger, judge: LlmFn, card: Dict,
+                  lucid: LlmFn, ledger: Ledger, judge: LlmFn, card: Dict,
                   variant: str, session: str, kept_start_msg: int,
                   win_start: Optional[int], use_window: List[Dict],
                   turns: List[Dict], probes: List[Dict]) -> None:
@@ -244,11 +308,11 @@ def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
     # 이번 턴이 프로브면 오라클+judge 이중 채점을 기록한다.
     t_ext = time.time()
     if ptype is None:
-        ledger.add(extract_facts(director, utext, st["reply"], i))
+        ledger.add(extract_facts(lucid, utext, st["reply"], i))
     ext_sec = round(time.time() - t_ext, 1)
 
     turns.append({"turn": i, "user": utext, **st,
-                  "sec_director": dir_sec, "sec_extract": ext_sec,
+                  "sec_lucid": dir_sec, "sec_extract": ext_sec,
                   "ptype": ptype})
     if fact is not None:
         o = oracle_pass(st["reply"], fact.value, wrong_value=wrong,
@@ -289,19 +353,49 @@ def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
                            fact, utext)})
 
 
+def _dream_metrics(variant: str, session: str
+                   ) -> Tuple[Optional[bool], Optional[int], Optional[bool]]:
+    """dreaming 저장소 계측 — (dream_ran, episodes_written, compression_planned).
+
+    dreaming 외 변형은 (None, None, None) — 게이트 G1이 dreaming만 본다.
+    경로 규약은 scoring.decompose_miss의 base/{kind}/*.json과 동일
+    (JsonDirStorage 네임스페이스: DATA/{session}/{kind}/{key}.json).
+    dream_ran은 dreamer/cursor.json 존재, episodes_written은 episodes/*.json
+    개수, compression_planned은 compression/plan.json 존재 — plan이 None이면
+    dreamer.py:345-346이 그 파일 자체를 쓰지 않으므로 부재가 모호함 없는
+    "압축 미성립" 신호다(A7·C6).
+    """
+    if variant != "dreaming":
+        return None, None, None
+    base = DATA / session
+    dream_ran = (base / "dreamer" / "cursor.json").is_file()
+    ep_dir = base / "episodes"
+    episodes_written = len(list(ep_dir.glob("*.json"))) if ep_dir.is_dir() else 0
+    compression_planned = (base / "compression" / "plan.json").is_file()
+    return dream_ran, episodes_written, compression_planned
+
+
 def _collect_totals(variant: str, session: str, run_no: int,
                     prompt_set: Dict[str, object], turns: List[Dict],
-                    probes: List[Dict], ledger: Ledger, director: LlmFn,
+                    probes: List[Dict], ledger: Ledger, lucid: LlmFn,
                     judge: LlmFn, hypa_cost0: float, hypa_truncated0: int,
-                    aborted: str) -> Dict:
+                    aborted: str, probe_leak_retries: int = 0,
+                    probe_leak_dropped: int = 0, probes_scheduled: int = 0,
+                    dream_ran: Optional[bool] = None,
+                    episodes_written: Optional[int] = None,
+                    compression_planned: Optional[bool] = None,
+                    prompt_hashes: Optional[Dict[str, str]] = None) -> Dict:
     # totals 집계: probes/turns에서 판정·비용을 합산해 최종 result를 조립.
     passed = sum(1 for p in probes if p["judge"] is True)
     unparsed = sum(1 for p in probes if p["judge"] is None)
     result = {"variant": variant, "session": session, "run": run_no,
               "model": MODEL, "prompt_set": prompt_set,
+              "prompt_hashes": prompt_hashes or {},
               "turns": turns, "probes": probes,
               "ledger": ledger.to_rows(),
-              "totals": {"probes": len(probes), "judge_pass": passed,
+              "totals": {"probes": len(probes),
+                         "probes_scheduled": probes_scheduled,
+                         "judge_pass": passed,
                          "judge_unparsed": unparsed,
                          "oracle_pass": sum(1 for p in probes if p["oracle"]),
                          # 절단은 기억 실패로 오인된다 — 0인지 매 런 확인한다
@@ -311,14 +405,26 @@ def _collect_totals(variant: str, session: str, run_no: int,
                          # 리롤 2회로도 못 걷어낸 병리 턴 — 0이어야 한다
                          "flawed": sum(1 for t in turns if t.get("flaw")),
                          "cost": round(sum(t["cost"] for t in turns), 4),
-                         "cost_director": round(director.cost, 4),
-                         "director_calls": director.calls,
+                         "cost_lucid": round(lucid.cost, 4),
+                         "lucid_calls": lucid.calls,
+                         "lucid_model": config.LUCID_MODEL,
                          "cost_judge": round(judge.cost, 4),
                          "judge_calls": judge.calls,
                          # hypa 요약 콜 — 모듈 전역 누적이라 런 시작 대비 증분
                          "cost_hypa": round(hypa.SUMMARY_COST - hypa_cost0, 4),
                          "hypa_truncated": hypa.SUMMARY_TRUNCATED - hypa_truncated0,
-                         "aborted": aborted}}
+                         "aborted": aborted,
+                         # 0이 정상 — D5 누출 하드 게이트가 걸린 횟수.
+                         "probe_leak_retries": probe_leak_retries,
+                         "probe_leak_dropped": probe_leak_dropped,
+                         # 값 길이 2 미만이라 eligible()에서 원천 배제된
+                         # 사실 수 — 항상 존재(0 포함), 공급 비용 관측용.
+                         "probe_facts_unprotectable":
+                             count_unprotectable(ledger),
+                         # dreaming 전용 계측(A7·C6) — 다른 변형은 None
+                         "dream_ran": dream_ran,
+                         "episodes_written": episodes_written,
+                         "compression_planned": compression_planned}}
     return result
 
 
@@ -334,7 +440,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     preset = decode_risup(preset_path)
     card = _load_json(card_path)
     key = _key()
-    director = make_director_llm()
+    lucid = make_lucid_llm()
     judge = make_judge_llm()
     ledger = Ledger()
     history: List[Dict] = []
@@ -343,11 +449,12 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     last_reply = card.get("greeting") or "(첫 장면)"
     few_shot = "\n".join(f"- {s}" for s in card.get("style_examples", [])[:8])
     uname = card.get("user_name", "")
-    dir_sys = prompts.DIRECT_SYS.format(user=f", 이름 {uname}" if uname else "·무명")
+    dir_sys = prompts.compose_lucid_sys(user=f", 이름 {uname}" if uname else "·무명")
     if few_shot:
         dir_sys += f"\n[실제 유저 발화 예시 — 문체 참고]\n{few_shot}"
     turns, probes = [], []
     total_rerolls, reroll_streak, aborted = 0, 0, ""
+    probe_leak_retries, probe_leak_dropped = 0, 0
     sched = probe_schedule(total_turns, probe_every)
     # hypa 상태 — 요약은 세션 안에서 누적된다 (data.summaries).
     hypa_S = hypa.load_hypa_settings(HYPA_EXPORT) if variant == "hypa" else None
@@ -369,33 +476,17 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
 
     for i in range(total_turns):
         ptype = sched[i]
-        fact, wrong = None, ""
+        fact = None
         t_dir = time.time()
         if ptype:
             plan = probe_plan(ledger, i, {ptype: 1})
             if plan:
                 _, fact = plan[0]
-        if fact is not None and ptype == "false":
-            utext, wrong = make_false_premise(director, fact,
-                                              scene=last_reply, style=few_shot)
-        elif fact is not None:
-            utext = make_probe(director, fact,
-                               scene=last_reply, style=few_shot)
-        else:
-            ptype = None                       # eligible 없으면 필러로 강등
-            ctx = recent_dialogue(history) or f"[캐릭터]\n{last_reply[-600:]}"
-            # T41에 무조건 한 번, T45까지는 **캐릭터가** 아직 안 등장시켰을
-            # 때만 재유도 — 유저 발화까지 검사하면 T41 디렉터가 이름을 말한
-            # 순간 retry가 영구 봉쇄된다 (실측: retry 죽은 코드였음).
-            # 등장 후 유지는 스케줄이 아니라 DIRECT_SYS 조연 조항에 맡긴다.
-            npc_in_reply = any(NPC_NAME in m["content"] for m in history
-                               if m["role"] == "assistant")
-            npc_due = (i == NPC_EVENT_TURN
-                       or (NPC_EVENT_TURN < i <= NPC_EVENT_RETRY
-                           and not npc_in_reply))
-            utext = director(
-                dir_sys + f"\n[작품 설정]\n{card.get('description', '')[:2000]}",
-                f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")
+        ptype, fact, utext, wrong, leak_retries, leak_dropped = (
+            _resolve_probe_turn(i, ptype, fact, lucid, last_reply, few_shot,
+                               history, dir_sys, card))
+        probe_leak_retries += leak_retries
+        probe_leak_dropped += leak_dropped
         dir_sec = round(time.time() - t_dir, 1)
 
         rerolls_before = total_rerolls
@@ -417,7 +508,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                          else 0)
 
         _record_probe(i=i, ptype=ptype, fact=fact, wrong=wrong, utext=utext,
-                      st=st, dir_sec=dir_sec, director=director,
+                      st=st, dir_sec=dir_sec, lucid=lucid,
                       ledger=ledger, judge=judge, card=card, variant=variant,
                       session=session, kept_start_msg=kept_start_msg,
                       win_start=win_start, use_window=use_window,
@@ -426,22 +517,45 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                                            2 * total_turns // 3):
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
         if ttl_wait and i % 10 == 9:
-            time.sleep(305)                    # TTL 5m 만료 재현 (옵션)
+            # C11/C12 개방용. 이걸 끄면 TTL 재압축 창구는 미시험이며
+            # 캐시율은 과대측정 (EVAL2.md:95).
+            time.sleep(305)
         if reroll_streak >= MAX_REROLL_STREAK:
             aborted = (f"연속 {reroll_streak}턴 품질 게이트 실패 (T{i + 1}, "
                        f"누적 리롤 {total_rerolls}회) — 런 중단")
             break
 
+    probes_scheduled = sum(1 for x in sched if x is not None)
+    dream_ran, episodes_written, compression_planned = _dream_metrics(
+        variant, session)
     result = _collect_totals(variant=variant, session=session, run_no=run_no,
                              prompt_set=prompt_set, turns=turns,
-                             probes=probes, ledger=ledger, director=director,
+                             probes=probes, ledger=ledger, lucid=lucid,
                              judge=judge, hypa_cost0=hypa_cost0,
                              hypa_truncated0=hypa_truncated0,
-                             aborted=aborted)
+                             aborted=aborted,
+                             probe_leak_retries=probe_leak_retries,
+                             probe_leak_dropped=probe_leak_dropped,
+                             probes_scheduled=probes_scheduled,
+                             dream_ran=dream_ran,
+                             episodes_written=episodes_written,
+                             compression_planned=compression_planned,
+                             prompt_hashes=prompts.layer_hashes())
+    # 런 유효성 판정 — 부분/무효 결과도 감사 가치가 있으므로 런을 죽이지
+    # 않는다. main()이 실패 게이트를 보고 비영점 종료한다.
+    result["gates"] = gates.evaluate(result)
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1))
     return result
+
+
+# 크래시/중단(SystemExit 문자열 → exit 1)과 "완주했지만 게이트 실패"를 exit
+# 코드로 구분한다. G1(compression_planned)은 업스트림 압축 버그
+# (DREAMING_FLAW.md)가 살아있는 한 dreaming 런마다 계속 빨간불이라, 스모크
+# 단계(night_run.sh)가 "실행 가능한가"만 확인하려면 이 코드를 용인해야
+# 한다 — exit 1(진짜 크래시·abort·격리)까지 삼키면 안 된다.
+GATE_ONLY_EXIT = 2
 
 
 def main() -> None:
@@ -467,6 +581,7 @@ def main() -> None:
         prompts.override_from(args.prompts)
     reroll = [int(x) for x in args.reroll_at.split(",") if x]
     edit = [int(x) for x in args.edit_at.split(",") if x]
+    gate_failed = False
     for n in range(args.runs):
         sess = f"{args.session}-r{n}"
         d = DATA / sess
@@ -478,16 +593,34 @@ def main() -> None:
                      args.max_context, reroll, edit, args.ttl_wait,
                      args.turns, args.probe_every)
         t = r["totals"]
-        grand = (t["cost"] + t.get("cost_director", 0) + t.get("cost_judge", 0)
+        grand = (t["cost"] + t.get("cost_lucid", 0) + t.get("cost_judge", 0)
                  + t.get("cost_hypa", 0))
         print(f"[run{n}] {t['judge_pass']}/{t['probes']} "
-              f"나레이터 ${t['cost']} + 디렉터 ${t.get('cost_director', 0)} "
+              f"나레이터 ${t['cost']} + Lucid ${t.get('cost_lucid', 0)} "
               f"+ judge ${t.get('cost_judge', 0)} "
               f"+ hypa ${t.get('cost_hypa', 0)} = ${round(grand, 4)}",
               flush=True)
+        failed_gates = r["gates"]["failed"]
+        if failed_gates:
+            # 런은 죽이지 않는다 — 부분/무효 결과도 감사 가치가 있다. 대신
+            # 결과 JSON(gates)에 이미 기록됐고, 아래에서 프로세스를
+            # 비영점 종료해 night_run.sh 등 상위 스크립트가 감지하게 한다.
+            gate_failed = True
+            print(f"[run{n}] 게이트 실패: "
+                  + ", ".join(gid for gid, _ in failed_gates), flush=True)
         if t.get("aborted"):
-            # 부분 결과는 이미 저장됨 — 비정상 종료로 상위 스크립트에 알린다
+            # 부분 결과는 이미 저장됨 — 비정상 종료(exit 1)로 상위
+            # 스크립트에 알린다. 크래시/중단은 게이트 실패보다 심각하므로
+            # GATE_ONLY_EXIT이 아니라 기본 exit 1로 구분해서 알린다.
             raise SystemExit(f"런 중단: {t['aborted']}")
+    if gate_failed:
+        # 여기 도달했다는 건 위에서 abort로 죽지 않았다는 뜻 — 런은
+        # 완주했지만 유효성 게이트가 하나 이상 실패했다는 신호를 exit
+        # 1과 구분되는 코드로 낸다(GATE_ONLY_EXIT). night_run.sh 스모크
+        # 단계는 이 코드를 용인하고, 본런은 여전히 비영점으로 보고 감지한다.
+        print("런 유효성 게이트 실패 — 결과 JSON의 gates.failed 참고",
+              flush=True)
+        sys.exit(GATE_ONLY_EXIT)
 
 
 if __name__ == "__main__":

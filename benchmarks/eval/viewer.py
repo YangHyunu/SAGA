@@ -111,10 +111,11 @@ def render(result: Dict) -> str:
     ]
     if t.get("aborted"):
         stats.append(("중단", t["aborted"]))
-    if "cost_director" in t:
-        grand = t["cost"] + t["cost_director"] + t.get("cost_judge", 0)
-        stats += [("디렉터", f'${t["cost_director"]} '
-                            f'({t.get("director_calls", 0)}콜)'),
+    if "cost_lucid" in t or "cost_director" in t:
+        cost_lucid = t.get("cost_lucid", t.get("cost_director", 0))
+        grand = t["cost"] + cost_lucid + t.get("cost_judge", 0)
+        stats += [("Lucid", f'${cost_lucid} '
+                            f'({t.get("lucid_calls", t.get("director_calls", 0))}콜)'),
                   ("judge", f'${t.get("cost_judge", 0)} '
                             f'({t.get("judge_calls", 0)}콜)'),
                   ("총비용", f"${round(grand, 4)}")]

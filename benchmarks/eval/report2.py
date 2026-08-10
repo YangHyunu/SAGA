@@ -120,7 +120,10 @@ def aggregate(results: List[Dict]) -> Dict:
 
 
 def render(agg: Dict, results: List[Dict]) -> str:
-    lines = ["# 디렉터 벤치 v2 결과", ""]
+    lines = ["# Lucid 벤치 v2 결과", ""]
+    by_variant_results = defaultdict(list)
+    for r in results:
+        by_variant_results[r["variant"]].append(r)
     lines.append("| variant | " + " | ".join(_TYPES) + " | $ (mean) |")
     lines.append("|" + "---|" * (len(_TYPES) + 2))
     for variant, a in sorted(agg.items()):
@@ -128,8 +131,16 @@ def render(agg: Dict, results: List[Dict]) -> str:
         for t in _TYPES:
             row = a["by_type"].get(t)
             cells.append(f"{row['mean']:.0%}±{row['std']:.0%}" if row else "-")
-        lines.append(f"| {variant} | " + " | ".join(cells)
-                     + f" | {a['cost_mean']:.2f} |")
+        # 런 유효성 게이트(gates.evaluate) 실패 id — 회수율이 해석 가능한지
+        # 표시. 구 JSON은 gates 키가 없어 조용히 빈 목록으로 처리된다.
+        gate_ids = sorted({gid for r in by_variant_results[variant]
+                           for gid, _ in r.get("gates", {}).get("failed", [])})
+        mark = " [무효]" if gate_ids else ""
+        tail = f" 실패게이트: {','.join(gate_ids)}" if gate_ids else ""
+        # tail은 마지막 셀 안(닫는 파이프 앞)에 붙인다 — 파이프 밖에 붙이면
+        # 헤더보다 열이 하나 늘어나 GFM이 그 셀을 통째로 버린다.
+        lines.append(f"| {variant}{mark} | " + " | ".join(cells)
+                     + f" | {a['cost_mean']:.2f}{tail} |")
     lines.append("")
     lines.append("## 창내(LITM) vs 창밖(eviction) 통과율")
     lines.append("| variant | 창내 | 창밖 |")

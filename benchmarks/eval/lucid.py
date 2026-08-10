@@ -1,4 +1,4 @@
-"""디렉터: 동적 사실 추출 + 거리 게이팅 프로브.
+"""Lucid(유저 시뮬레이터): 동적 사실 추출 + 거리 게이팅 프로브.
 
 The Seed DIRECTOR 방식 (EVAL2 §3): 사실을 미리 심지 않고, 롤플레이가 자연히
 만든 사실(가격·인명·관계·사건)을 턴마다 추출해 원장에 쌓고, 가시 창 밖으로
@@ -12,8 +12,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-from benchmarks.eval import prompts
-# 별칭 재노출 — 기존 테스트(director._PROBE_SYS 등)가 이 이름으로 내용을
+from benchmarks.eval import matching, prompts
+# 별칭 재노출 — 기존 테스트(lucid._PROBE_SYS 등)가 이 이름으로 내용을
 # 검증한다. 실제 호출부는 override_from이 반영되도록 prompts.X(점 접근)를
 # 쓴다 — 이 별칭은 이 파일 안에서는 안 쓰인다 (재노출 목적).
 from benchmarks.eval.prompts import (EXTRACT_SYS as _EXTRACT_SYS,  # noqa: F401
@@ -81,19 +81,67 @@ RECENT_MAX_AGE = 8   # 단기 대조군(recent) 상한
 
 def eligible(ledger: Ledger, turn_now: int, kind: Optional[str] = None,
              min_age: int = MIN_PROBE_AGE) -> List[DirFact]:
-    """나이가 min_age 이상인 미출제 사실."""
+    """나이가 min_age 이상인 미출제 사실.
+
+    값 길이 2 미만인 사실은 제외한다 — mask_value 가드(위)가 그런 값을
+    마스킹하지 않으므로 probe_leaks_value 게이트로도 보호할 수 없어
+    정직하게 측정할 수 없다. 실측 지배 케이스는 화자 자신의 이름(예:
+    "렌")이라 애초에 기억 시험이 아니다. 제외분 관측은
+    count_unprotectable 참고.
+    """
     return [f for f in ledger.unprobed(kind)
-            if turn_now - f.turn >= min_age]
+            if turn_now - f.turn >= min_age and len(f.value) >= 2]
 
 
-def _probe_user(fact: DirFact, scene: str, style: str) -> str:
+def count_unprotectable(ledger: Ledger) -> int:
+    """값 길이 2 미만이라 어떤 프로브 유형으로도 출제될 수 없는 사실 수.
+
+    eligible()(recall/relation/false/update)과 probe_plan의 recent 풀 —
+    둘 다 이 문턱을 각자 적용한다. 공급 비용 관측용
+    (totals.probe_facts_unprotectable) — 제외분이 전체 출제 대상 풀을
+    얼마나 깎는지 매 런에서 드러낸다.
+    """
+    return sum(1 for f in ledger.facts if len(f.value) < 2)
+
+
+def mask_value(text: str, value: str) -> str:
+    """text 안의 value 리터럴 출현을 마스킹 문자로 치환.
+
+    가드: value가 2자 미만이면 마스킹하지 않고 원문을 그대로 반환한다 —
+    짧은 값이 무관한 글자까지 지워 fact.text를 훼손하는 사고를 막는다.
+
+    비대칭 주의(알려진 절충, D5): 이 마스킹은 리터럴 치환이지만
+    probe_leaks_value 게이트는 한글 수사 변형("250"/"이백오십")까지 잡는다.
+    그래서 변형 표기를 가진 값은 마스킹돼도 게이트에 걸려 재생성으로 몰릴
+    수 있다 — probe_leak_retries로 그 빈도를 관측하고, 높으면 후속에서
+    마스킹을 변형까지 확장한다.
+    """
+    if len(value) < 2:
+        return text
+    return text.replace(value, "◻︎")
+
+
+def _probe_user(fact: DirFact, scene: str, style: str, mask: bool = True) -> str:
     parts = []
     if scene:
         parts.append(f"[직전 캐릭터 응답 — 여기에 이어서 말한다]\n{scene[-800:]}")
     if style:
         parts.append(f"[유저 문체 예시]\n{style}")
-    parts.append(f"[과거 사실]\n{fact.text} (핵심값: {fact.value})")
+    if mask:
+        parts.append(f"[과거 사실]\n{mask_value(fact.text, fact.value)}")
+    else:
+        # make_false_premise 전용 — 오염값을 만들려면 원값이 필요하다(I2).
+        parts.append(f"[과거 사실]\n{fact.text} (핵심값: {fact.value})")
     return "\n".join(parts)
+
+
+def probe_leaks_value(utext: str, fact: DirFact) -> bool:
+    """생성된 프로브 발화가 정답(한글 수사 변형 포함)을 그대로 담았는지.
+
+    matching.value_hit은 hay가 이미 _norm 처리된 문자열이길 요구한다
+    (matching.py 계약) — 여기서 정규화해 넘긴다.
+    """
+    return matching.value_hit(matching._norm(utext), fact.value)
 
 
 _PARTICLES = ("에게서", "에서", "으로", "이라서", "이지만", "하고", "까지",
@@ -128,7 +176,9 @@ def make_probe(llm: LlmFn, fact: DirFact, scene: str = "",
 
 def make_false_premise(llm: LlmFn, fact: DirFact, scene: str = "",
                        style: str = "") -> Tuple[str, str]:
-    raw = llm(prompts.FALSE_SYS, _probe_user(fact, scene, style))
+    # mask=False: 오염값을 그럴듯하게 지어내려면 프롬프트에 원값이 있어야
+    # 한다(I2 예외) — 발화 자체에는 오염값만 실리게 하는 건 FALSE_SYS의 몫.
+    raw = llm(prompts.FALSE_SYS, _probe_user(fact, scene, style, mask=False))
     q, wrong = "", ""
     for line in raw.splitlines():
         if line.startswith("질문:"):
@@ -147,12 +197,16 @@ def probe_plan(ledger: Ledger, turn_now: int, want: Dict[str, int],
     """유형별 수만큼 뽑고 probed 마킹.
 
     recent만 젊은 사실(단기 대조군), 나머지는 나이 min_age 이상에서 뽑는다.
+    recent는 eligible()을 안 거치므로 값 길이 2 미만 제외 가드를 여기서
+    직접 반복한다 — eligible()의 근거와 동일: 마스킹 못 하는 값은 게이트로도
+    보호 못 해 어떤 유형으로도 정직하게 출제할 수 없다.
     """
     plan: List[Tuple[str, DirFact]] = []
     for ptype, n in want.items():
         if ptype == "recent":
             pool = [f for f in ledger.unprobed(_PTYPE_KIND[ptype])
-                    if turn_now - f.turn <= RECENT_MAX_AGE]
+                    if turn_now - f.turn <= RECENT_MAX_AGE
+                    and len(f.value) >= 2]
         else:
             pool = eligible(ledger, turn_now, kind=_PTYPE_KIND[ptype],
                             min_age=min_age)

@@ -211,8 +211,8 @@ def mark_truncated() -> None:
     _TRUNCATED = True
 
 
-def _director_model() -> str:
-    """요약 모델 — HYPA_SUMMARY_MODEL env, 기본 DIRECTOR_MODEL 상속."""
+def _lucid_model() -> str:
+    """요약 모델 — HYPA_SUMMARY_MODEL env, 기본 LUCID_MODEL 상속."""
     return transport.SUMMARY_MODEL
 
 
@@ -235,12 +235,12 @@ def _parse_chatml(data: str) -> Optional[List[Dict[str, str]]]:
 def summary_cache_key(batch: List[Dict[str, Any]], S: HypaSettings) -> str:
     """캐시는 디스크에 영구 잔류한다 — 요약 결과를 바꾸는 입력은 전부 키에 넣는다.
 
-    model 포함: DIRECTOR_MODEL은 env(DREAMING_EVAL_DIRECTOR)로 바뀌고 요약기
+    model 포함: LUCID_MODEL은 env(DREAMING_EVAL_LUCID)로 바뀌고 요약기
     비교 런도 있을 수 있다. 빠지면 다른 모델이 만든 요약을 조용히 재사용한다.
     """
     payload = json.dumps(
         {"chats": [{"role": c["role"], "content": c["content"]} for c in batch],
-         "prompt": S.summarization_prompt, "model": _director_model(),
+         "prompt": S.summarization_prompt, "model": _lucid_model(),
          "max_tokens": SUMMARY_MAX_TOKENS, "temp": SUMMARY_TEMPERATURE},
         ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -311,7 +311,7 @@ def _summarize_call_once(messages: List[Dict[str, str]]) -> str:
     r = httpx.post(
         f"{config.UPSTREAM}/chat/completions", timeout=120,
         headers={"Authorization": f"Bearer {transport.key()}"},
-        json={"model": _director_model(), "max_tokens": SUMMARY_MAX_TOKENS,
+        json={"model": _lucid_model(), "max_tokens": SUMMARY_MAX_TOKENS,
               "temperature": SUMMARY_TEMPERATURE, "messages": messages,
               "usage": {"include": True}})    # 없으면 usage에 cost가 안 실린다
     r.raise_for_status()

@@ -14,12 +14,12 @@ from typing import Dict, List
 import httpx
 
 from benchmarks.eval import config
-from benchmarks.eval.config import (DIRECTOR_MODEL, JUDGE_MODEL, MAX_TOKENS,
+from benchmarks.eval.config import (JUDGE_MODEL, LUCID_MODEL, MAX_TOKENS,
                                     MODEL, PROXY, ROOT, UPSTREAM)
-from benchmarks.eval.director import LlmFn
+from benchmarks.eval.lucid import LlmFn
 
-# hypa 요약 모델 — 디렉터 축과 분리 (감사 R2: DIRECTOR_MODEL이 두 축을 동시에 움직임)
-SUMMARY_MODEL = os.environ.get("HYPA_SUMMARY_MODEL", config.DIRECTOR_MODEL)
+# hypa 요약 모델 — Lucid 축과 분리 (감사 R2: LUCID_MODEL이 두 축을 동시에 움직임)
+SUMMARY_MODEL = os.environ.get("HYPA_SUMMARY_MODEL", config.LUCID_MODEL)
 
 
 def key() -> str:
@@ -52,8 +52,8 @@ def make_judge_llm() -> LlmFn:
     return mk_llm(JUDGE_MODEL, 0.0)
 
 
-def make_director_llm() -> LlmFn:
-    return mk_llm(DIRECTOR_MODEL, 0.7)
+def make_lucid_llm() -> LlmFn:
+    return mk_llm(LUCID_MODEL, 0.7)
 
 
 def call_upstream(variant: str, session: str, key: str,

@@ -1,9 +1,10 @@
 """평가 v2 — 충실도/디렉터 순수 함수 (EVAL2.md, 실캡처 형태 기준)."""
 import json
 
-from benchmarks.eval.director import (
+from benchmarks.eval.lucid import (
     DirFact,
     Ledger,
+    count_unprotectable,
     eligible,
     extract_facts,
     make_false_premise,
@@ -39,7 +40,7 @@ def test_extract_facts_parses_lines_and_skips_garbage():
 
 def test_extract_prompt_demands_noun_values():
     # 파일럿 50턴: 값 "시장에 가기로 함"(문장형)이 recent 대조군을 오판시킴
-    from benchmarks.eval.director import _EXTRACT_SYS
+    from benchmarks.eval.lucid import _EXTRACT_SYS
     assert "명사형" in _EXTRACT_SYS and "문장형" in _EXTRACT_SYS
 
 
@@ -185,6 +186,31 @@ def test_eligible_distance_gated():
     assert eligible(led, 16) == []                        # 나이 14 미달
 
 
+def test_eligible_excludes_unprotectable_single_char_values():
+    """값 길이 1은 mask_value 가드가 마스킹을 건너뛰므로 probe_leaks_value
+    게이트로도 보호 못 한다 — eligible()에서 원천 배제한다. 지배 케이스는
+    화자 자신의 이름("렌")이라 애초에 기억 시험이 아니다. 2글자는 경계로
+    여전히 출제 가능해야 한다."""
+    led = Ledger()
+    led.add([DirFact(fid="short", kind="exact", value="렌", text="사실",
+                     turn=0),
+             DirFact(fid="boundary", kind="exact", value="렌1", text="사실",
+                     turn=0)])
+    got = [f.fid for f in eligible(led, turn_now=20)]
+    assert "short" not in got
+    assert "boundary" in got
+
+
+def test_count_unprotectable_reflects_excluded_facts():
+    """totals.probe_facts_unprotectable의 근거 — eligible()이 제외하는
+    사실 수를 그대로 센다(공급 비용 관측)."""
+    led = Ledger()
+    led.add([DirFact(fid="a", kind="exact", value="렌", text="t", turn=0),
+             DirFact(fid="b", kind="exact", value="렌", text="t", turn=0),
+             DirFact(fid="c", kind="exact", value="렌1", text="t", turn=0)])
+    assert count_unprotectable(led) == 2
+
+
 def test_probe_plan_marks_probed_and_respects_want():
     led = _led()
     plan = probe_plan(led, 35, want={"recall": 1, "relation": 1, "false": 1})
@@ -198,6 +224,19 @@ def test_probe_plan_recent_pool_is_young():
     led = _led()
     plan = probe_plan(led, 35, want={"recent": 2})
     assert [f.fid for _, f in plan] == ["f1"]          # 나이 5 ≤ 8만 recent
+
+
+def test_probe_plan_recent_pool_excludes_unprotectable_single_char_values():
+    """recent 풀은 eligible()을 안 거치고 ledger.unprobed()를 직접 쓰므로
+    값 길이 2 미만 가드가 별도로 반복돼야 한다 — 젊어도(나이 5) 1글자
+    값(예: "렌")은 recent로도 출제되면 안 된다."""
+    led = Ledger()
+    led.add([DirFact(fid="short", kind="exact", value="렌", text="사실",
+                     turn=30),
+             DirFact(fid="ok", kind="exact", value="v1", text="사실",
+                     turn=30)])
+    plan = probe_plan(led, 35, want={"recent": 2})
+    assert [f.fid for _, f in plan] == ["ok"]
 
 
 def test_false_premise_corrupts_value():
@@ -494,7 +533,7 @@ def test_probe_schedule_rotates_all_types_on_long_run():
 def _res(variant, run, ok):
     return {"variant": variant, "run": run, "session": "s", "model": "m",
             "turns": [{"turn": 0, "cost": 0.01, "sec": 1.0,
-                       "sec_director": 0.5, "sec_extract": 0.3,
+                       "sec_lucid": 0.5, "sec_extract": 0.3,
                        "ptype": None, "user": "u", "reply": "r",
                        "prompt": 100, "cached": 50}],
             "ledger": [],
@@ -726,19 +765,19 @@ def test_aggregate_excludes_oracle_na_from_rates():
 
 def test_probe_prompt_forbids_time_anchoring():
     """'방금 뭐라고 했지?' — 18턴 전 일을 방금이라 부르는 오류 방지."""
-    from benchmarks.eval.director import _PROBE_SYS
+    from benchmarks.eval.lucid import _PROBE_SYS
     assert "방금" in _PROBE_SYS and "시점" in _PROBE_SYS
 
 
 def test_probe_prompt_forbids_ambiguous_referent():
     """T19 실측: '그게 누구였더라' — 지시대상이 모호해 무엇을 묻는지 불명."""
-    from benchmarks.eval.director import _PROBE_SYS
+    from benchmarks.eval.lucid import _PROBE_SYS
     assert "지시대상" in _PROBE_SYS
 
 
 def test_probe_mentions_fact_object_catches_real_drift_case():
     """T49 실측: '저고리' → '옷감' 대상 명사 치환 드리프트 재현."""
-    from benchmarks.eval.director import DirFact, _probe_mentions_fact_object
+    from benchmarks.eval.lucid import DirFact, _probe_mentions_fact_object
     fact = DirFact(fid="x", kind="exact", value="분홍색",
                    text="소연은 분홍색이 섞인 한복 저고리를 입고 있다.", turn=10)
     drifted = "그때 그 옷감 색이 참 곱다고 생각했는데..."      # 실측 T49 재현
@@ -747,15 +786,112 @@ def test_probe_mentions_fact_object_catches_real_drift_case():
     assert _probe_mentions_fact_object(fact, faithful) is True
 
 
+# ---- Task 1: 정답 유출 차단 — 마스킹 + 하드 게이트 (D5/I1·I2) ----
+
+def test_mask_value_replaces_value_and_preserves_rest():
+    from benchmarks.eval.lucid import mask_value
+    text = "찻값으로 250골드를 냈다."
+    masked = mask_value(text, "250골드")
+    assert "250골드" not in masked
+    assert "찻값으로" in masked and "냈다" in masked
+
+
+def test_mask_value_skips_single_char_value():
+    """1글자 값은 마스킹하지 않는다 — 무관한 글자까지 지워 fact.text가
+    훼손되는 사고를 막는 가드."""
+    from benchmarks.eval.lucid import mask_value
+    text = "그는 문을 열었다."
+    assert mask_value(text, "문") == text
+
+
+def test_probe_user_masked_output_hides_value():
+    from benchmarks.eval.lucid import DirFact, _probe_user
+    fact = DirFact(fid="x", kind="exact", value="250골드",
+                   text="찻값으로 250골드를 냈다.", turn=1)
+    out = _probe_user(fact, scene="", style="")
+    assert "250골드" not in out
+
+
+def test_probe_leaks_value_catches_korean_numeral_variant():
+    """표기 변형("250"/"이백오십")까지 잡는다 — 마스킹(리터럴)과의 비대칭."""
+    from benchmarks.eval.lucid import DirFact, probe_leaks_value
+    fact = DirFact(fid="x", kind="exact", value="250", text="가격", turn=1)
+    assert probe_leaks_value("그때 이백오십 냥 얘기 있었잖아요.", fact) is True
+    assert probe_leaks_value("그때 그 얘기 있었잖아요.", fact) is False
+
+
+def test_probe_leak_retry_then_clean_records_normally():
+    """1회 누출 후 재생성이 깨끗하면 정상 기록 — fact는 그대로, 필러로
+    강등되지 않는다."""
+    from benchmarks.eval import run2
+
+    fact = DirFact(fid="x", kind="exact", value="250골드",
+                   text="찻값", turn=1)
+    replies = iter(["250골드 얘기 있잖아요.", "그때 찻값 얘기, 기억나세요?"])
+
+    def fake_lucid(system, user):
+        return next(replies)
+
+    ptype, out_fact, utext, wrong, retries, dropped = run2._resolve_probe_turn(
+        20, "recall", fact, fake_lucid, "직전 장면", "", [], "", {})
+    assert retries == 1 and dropped == 0
+    assert out_fact is fact
+    assert ptype == "recall"
+    assert utext == "그때 찻값 얘기, 기억나세요?"
+    assert wrong == ""
+
+
+def test_probe_leak_twice_demotes_to_filler_and_frees_fact():
+    """2회 연속 누출이면 필러로 강등하고 fact.probed를 되돌린다 — 사실을
+    태우지 않고 미출제 풀에 남긴다."""
+    from benchmarks.eval import run2
+
+    fact = DirFact(fid="x", kind="exact", value="250골드",
+                   text="찻값", turn=1)
+    fact.probed = True             # probe_plan이 이미 마킹해 뒀다고 가정
+    replies = iter(["250골드 얘기 있잖아요.", "250골드였나...",
+                    "그냥 지나가는 안부 인사."])
+
+    def fake_lucid(system, user):
+        return next(replies)
+
+    ptype, out_fact, utext, wrong, retries, dropped = run2._resolve_probe_turn(
+        20, "recall", fact, fake_lucid, "직전 장면", "", [], "",
+        {"description": ""})
+    assert retries == 1 and dropped == 1
+    assert out_fact is None
+    assert ptype is None
+    assert fact.probed is False
+    assert utext == "그냥 지나가는 안부 인사."
+
+
+def test_matching_module_avoids_lucid_scoring_import_cycle():
+    """matching.py 소스에 benchmarks.eval import가 없고, lucid를 프로세스의
+    첫 import로 해도 순환 없이 성공한다 (A1 회귀)."""
+    import pathlib
+    import subprocess
+    import sys
+
+    from benchmarks.eval import matching
+    src = pathlib.Path(matching.__file__).read_text()
+    assert "benchmarks.eval" not in src
+
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-c", "import benchmarks.eval.lucid"],
+        capture_output=True, text=True, cwd=str(repo_root))
+    assert result.returncode == 0, result.stderr
+
+
 def test_probe_prompt_requires_vague_past_anchor():
     """'그때'·'처음에' 같은 막연한 과거 지시어를 강제해 지시대상 모호성도 줄인다."""
-    from benchmarks.eval.director import _PROBE_SYS
+    from benchmarks.eval.lucid import _PROBE_SYS
     assert "그때" in _PROBE_SYS and "처음에" in _PROBE_SYS
 
 
 def test_extract_prompt_excludes_self_appearance_facts():
     """vanilla '회색 눈동자' 151회/98턴 — 상시 노출 신체 특징은 시험 무의미."""
-    from benchmarks.eval.director import _EXTRACT_SYS
+    from benchmarks.eval.lucid import _EXTRACT_SYS
     assert "외모" in _EXTRACT_SYS and "신체 특징" in _EXTRACT_SYS
 
 
@@ -782,9 +918,9 @@ def test_recent_dialogue_gives_last_pairs_with_roles():
     assert "질문3" in ctx and "응답4" in ctx and "질문2" not in ctx
 
 
-def test_director_sys_forbids_card_knowledge_preemption():
-    from benchmarks.eval.run2 import _DIRECT_SYS
-    assert "먼저 입에 올리지" in _DIRECT_SYS
+def test_lucid_sys_forbids_card_knowledge_preemption():
+    from benchmarks.eval import prompts
+    assert "먼저 입에 올리지" in prompts.LUCID_RULES
 
 
 def test_reply_flaw_catches_refusal_and_language_drift():
@@ -811,9 +947,9 @@ def test_reply_flaw_catches_preset_guard_leak():
     assert reply_flaw(leaked) == "guard_leak"
 
 
-def test_director_sys_forbids_character_impersonation():
-    from benchmarks.eval.run2 import _DIRECT_SYS
-    assert "대신 쓰지 마라" in _DIRECT_SYS
+def test_lucid_sys_forbids_character_impersonation():
+    from benchmarks.eval import prompts
+    assert "대신 쓰지 마라" in prompts.LUCID_RULES
 
 
 def test_reply_flaw_treats_empty_reply_as_drift():
@@ -982,20 +1118,20 @@ def test_call_upstream_retries_transient_5xx(monkeypatch):
     assert calls["n"] == 1                     # 재시도 없음
 
 
-def test_director_prompts_use_polite_speech():
+def test_lucid_prompts_use_polite_speech():
     # 유저 피드백: 렌(27)이 연상 신녀(31)에게 첫만남부터 반말 — 부자연.
     # 디렉터·프로브·오염 프롬프트 전부 존댓말로 통일한다.
-    from benchmarks.eval.run2 import _DIRECT_SYS
-    from benchmarks.eval.director import _PROBE_SYS, _FALSE_SYS
-    for sys_prompt in (_DIRECT_SYS, _PROBE_SYS, _FALSE_SYS):
+    from benchmarks.eval import prompts
+    from benchmarks.eval.lucid import _PROBE_SYS, _FALSE_SYS
+    for sys_prompt in (prompts.LUCID_PERSONA, _PROBE_SYS, _FALSE_SYS):
         assert "존댓말" in sys_prompt and "반말 채팅체" not in sys_prompt
 
 
-def test_director_sys_keeps_introduced_npcs():
+def test_lucid_sys_keeps_introduced_npcs():
     # 유저 피드백: 등장한 NPC(당채련)를 한 턴 만에 흘려보냄 — 실제 유저라면
     # 상호작용한다. 무시·조기 퇴장 금지 규칙.
-    from benchmarks.eval.run2 import _DIRECT_SYS
-    assert "퇴장" in _DIRECT_SYS
+    from benchmarks.eval import prompts
+    assert "퇴장" in prompts.LUCID_RULES
 
 
 def test_dreaming_variant_sends_full_history():
@@ -1096,6 +1232,105 @@ def test_prompts_override_reaches_judge_pass_call_site(tmp_path):
         prompts.JUDGE_SYS = before          # 모듈 전역 원복
 
 
+# ---- prompts.py (Task 4: Lucid 프롬프트 2층 분리 — RULES/PERSONA) ----
+
+def test_compose_lucid_sys_includes_each_layer_exactly_once():
+    from benchmarks.eval import prompts
+    user = ", 이름 렌"
+    out = prompts.compose_lucid_sys(user=user)
+    persona_filled = prompts.LUCID_PERSONA.replace("{user}", user)
+    assert out.count(persona_filled) == 1
+    assert out.count(prompts.LUCID_RULES) == 1
+
+
+def test_compose_lucid_sys_reflects_lucid_rules_override(tmp_path):
+    from benchmarks.eval import prompts
+    p = tmp_path / "ab-rules.json"
+    p.write_text(json.dumps({"LUCID_RULES": "OVERRIDDEN_RULES"}),
+                encoding="utf-8")
+    before = prompts.LUCID_RULES
+    try:
+        prompts.override_from(str(p))
+        assert "OVERRIDDEN_RULES" in prompts.compose_lucid_sys(user="")
+    finally:
+        prompts.LUCID_RULES = before        # 모듈 전역 원복
+
+
+def test_compose_lucid_sys_reflects_direct_sys_template_override(tmp_path):
+    """DIRECT_SYS 자체(메타 템플릿)도 오버라이드 대상 — 층 순서를 바꾸는
+    실험을 override_from 하나로 할 수 있어야 한다."""
+    from benchmarks.eval import prompts
+    p = tmp_path / "ab-template.json"
+    p.write_text(json.dumps(
+        {"DIRECT_SYS": "[RULES]{rules}[/RULES][PERSONA]{persona}[/PERSONA]"}),
+        encoding="utf-8")
+    before = prompts.DIRECT_SYS
+    try:
+        prompts.override_from(str(p))
+        out = prompts.compose_lucid_sys(user="")
+        assert out.startswith("[RULES]" + prompts.LUCID_RULES)
+        assert prompts.LUCID_PERSONA.replace("{user}", "") in out
+    finally:
+        prompts.DIRECT_SYS = before         # 모듈 전역 원복
+
+
+def test_layer_hashes_includes_lucid_layers_and_reacts_to_their_change():
+    from benchmarks.eval import prompts
+    hashes = prompts.layer_hashes()
+    assert len(hashes) == 10
+    assert "LUCID_RULES" in hashes and "LUCID_PERSONA" in hashes
+    saved = prompts.LUCID_PERSONA
+    try:
+        before = hashes["LUCID_PERSONA"]
+        prompts.LUCID_PERSONA = saved + " (변경됨)"
+        after = prompts.layer_hashes()
+        assert after["LUCID_PERSONA"] != before
+        assert after["LUCID_RULES"] == hashes["LUCID_RULES"]      # 무관 층 불변
+    finally:
+        prompts.LUCID_PERSONA = saved       # 모듈 전역 원복
+
+
+def test_compose_lucid_sys_is_sentence_equivalent_to_pre_split_direct_sys():
+    """등가성 — 이 테스트가 Task 4의 실질적 산출물이다. 분할 전 DIRECT_SYS는
+    .format(user=...)로 소비됐다(베이스 커밋 e73776f, prompts.py 18-32행).
+    그 본문을 문자 그대로 리터럴로 박아 — 새 .md 레이어에서 역유도하면 이
+    테스트가 항상 통과하는 무의미한 검사가 된다 — compose_lucid_sys(user=X)
+    결과와 정규화 문장 집합을 비교한다. 순서·구분자(단락 줄바꿈 vs 층
+    이음매) 차이는 허용하되, 문장이 하나라도 빠지거나 중복되면 Counter
+    불일치로 잡는다."""
+    import re
+    from collections import Counter
+
+    from benchmarks.eval import prompts
+
+    pre_split_direct_sys = (
+        "너는 RP에서 유저(1인칭{user}) 역할을 연기한다. 작품 "
+        "설정과 직전 장면에 자연스럽게 이어지는 유저 발화 하나만 출력. "
+        "3문장 이내, 메타 발언 금지. 상대는 연상이자 신비한 존재다 — "
+        "정중한 존댓말을 쓴다 (반말 금지). 예의는 지키되 굽신거리지 "
+        "마라 — 감사·사과만 반복하지 말고 유저 자신의 목적과 사정을 "
+        "갖고 움직여라. 상대 캐릭터의 "
+        "대사나 행동을 네가 대신 쓰지 마라 — 유저 자신의 말과 행동만.\n"
+        "[작품 설정]은 배경 이해용이다 — 대화에서 아직 드러나지 않은 "
+        "정보(호칭·직함·이름·과거사·신체 특징)를 네가 먼저 입에 올리지 "
+        "마라. 상대가 말해주기 전까지 모르는 사람으로 산다. "
+        "(파일럿 실측: '신녀님' 호칭을 대화에 나온 적 없는데 선취했다)\n"
+        "장면에 새 인물이 등장하면 실제 유저처럼 호기심을 갖고 "
+        "상호작용하라 — 등장한 인물을 이유 없이 무시하거나 서둘러 "
+        "퇴장시키지 마라. 장면에 남아 있는 조연에게도 가끔 말을 걸어라. "
+        "(실측: 등장한 조연을 한 턴 만에 흘려보냈다)")
+
+    def sentences(text):
+        norm = re.sub(r"\s+", " ", text).strip()
+        parts = re.split(r"(?<=[.!?)])\s+", norm)
+        return Counter(p for p in parts if p)
+
+    user = ", 이름 렌"
+    expected = sentences(pre_split_direct_sys.format(user=user))
+    actual = sentences(prompts.compose_lucid_sys(user=user))
+    assert actual == expected
+
+
 def test_run_once_offline_with_fake_narrator(tmp_path, monkeypatch):
     """run_once 오케스트레이션이 라이브 HTTP 없이 완주 — call_fn 심 검증.
 
@@ -1123,7 +1358,7 @@ def test_run_once_offline_with_fake_narrator(tmp_path, monkeypatch):
                 "cached": 0, "cost": 0.0, "sec": 0.1}
 
     def _stub_llm(reply):
-        # totals가 director.cost/.calls, judge.cost/.calls를 읽는다 —
+        # totals가 lucid.cost/.calls, judge.cost/.calls를 읽는다 —
         # 맨 람다는 이 속성이 없어 AttributeError로 죽는다.
         def f(system, user):
             f.calls += 1
@@ -1132,11 +1367,11 @@ def test_run_once_offline_with_fake_narrator(tmp_path, monkeypatch):
         return f
 
     # run_once 본문은 run2 모듈 전역(임포트 시점 바인딩)을 참조한다 — 다른
-    # 시임(make_director_llm/EVAL_DIR)과 같은 이유로 transport.key가 아니라
+    # 시임(make_lucid_llm/EVAL_DIR)과 같은 이유로 transport.key가 아니라
     # run2._key를 패치해야 실제로 걸린다. (안 하면 로컬 .env의 진짜 키를
     # 읽어 시도하고, .env가 없는 환경에선 SystemExit로 죽는다.)
     monkeypatch.setattr(run2, "_key", lambda: "offline")
-    monkeypatch.setattr(run2, "make_director_llm",
+    monkeypatch.setattr(run2, "make_lucid_llm",
                         lambda: _stub_llm("장터를 함께 걷자고 말한다"))
     monkeypatch.setattr(run2, "make_judge_llm", lambda: _stub_llm("PASS"))
     monkeypatch.setattr(run2, "EVAL_DIR", tmp_path)
@@ -1162,7 +1397,7 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
     반환하고, run_once(run2.py:394-396)가 그 자리에서 break한다.
 
     test_run_once_offline_with_fake_narrator와 같은 글롭+skip·call_fn/
-    director·judge 팩토리·EVAL_DIR monkeypatch 패턴을 재사용하고,
+    lucid·judge 팩토리·EVAL_DIR monkeypatch 패턴을 재사용하고,
     variant만 "hypa"로 바꿔 hypa.hypa_step을 항상 에러를 내는 스텁으로
     교체한다.
     """
@@ -1185,7 +1420,7 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
                 "cached": 0, "cost": 0.0, "sec": 0.1}
 
     def _stub_llm(reply):
-        # totals가 director.cost/.calls, judge.cost/.calls를 읽는다 —
+        # totals가 lucid.cost/.calls, judge.cost/.calls를 읽는다 —
         # 맨 람다는 이 속성이 없어 AttributeError로 죽는다.
         def f(system, user):
             f.calls += 1
@@ -1198,7 +1433,7 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
         return None, history, 0, data, "요약 실패 T0: 토큰 초과 (stub)"
 
     monkeypatch.setattr(run2, "_key", lambda: "offline")
-    monkeypatch.setattr(run2, "make_director_llm",
+    monkeypatch.setattr(run2, "make_lucid_llm",
                         lambda: _stub_llm("장터를 함께 걷자고 말한다"))
     monkeypatch.setattr(run2, "make_judge_llm", lambda: _stub_llm("PASS"))
     monkeypatch.setattr(run2, "EVAL_DIR", tmp_path)
@@ -1212,3 +1447,424 @@ def test_run_once_aborts_early_on_hypa_summary_failure(tmp_path, monkeypatch):
     assert out["totals"]["aborted"]
     assert out["turns"]
     assert "hypa_error" in out["turns"][-1]
+
+
+# ---- --ttl-wait → time.sleep(305) 트리거 (Task 3, C11/C12 개방) ----
+
+def _ttl_wait_offline_setup(tmp_path, monkeypatch):
+    """run_once를 오프라인으로 재사용하는 공용 셋업 — 완전 합성 프리셋/카드.
+
+    두 실물 의존을 모두 피한다: (1) dreaming_data/eval/card-soyeon-v2.json은
+    이 워크트리에 없어 다른 오프라인 run_once 테스트 4건이 스킵되고,
+    (2) decode_risup은 external/risuai/src/ts/rpack/rpack_map.bin(gitignore
+    심링크, 이 워크트리엔 없음)을 읽어 심링크 없인 실프리셋도 못 연다
+    (실측 확인). assemble()은 preset["promptTemplate"]만 읽으므로
+    (preset2wire.py:185, 다른 preset[...] 접근 없음 grep 확인) 최소
+    합성 프리셋으로 충분 — decode_risup 자체를 패치해 심링크/실물 파일
+    의존을 없앤다. card도 build_wire/assemble이 card.get(..., 기본값)만
+    참조해(preset2wire.py:183, 197-217) 빈 필드를 허용하므로 최소 합성.
+    """
+    import json
+
+    from benchmarks.eval import run2
+
+    fake_preset = {"promptTemplate": [
+        {"type": "plain", "role": "system", "text": "You are Soyeon."},
+        {"type": "chat", "rangeStart": 0, "rangeEnd": "end"}]}
+    card_path = tmp_path / "card.json"
+    card_path.write_text(json.dumps(
+        {"description": "테스트용 소연 카드", "user_name": "렌",
+         "name": "소연", "greeting": "안녕, 렌."}, ensure_ascii=False))
+
+    def fake_call(variant, session, key, msgs):
+        return {"reply": "…소연은 조용히 고개를 끄덕였다.", "prompt": 100,
+                "cached": 0, "cost": 0.0, "sec": 0.1}
+
+    def _stub_llm(reply):
+        def f(system, user):
+            f.calls += 1
+            return reply
+        f.cost, f.calls = 0.0, 0
+        return f
+
+    sleep_calls: list = []
+    monkeypatch.setattr(run2, "_key", lambda: "offline")
+    monkeypatch.setattr(run2, "decode_risup", lambda path: fake_preset)
+    monkeypatch.setattr(run2, "make_lucid_llm",
+                        lambda: _stub_llm("장터를 함께 걷자고 말한다"))
+    monkeypatch.setattr(run2, "make_judge_llm", lambda: _stub_llm("PASS"))
+    monkeypatch.setattr(run2, "EVAL_DIR", tmp_path)
+    # run2.py는 `time.sleep(...)`를 모듈 전역 `time`(dot 접근)으로 부른다
+    # (transport.py의 기존 스파이 패턴, test_eval_v2.py:1048과 동일 이유) —
+    # run2.time을 패치해야 실제 호출부에 닿는다.
+    monkeypatch.setattr(run2.time, "sleep", lambda s: sleep_calls.append(s))
+    return run2, str(card_path), fake_call, sleep_calls
+
+
+def test_run_once_ttl_wait_no_305_before_threshold(tmp_path, monkeypatch):
+    """total_turns=3, ttl_wait=True → i % 10 == 9 미도달이라 sleep(305) 0회.
+
+    variant="dreaming"을 일부러 골랐다: dreaming 변형은 ttl_wait와 무관하게
+    total_turns//3(=1)·2*total_turns//3(=2)에서 sleep(12)(유휴 Dreamer
+    트리거, run2.py:509-511)를 쏜다 — 감사에서 확인된 함정. 스파이 원시
+    호출 수만 보면(raw sleep_calls에 12가 2번 찍힘) "sleep 호출 없음" 같은
+    순진한 단언이 거짓으로 실패한다. 그래서 인자를 305로 필터링한 결과만
+    확인한다 — 이게 실제로 ttl_wait 트리거만 골라내는 유일한 방법이다.
+    """
+    run2, card_path, fake_call, sleep_calls = (
+        _ttl_wait_offline_setup(tmp_path, monkeypatch))
+
+    out = run2.run_once("unused.risup", card_path, "dreaming", "ttl-below",
+                        0, 45000, [], [], True,
+                        total_turns=3, probe_every=9999, call_fn=fake_call)
+    assert not out["totals"]["aborted"]
+    assert [s for s in sleep_calls if s == 305] == []
+    # 대조: dreaming의 무관한 sleep(12)은 실제로 뜬다 — 필터 없이는
+    # 이 테스트 의도가 raw count로 오판정됨을 스스로 증명.
+    assert sleep_calls.count(12) == 2
+
+
+def test_run_once_ttl_wait_sleeps_305_at_threshold(tmp_path, monkeypatch):
+    """total_turns=10, ttl_wait=True → i=9에서 i % 10 == 9 충족, sleep(305) 1회.
+
+    같은 이유로 variant="dreaming" 유지: total_turns//3(=3)·
+    2*total_turns//3(=6)에서 sleep(12)가 2번 더 섞여 뜬다(raw 호출 3회:
+    12, 12, 305). 305 필터를 거친 결과만 1회여야 정답.
+    """
+    run2, card_path, fake_call, sleep_calls = (
+        _ttl_wait_offline_setup(tmp_path, monkeypatch))
+
+    out = run2.run_once("unused.risup", card_path, "dreaming", "ttl-at",
+                        0, 45000, [], [], True,
+                        total_turns=10, probe_every=9999, call_fn=fake_call)
+    assert not out["totals"]["aborted"]
+    assert [s for s in sleep_calls if s == 305] == [305]
+    assert sleep_calls.count(12) == 2
+
+
+# ---- config.LUCID_MODEL / totals["lucid_model"] (Task 0) ----
+
+def _totals_stub_llm():
+    def f(system, user):
+        return ""
+    f.cost, f.calls = 0.0, 0
+    return f
+
+
+def test_collect_totals_includes_lucid_model():
+    """totals["lucid_model"]이 config.LUCID_MODEL과 일치 — 나레이터(MODEL)와
+    별도 축으로 totals 안에 박제된다 (D6)."""
+    from benchmarks.eval import config, run2
+
+    result = run2._collect_totals(
+        variant="vanilla", session="s", run_no=0, prompt_set={},
+        turns=[], probes=[], ledger=Ledger(), lucid=_totals_stub_llm(),
+        judge=_totals_stub_llm(), hypa_cost0=0.0, hypa_truncated0=0,
+        aborted="")
+    assert result["totals"]["lucid_model"] == config.LUCID_MODEL
+
+
+def test_collect_totals_includes_probe_facts_unprotectable():
+    """totals["probe_facts_unprotectable"]은 항상 존재(0 포함) — 게이트가
+    absent와 0을 헷갈리면 안 된다."""
+    from benchmarks.eval import run2
+
+    led = Ledger()
+    led.add([DirFact(fid="a", kind="exact", value="렌", text="t", turn=0)])
+    result = run2._collect_totals(
+        variant="vanilla", session="s", run_no=0, prompt_set={},
+        turns=[], probes=[], ledger=led, lucid=_totals_stub_llm(),
+        judge=_totals_stub_llm(), hypa_cost0=0.0, hypa_truncated0=0,
+        aborted="")
+    assert result["totals"]["probe_facts_unprotectable"] == 1
+
+    empty = run2._collect_totals(
+        variant="vanilla", session="s", run_no=0, prompt_set={},
+        turns=[], probes=[], ledger=Ledger(), lucid=_totals_stub_llm(),
+        judge=_totals_stub_llm(), hypa_cost0=0.0, hypa_truncated0=0,
+        aborted="")
+    assert empty["totals"]["probe_facts_unprotectable"] == 0
+
+
+def test_config_lucid_model_falls_back_to_legacy_env(monkeypatch,
+                                                      capsys):
+    """구 env(DREAMING_EVAL_DIRECTOR)만 설정 시 폴백 + 경고 1회.
+
+    config.py는 import 시점에 env를 읽으므로 importlib.reload가 필요하다.
+    transport.py의 LUCID_MODEL 별칭은 import 시점 스냅샷이라 config를
+    reload해도 안 바뀐다 (CLAUDE.md §5) — 그래서 config.LUCID_MODEL을 직접
+    단언한다. reload는 모듈 전역을 실제로 바꾸므로, 다른 테스트로 상태가
+    새지 않도록 끝에서 env를 정리하고 다시 reload해 원상복구한다.
+    """
+    import importlib
+    from benchmarks.eval import config
+
+    monkeypatch.delenv("DREAMING_EVAL_LUCID", raising=False)
+    monkeypatch.setenv("DREAMING_EVAL_DIRECTOR", "old/model-name")
+    try:
+        importlib.reload(config)
+        assert config.LUCID_MODEL == "old/model-name"
+        assert "DREAMING_EVAL_DIRECTOR" in capsys.readouterr().err
+    finally:
+        monkeypatch.delenv("DREAMING_EVAL_DIRECTOR", raising=False)
+        importlib.reload(config)          # 모듈 전역 원복 — 상태 누수 방지
+
+
+# ---- gates.py (Task 2: 런 유효성 게이트) ----
+
+def test_layer_hashes_covers_active_prompts_and_reacts_to_change():
+    """layer_hashes()는 active()의 키 집합을 그대로 따르고(현재 10개,
+    Task 4가 LUCID_RULES/LUCID_PERSONA를 추가해 8→10),
+    내용이 바뀐 항목만 해시가 바뀐다 — 무관한 항목은 불변."""
+    from benchmarks.eval import prompts
+    hashes = prompts.layer_hashes()
+    assert set(hashes) == set(prompts.active())
+    assert len(hashes) == 10
+    saved = prompts.JUDGE_SYS
+    try:
+        before = hashes["JUDGE_SYS"]
+        prompts.JUDGE_SYS = saved + " (변경됨)"
+        after = prompts.layer_hashes()
+        assert after["JUDGE_SYS"] != before
+        assert after["PROBE_SYS"] == hashes["PROBE_SYS"]
+    finally:
+        prompts.JUDGE_SYS = saved
+
+
+def test_gate_g1_passes_when_dream_ran_episodes_and_compression_present():
+    from benchmarks.eval import gates
+    result = {"variant": "dreaming",
+              "totals": {"dream_ran": True, "episodes_written": 3,
+                        "compression_planned": True},
+              "probes": []}
+    assert "G1" not in dict(gates.evaluate(result)["failed"])
+
+
+def test_gate_g1_fails_when_compression_planned_missing():
+    """G1은 3조건 — dream_ran/episodes_written이 다 살아 있어도 압축 플랜
+    부재(dreamer.py가 plan is None이면 파일을 안 쓴다, C6) 하나로 떨어진다.
+    dreaming 외 변형은 이 게이트 자체가 적용 안 된다."""
+    from benchmarks.eval import gates
+    result = {"variant": "dreaming",
+              "totals": {"dream_ran": True, "episodes_written": 5,
+                        "compression_planned": False},
+              "probes": []}
+    reasons = dict(gates.evaluate(result)["failed"])
+    assert "G1" in reasons and "compression_planned" in reasons["G1"]
+
+    other_variant = {"variant": "vanilla", "totals": {}, "probes": []}
+    assert "G1" not in dict(gates.evaluate(other_variant)["failed"])
+
+
+def test_gate_g2_distance_median_threshold():
+    from benchmarks.eval import gates
+
+    def probes_with(dists):
+        return [{"distance_turns": d, "in_window": True} for d in dists]
+
+    passing = {"variant": "dreaming", "totals": {},
+              "probes": probes_with([15, 20, 30])}
+    failing = {"variant": "dreaming", "totals": {},
+              "probes": probes_with([5, 8, 10])}
+    assert "G2" not in dict(gates.evaluate(passing)["failed"])
+    assert "G2" in dict(gates.evaluate(failing)["failed"])
+
+
+def test_gate_g2_out_of_window_clause_applies_only_to_trim_and_hypa():
+    """FULL_HISTORY 변형(dreaming/vanilla)은 in_window가 구조상 항상 True라
+    '창밖 ≥50%' 절이 아예 적용되지 않는다 — trim/hypa만 대상."""
+    from benchmarks.eval import gates
+
+    def probes_with(n_out, n_in, variant):
+        probes = ([{"distance_turns": 20, "in_window": False}] * n_out
+                  + [{"distance_turns": 20, "in_window": True}] * n_in)
+        return {"variant": variant, "totals": {}, "probes": probes}
+
+    trim_low_out = probes_with(1, 9, "trim")             # 10% out — 미달
+    assert "G2" in dict(gates.evaluate(trim_low_out)["failed"])
+
+    trim_high_out = probes_with(6, 4, "trim")            # 60% out — 통과
+    assert "G2" not in dict(gates.evaluate(trim_high_out)["failed"])
+
+    trim_all_in = probes_with(0, 10, "trim")             # 0% out — 미달
+    assert "G2" in dict(gates.evaluate(trim_all_in)["failed"])
+
+    dreaming_all_in = probes_with(0, 10, "dreaming")     # 비대상이라 통과
+    assert "G2" not in dict(gates.evaluate(dreaming_all_in)["failed"])
+
+
+def test_gate_g3_probe_leak_dropped():
+    from benchmarks.eval import gates
+    ok = {"variant": "trim", "totals": {"probe_leak_dropped": 0}, "probes": []}
+    bad = {"variant": "trim", "totals": {"probe_leak_dropped": 2}, "probes": []}
+    missing = {"variant": "trim", "totals": {}, "probes": []}
+    assert "G3" not in dict(gates.evaluate(ok)["failed"])
+    assert "G3" in dict(gates.evaluate(bad)["failed"])
+    assert "G3" in dict(gates.evaluate(missing)["failed"])    # 구 JSON 재현
+
+
+def test_gate_g4_probe_delivery_ratio():
+    from benchmarks.eval import gates
+    ok = {"variant": "vanilla",
+         "totals": {"probes": 8, "probes_scheduled": 10}, "probes": []}
+    bad = {"variant": "vanilla",
+          "totals": {"probes": 5, "probes_scheduled": 10}, "probes": []}
+    missing = {"variant": "vanilla", "totals": {"probes": 5}, "probes": []}
+    assert "G4" not in dict(gates.evaluate(ok)["failed"])
+    assert "G4" in dict(gates.evaluate(bad)["failed"])
+    assert "G4" in dict(gates.evaluate(missing)["failed"])    # 구 JSON 재현
+
+
+def test_gates_g5_g6_g7_flag_truncation_flaw_abort_and_unparsed():
+    from benchmarks.eval import gates
+
+    def base():
+        return {"variant": "vanilla",
+                "totals": {"truncated": 0, "flawed": 0, "aborted": "",
+                          "judge_unparsed": 0},
+                "probes": []}
+
+    healthy = base()
+    assert not {"G5", "G6", "G7"} & set(dict(gates.evaluate(healthy)["failed"]))
+
+    trunc = base()
+    trunc["totals"]["truncated"] = 1
+    assert "G5" in dict(gates.evaluate(trunc)["failed"])
+
+    flaw = base()
+    flaw["totals"]["flawed"] = 2
+    assert "G6" in dict(gates.evaluate(flaw)["failed"])
+
+    aborted = base()
+    aborted["totals"]["aborted"] = "누적 리롤 10회 (T78) — 프로바이더 거부 반복, 런 중단"
+    assert "G6" in dict(gates.evaluate(aborted)["failed"])
+
+    unparsed = base()
+    unparsed["totals"]["judge_unparsed"] = 3
+    assert "G7" in dict(gates.evaluate(unparsed)["failed"])
+
+
+def test_gate_g8_requires_lucid_model_and_prompt_hashes():
+    from benchmarks.eval import gates
+    ok = {"variant": "vanilla", "totals": {"lucid_model": "m"},
+         "prompt_hashes": {"JUDGE_SYS": "abc123"}, "probes": []}
+    no_model = {"variant": "vanilla", "totals": {},
+               "prompt_hashes": {"JUDGE_SYS": "abc123"}, "probes": []}
+    no_hashes = {"variant": "vanilla", "totals": {"lucid_model": "m"},
+                "prompt_hashes": {}, "probes": []}
+    assert "G8" not in dict(gates.evaluate(ok)["failed"])
+    assert "G8" in dict(gates.evaluate(no_model)["failed"])
+    assert "G8" in dict(gates.evaluate(no_hashes)["failed"])
+
+
+def test_gates_evaluate_handles_old_result_json_without_keyerror():
+    """구 JSON(이 게이트들이 신설되기 전에 저장된 결과) 재현 — lucid_model·
+    prompt_hashes·probes_scheduled·누출 카운터가 전부 없어도 KeyError 없이
+    평가되고, 그 부재 자체가 해당 게이트 실패로 잡혀야 한다(gates.py 모듈
+    docstring의 핵심 계약)."""
+    from benchmarks.eval import gates
+
+    old_result = {
+        "variant": "trim",
+        "session": "old-session",
+        "run": 0,
+        "model": "some/old-model",
+        "turns": [],
+        "probes": [{"turn": 5, "ptype": "recall", "judge": True,
+                    "oracle": True}],
+        "totals": {"probes": 1, "judge_pass": 1, "judge_unparsed": 0,
+                   "oracle_pass": 1, "cost": 0.5, "rerolls": 0},
+        # prompt_hashes 키 자체가 없다 — 구 JSON에는 이 필드가 없었다.
+    }
+
+    result = gates.evaluate(old_result)      # KeyError면 여기서 죽는다
+
+    failed = dict(result["failed"])
+    assert "G3" in failed                    # probe_leak_dropped 부재
+    assert "G4" in failed                    # probes_scheduled 부재
+    assert "G8" in failed                    # lucid_model·prompt_hashes 부재
+    assert result["warnings"]                # G9는 상태 무관 항상 경고
+
+
+def test_gate_g9_always_lands_in_warnings_never_failed():
+    """G9(judge-사람 일치율)는 수동 감사가 없어 자동 판정 불가 — 런 상태와
+    무관하게 항상 warnings에만 들어가고 failed에는 절대 안 들어간다."""
+    from benchmarks.eval import gates
+    healthy = {"variant": "vanilla",
+              "totals": {"truncated": 0, "flawed": 0, "aborted": "",
+                        "judge_unparsed": 0, "probes": 8,
+                        "probes_scheduled": 10, "probe_leak_dropped": 0,
+                        "lucid_model": "m"},
+              "prompt_hashes": {"JUDGE_SYS": "x"},
+              "probes": [{"distance_turns": 20, "in_window": True}] * 5}
+    unhealthy = {"variant": "dreaming", "totals": {}, "probes": []}
+    for result in (healthy, unhealthy):
+        out = gates.evaluate(result)
+        assert "G9" not in [gid for gid, _ in out["failed"]]
+        assert "G9" in [gid for gid, _ in out["warnings"]]
+
+
+# ---- main() exit code (Task 2 리뷰 수정: 스모크가 게이트-only 실패를 용인) ----
+#
+# night_run.sh의 dreaming 스모크 단계는 run2.py의 프로세스 종료 코드로
+# "본런을 시작해도 되는가"를 판단한다. G1(compression_planned)은 업스트림
+# 압축 버그(DREAMING_FLAW.md)가 살아있는 한 dreaming 런마다 항상 실패하므로,
+# "게이트만 실패(크래시·중단 없음)"와 "진짜 크래시/중단"을 exit 코드로
+# 구분하지 않으면 스모크가 매일 밤 "실패"로 오판돼 100턴 본런이 영구
+# 스킵된다. 아래 두 테스트는 run2.run_once를 스텁으로 갈아끼워 프리셋/카드
+# 파일 없이 main()의 종료 코드 분기만 검증한다 — 이 워크트리엔
+# dreaming_data/프리셋이 없어 glob+skip 픽스처에 의존하면 이 회귀를 못
+# 잡는다(스킵되어 버리므로).
+
+def test_main_exits_with_gate_only_code_when_gates_fail_but_no_abort(
+        monkeypatch):
+    """중단(aborted) 없이 게이트만 실패하면 main()이 GATE_ONLY_EXIT(2)로
+    종료한다 — night_run.sh 스모크가 이 코드를 용인해 본런을 시작해야
+    한다. 이 구분이 없어져 다시 일반 SystemExit(문자열, 실질 exit 1)로
+    합쳐지면 이 테스트가 실패한다."""
+    import sys
+
+    import pytest
+
+    from benchmarks.eval import run2
+
+    def fake_run_once(*args, **kwargs):
+        return {"totals": {"probes": 1, "judge_pass": 0, "cost": 0.0,
+                           "aborted": ""},
+                "gates": {"failed": [("G1", "꿈 사이클 미확인")],
+                         "warnings": [("G9", "미검증")]}}
+
+    monkeypatch.setattr(run2, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["run2.py", "preset.risup", "card.json", "dreaming",
+         "--session", "gate-only-test", "--turns", "1"])
+    with pytest.raises(SystemExit) as exc:
+        run2.main()
+    assert exc.value.code == run2.GATE_ONLY_EXIT
+    assert run2.GATE_ONLY_EXIT == 2
+
+
+def test_main_exits_with_distinct_code_on_abort_not_gate_only(monkeypatch):
+    """진짜 중단(aborted)은 GATE_ONLY_EXIT과 다른 코드로 종료해야 한다 —
+    스모크 단계가 크래시/중단까지 용인해버리면 안 되므로."""
+    import sys
+
+    import pytest
+
+    from benchmarks.eval import run2
+
+    def fake_run_once(*args, **kwargs):
+        return {"totals": {"probes": 0, "judge_pass": 0, "cost": 0.0,
+                           "aborted": "누적 리롤 10회 (T5) — 프로바이더 거부 반복, "
+                                      "런 중단"},
+                "gates": {"failed": [], "warnings": [("G9", "미검증")]}}
+
+    monkeypatch.setattr(run2, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["run2.py", "preset.risup", "card.json", "dreaming",
+         "--session", "abort-test", "--turns", "1"])
+    with pytest.raises(SystemExit) as exc:
+        run2.main()
+    assert exc.value.code != run2.GATE_ONLY_EXIT
