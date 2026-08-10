@@ -19,6 +19,15 @@ TAIL_KEEP = 6      # 원문 꼬리로 남길 최근 pair 수 (스펙 §5)
 T1_MAX = 8         # Tier1 청크 상한 — 초과분은 챕터로 승격 (§6.2)
 CHAPTER_SIZE = 5   # 챕터 1개로 묶을 에피소드 수 — 고정 블록이라 승격이 안정
 
+# 압축 경계가 한 번에 움직이는 턴 수. 매 턴 한 칸씩 움직이면 매 턴 청크가
+# 하나 붙고 그 뒤 꼬리 전체가 새 바이트가 되어 프리픽스 캐시가 상시 깨진다
+# (fix-drm-r0 실측: 캐시 적중 47%, 턴당 uncached 15,249 — vanilla 5,992의
+# 2.5배. 프롬프트를 절반으로 줄이고도 더 비쌌다).
+# 계단식이면 STEP-1턴 동안 플랜 바이트가 동일하고 창은 순수 append라
+# vanilla와 같은 캐시를 받고, STEP턴마다 한 번만 리빌드 비용을 낸다.
+# 값이 클수록 캐시는 좋아지고 꼬리에 원문이 더 오래 남아 프롬프트가 커진다.
+BOUNDARY_STEP = 10
+
 
 def _one_line(text: str) -> str:
     return " ".join(text.split())
@@ -47,6 +56,10 @@ def build_compression(store: MemoryStore, last_turn: int) -> Optional[Dict]:
     기반이라 프리픽스 연속성이 전제). 갭·꼬리(최근 TAIL_KEEP pair)에서
     중단, 재드림 중복 구간은 스킵.
 
+    꼬리 경계는 BOUNDARY_STEP 단위로 내림한다 — 매 턴 움직이면 플랜이 매 턴
+    바뀌어 프리픽스 캐시가 상시 깨진다 (상수 주석의 실측 참조). 그래서 첫
+    BOUNDARY_STEP턴 동안은 압축 대상이 있어도 플랜이 None이다.
+
     시작점을 0으로 박으면 안 된다 — 프로덕션 턴 번호는 _BASELINE_PAD로
     1024부터 시작하므로(identity.py:95-99) 첫 에피소드에서 즉시 break 되어
     압축이 영구 무효화된다 (docs/DREAMING_FLAW.md §2, 실측 청크 0개).
@@ -57,7 +70,11 @@ def build_compression(store: MemoryStore, last_turn: int) -> Optional[Dict]:
         logger.info("[chunks] 압축 없음: 턴 범위를 가진 에피소드가 0개")
         return None
     eps.sort(key=lambda e: (e.start_turn, e.recorded_at))
-    cutoff = last_turn - TAIL_KEEP
+    # 경계를 BOUNDARY_STEP 단위로 내림 — 첫 에피소드 시작턴이 기준점이라
+    # 세션이 자라도 이미 지난 경계는 다시 움직이지 않는다.
+    base = eps[0].start_turn
+    steps = max(0, (last_turn - TAIL_KEEP - base + 1) // BOUNDARY_STEP)
+    cutoff = base - 1 + steps * BOUNDARY_STEP
     chain: List[Episode] = []
     next_turn = eps[0].start_turn          # 패드된 턴 공간을 그대로 승계
     for e in eps:
