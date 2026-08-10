@@ -1,5 +1,6 @@
 """프리셋 프리필 꼬리 분리 (뮈토스 6.2 ▶️ 도메인 중립 렌더링 프리필)."""
 from dreaming import scaffold
+from dreaming.assembly import KNOWLEDGE_SEP
 from dreaming.records import Fact
 from dreaming.storage import JsonDirStorage
 from dreaming.store import MemoryStore
@@ -89,7 +90,7 @@ def test_knowledge_lands_before_player_input_not_after_prefill(tmp_path):
     sp = _sp(tmp_path)
     sp.process(_wire("U1"))                       # 1턴: 꼬리 학습용
     out, _ = sp.process(_wire("U1", "A1", "U2_PLAYER"))
-    injected = [m for m in out if "dreaming_context" in m.get("content", "")]
+    injected = [m for m in out if KNOWLEDGE_SEP in m.get("content", "")]
     assert len(injected) == 1
     assert injected[0]["content"].endswith("U2_PLAYER")
     assert [m["content"] for m in out[-len(TAIL):]] == [m["content"] for m in TAIL]

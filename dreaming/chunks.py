@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Dict, List, Optional, Tuple
 
 from dreaming.records import Episode
 from dreaming.store import MemoryStore
+
+logger = logging.getLogger(__name__)
 
 TAIL_KEEP = 6      # 원문 꼬리로 남길 최근 pair 수 (스펙 §5)
 T1_MAX = 8         # Tier1 청크 상한 — 초과분은 챕터로 승격 (§6.2)
@@ -40,15 +43,23 @@ def assemble_tier2(episodes: List[Episode]) -> str:
 def build_compression(store: MemoryStore, last_turn: int) -> Optional[Dict]:
     """에피소드 → 압축 플랜 (B-4, 꿈 안에서만 호출 — §6.3 TTL 창구).
 
-    턴 0부터의 연속 구간만 압축한다 (치환이 위치 기반이라 프리픽스 연속성이
-    전제). 갭·꼬리(최근 TAIL_KEEP pair)에서 중단, 재드림 중복 구간은 스킵.
+    **가장 이른 에피소드 턴부터의** 연속 구간만 압축한다 (치환이 위치
+    기반이라 프리픽스 연속성이 전제). 갭·꼬리(최근 TAIL_KEEP pair)에서
+    중단, 재드림 중복 구간은 스킵.
+
+    시작점을 0으로 박으면 안 된다 — 프로덕션 턴 번호는 _BASELINE_PAD로
+    1024부터 시작하므로(identity.py:95-99) 첫 에피소드에서 즉시 break 되어
+    압축이 영구 무효화된다 (docs/DREAMING_FLAW.md §2, 실측 청크 0개).
     """
     eps = [e for e in store.list_episodes()
            if e.start_turn is not None and e.end_turn is not None]
+    if not eps:
+        logger.info("[chunks] 압축 없음: 턴 범위를 가진 에피소드가 0개")
+        return None
     eps.sort(key=lambda e: (e.start_turn, e.recorded_at))
     cutoff = last_turn - TAIL_KEEP
     chain: List[Episode] = []
-    next_turn = 0
+    next_turn = eps[0].start_turn          # 패드된 턴 공간을 그대로 승계
     for e in eps:
         if e.start_turn < next_turn:
             continue                      # 이미 덮인 구간 (재드림 중복)
@@ -57,6 +68,10 @@ def build_compression(store: MemoryStore, last_turn: int) -> Optional[Dict]:
         chain.append(e)
         next_turn = e.end_turn + 1
     if not chain:
+        # 조용한 실패 금지 — 이 결함이 오래 안 보인 유일한 이유가 침묵이었다
+        logger.info("[chunks] 압축 없음: 에피소드 %d개, 시작턴 %d, 꼬리 cutoff %d "
+                    "— 전부 꼬리 안이거나 첫 구간이 불연속",
+                    len(eps), eps[0].start_turn, cutoff)
         return None
 
     n_chapters = 0

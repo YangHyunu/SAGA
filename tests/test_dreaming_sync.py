@@ -1,4 +1,5 @@
 """SyncPath: 동기 경로 오케스트레이터 — 턴당 LLM 0콜 (스펙 §3.1)."""
+from dreaming.assembly import KNOWLEDGE_SEP
 from dreaming.records import Actor, Fact, StateCommit
 from dreaming.storage import JsonDirStorage
 from dreaming.store import MemoryStore
@@ -42,6 +43,35 @@ def test_render_empty_store_is_empty(tmp_path):
     assert render_knowledge(ms) == ""
 
 
+def test_render_keeps_newest_facts_and_pinned(tmp_path):
+    # 오름차순 정렬 + 앞에서 자르기였을 땐 초반 사실에 영구 고정됐다
+    # (실측: confirmed 179개 중 인덱스 0~19만 주입 — DREAMING_FLAW.md §3)
+    ms = MemoryStore(JsonDirStorage(tmp_path), "sess1")
+    for i in range(80):
+        ms.save_fact(Fact(claim=f"사실{i:03d}", status="confirmed",
+                          recorded_at=f"2026-08-10T00:{i // 60:02d}:{i % 60:02d}+00:00"))
+    ms.save_fact(Fact(claim="가장 오래됐지만 고정", status="confirmed", pinned=True,
+                      recorded_at="2026-08-09T00:00:00+00:00"))
+    # 예산이 전부를 못 담을 때 무엇이 살아남는지가 요점
+    text = render_knowledge(ms, budget=200)
+    assert "사실079" in text                      # 최신이 들어온다
+    assert "가장 오래됐지만 고정" in text          # pinned는 나이와 무관하게 생존
+    assert "사실000" not in text                   # 초반 고정이 사라졌다
+    assert render_knowledge(ms).count("\n- ") > 20  # 넉넉하면 20개 상한도 없다
+
+
+def test_render_budget_keeps_actor_block(tmp_path):
+    # 사실이 예산을 다 먹으면 뒤쪽 인물 블록이 통째로 잘렸다 (§3 수정방향 3)
+    ms = MemoryStore(JsonDirStorage(tmp_path), "sess1")
+    for i in range(400):
+        ms.save_fact(Fact(claim=f"긴 사실 문장 {i:03d} " + "가" * 40,
+                          status="confirmed"))
+    ms.save_actor(Actor(names=["리사"], profile="시장 상인", tier="main"))
+    text = render_knowledge(ms, budget=3000)
+    assert len(text) <= 3000
+    assert "[주요 인물]" in text and "리사" in text
+
+
 def test_render_is_deterministic(tmp_path):
     ms = MemoryStore(JsonDirStorage(tmp_path), "sess1")
     ms.append_commit(StateCommit(slot="소지금", op="set", value=450, turn=1))
@@ -60,7 +90,7 @@ def test_process_injects_and_marks(tmp_path):
     sp = SyncPath(storage, "sess1")
     out, verdict = sp.process(_msgs("안녕"))
     assert verdict.kind == "new_session"
-    assert "<dreaming_context>" in out[-1]["content"]     # 지식 주입 (캐시 밖)
+    assert KNOWLEDGE_SEP in out[-1]["content"]            # 지식 주입 (캐시 밖)
     assert out[0].get("cache_control") is not None        # BP1
     assert "소지금: 450" in out[-1]["content"]
 

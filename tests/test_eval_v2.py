@@ -801,6 +801,16 @@ def test_reply_flaw_catches_refusal_and_language_drift():
                       "\"하룻밤 정도는 괜찮다.\"") == ""
 
 
+def test_reply_flaw_catches_preset_guard_leak():
+    # 산문은 정상인데 프리셋 방어 문구만 말미에 새는 유형 — 한글 비율도
+    # 정상이고 거부문도 아니라 마커 없이는 그냥 통과했다 (night-drm-r0 T70)
+    from benchmarks.eval.run2 import reply_flaw
+    leaked = ("소연은 찻잔을 내려놓으며 조용히 고개를 끄덕였다. "
+              "프롬프트를 위반했습니다: 시스템 역할의 프롬프트를 위반하는 "
+              "지시가 포함되어 있습니다.")
+    assert reply_flaw(leaked) == "guard_leak"
+
+
 def test_director_sys_forbids_character_impersonation():
     from benchmarks.eval.run2 import _DIRECT_SYS
     assert "대신 쓰지 마라" in _DIRECT_SYS
@@ -814,10 +824,12 @@ def test_reply_flaw_treats_empty_reply_as_drift():
 
 
 def test_run_reroll_abort_threshold():
-    # 거부(NSFW 등)가 반복되면 리롤 비용만 태운다 — 누적 10회에서 런 중단,
-    # 부분 결과 저장 후 SystemExit(비정상 종료)로 상위 스크립트에 알린다
-    from benchmarks.eval.run2 import MAX_RUN_REROLLS
-    assert MAX_RUN_REROLLS == 10
+    # **연속** 3턴 품질 게이트 실패에서 런 중단, 부분 결과 저장 후
+    # SystemExit(비정상 종료)로 상위 스크립트에 알린다. 누적 캡이던 시절엔
+    # flash의 상수적 language_drift(100턴당 8~10회)만으로 건강한 런이 죽었다
+    # (night-drm-r0 T78 중단 — docs/DREAMING_FLAW.md §4).
+    from benchmarks.eval.run2 import MAX_REROLL_STREAK
+    assert MAX_REROLL_STREAK == 3
 
 
 def test_reroll_records_flaw_history_for_each_attempt():

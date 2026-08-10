@@ -41,9 +41,11 @@ MAX_TOKENS = int(os.environ.get("DREAMING_EVAL_MAX_TOKENS", "4000"))
 # OpenRouter reasoning 파라미터 (예: "high", "max"). 빈 값이면 미전송 —
 # 기존 런과의 비교성을 위해 기본 off. night_run/스모크에서 env로 켠다.
 REASONING_EFFORT = os.environ.get("DREAMING_EVAL_REASONING", "")
-# 프로바이더가 거부(NSFW 등)를 반복하면 리롤 비용만 태운다 — 런 전체
-# 누적 리롤이 이 값에 닿으면 결과를 저장하고 런을 중단한다.
-MAX_RUN_REROLLS = 10
+# 품질 게이트가 **연속으로** 이 턴 수만큼 걸리면 런이 실제로 망가진 것 —
+# 결과를 저장하고 중단한다. 누적 캡이었을 땐 건강한 런도 죽었다: flash는
+# 한국어 RP에서 language_drift가 상수처럼 섞여(100턴당 8~10회 실측) 흩어진
+# 정상 리롤만으로 누적 10에 닿는다 (night-drm-r0 T78 중단 — FLAW §4).
+MAX_REROLL_STREAK = 3
 
 # 확정 토글: RP 모드·한국어·성인 지침 ON·중립 렌더링 프리필 ON, 나머지 기본
 # select은 옵션 인덱스 문자열: response_language 1=🇰🇷 한국어, execution_mode 0=💬 RP.

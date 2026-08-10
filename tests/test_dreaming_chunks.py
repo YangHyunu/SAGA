@@ -60,6 +60,17 @@ def test_contiguous_prefix_outside_tail_is_chunked(tmp_path):
     assert "에피0" in plan["messages"][0]["content"]
 
 
+def test_padded_baseline_turns_are_chunked(tmp_path):
+    # 프로덕션 턴 번호는 0이 아니라 _BASELINE_PAD(1024)부터 시작한다
+    # (identity.py:95-99). 0-베이스 픽스처만 있어서 압축이 프로덕션에서
+    # 100% 실패하는 걸 테스트가 못 잡았다 (docs/DREAMING_FLAW.md §2).
+    store = _store_with(tmp_path, [_ep(1025, 1028), _ep(1029, 1032)])
+    plan = build_compression(store, last_turn=1032 + TAIL_KEEP)
+    assert plan is not None
+    assert plan["covers_until_turn"] == 1033
+    assert len(plan["messages"]) == 2
+
+
 def test_tail_and_gap_stop_chunking(tmp_path):
     # 꼬리 안 에피소드는 미압축, 턴 갭(4 누락)에서 중단
     store = _store_with(tmp_path, [_ep(0, 3), _ep(5, 6)])

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from dreaming.assembly import clip_knowledge, inject_knowledge
+from dreaming.assembly import (HOT_ZONE_CHAR_BUDGET, clip_knowledge,
+                               inject_knowledge)
 from dreaming.chunks import apply_compression
 from dreaming.identity import PairLedger, Verdict
 from dreaming.lore_shift import shift_keyed
@@ -20,7 +21,8 @@ from dreaming import scaffold
 from dreaming.store import MemoryStore
 from saga.services.pair_ledger import extract_pairs
 
-_MAX_FACTS = 20
+_BLOCK_SEP = "\n\n"
+_FACT_HEADER = "[확정 사실]\n"
 
 # 연속 미정렬이 이 횟수에 닿으면 원장을 버리고 다시 베이스라인을 잡는다.
 # 격리 턴은 record_turn을 안 타서 체인이 자라지 않는다 — 한 번 오염된
@@ -28,27 +30,49 @@ _MAX_FACTS = 20
 _MISALIGN_LIMIT = 3
 
 
-def render_knowledge(store: MemoryStore) -> str:
-    parts: List[str] = []
+def render_knowledge(store: MemoryStore,
+                     budget: int = HOT_ZONE_CHAR_BUDGET) -> str:
+    """지식 3블록 렌더 — 상태·인물 먼저 확보하고 사실에 잔여 예산을 준다.
 
+    사실은 **pinned 우선, 그 안에서 최신순**이다. 오름차순으로 앞에서 자르면
+    초반 사실에 영구 고정돼 이후 배운 게 하나도 안 들어간다 (실측: confirmed
+    179개 중 인덱스 0~19만 주입 — docs/DREAMING_FLAW.md §3).
+
+    예산을 사실이 다 먹게 두면 뒤에 붙는 인물 블록을 clip_knowledge가 통째로
+    날린다. 그래서 개수 상한이 아니라 **잔여 예산**으로 자른다.
+    """
     state = store.current_state()
+    state_block = ""
     if state:
-        lines = [f"- {slot}: {value}" for slot, value in sorted(state.items())]
-        parts.append("[현재 상태]\n" + "\n".join(lines))
+        state_block = "[현재 상태]\n" + "\n".join(
+            f"- {slot}: {value}" for slot, value in sorted(state.items()))
+
+    actors = [a for a in store.list_actors() if a.tier == "main"]
+    actor_block = ""
+    if actors:
+        actor_block = "[주요 인물]\n" + "\n".join(
+            f"- {a.names[0]}: {a.profile}" if a.profile else f"- {a.names[0]}"
+            for a in sorted(actors, key=lambda a: a.names[0]))
 
     facts = [f for f in store.list_facts()
              if f.pinned or f.status == "confirmed"]
-    facts = sorted(facts, key=lambda f: (not f.pinned, f.recorded_at))[:_MAX_FACTS]
-    if facts:
-        parts.append("[확정 사실]\n" + "\n".join(f"- {f.claim}" for f in facts))
+    facts.sort(key=lambda f: (f.pinned, f.recorded_at), reverse=True)
+    room = budget - len(_FACT_HEADER)
+    for block in (state_block, actor_block):
+        if block:
+            room -= len(block) + len(_BLOCK_SEP)
+    fact_lines: List[str] = []
+    for f in facts:
+        line = f"- {f.claim}"
+        if len(line) + 1 > room:
+            break
+        fact_lines.append(line)
+        room -= len(line) + 1
 
-    actors = [a for a in store.list_actors() if a.tier == "main"]
-    if actors:
-        lines = [f"- {a.names[0]}: {a.profile}" if a.profile else f"- {a.names[0]}"
-                 for a in sorted(actors, key=lambda a: a.names[0])]
-        parts.append("[주요 인물]\n" + "\n".join(lines))
-
-    return "\n\n".join(parts)
+    parts = [b for b in (state_block,
+                         _FACT_HEADER + "\n".join(fact_lines) if fact_lines else "",
+                         actor_block) if b]
+    return _BLOCK_SEP.join(parts)
 
 
 def demote_after(storage: Storage, session: str, from_turn: int) -> None:

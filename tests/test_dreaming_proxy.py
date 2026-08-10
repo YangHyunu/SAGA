@@ -4,6 +4,7 @@ import time
 
 from fastapi.testclient import TestClient
 
+from dreaming.assembly import KNOWLEDGE_SEP
 from dreaming.proxy import Settings, create_app
 from dreaming.records import StateCommit
 from dreaming.storage import JsonDirStorage
@@ -81,7 +82,7 @@ def test_non_stream_injects_marks_and_records(tmp_path):
     sent = up.payloads[0]["messages"]
     sys_part = sent[0]["content"][0]                 # BP1 → content part 변환
     assert sys_part["cache_control"]["type"] == "ephemeral"
-    assert "<dreaming_context>" in sent[-1]["content"]
+    assert KNOWLEDGE_SEP in sent[-1]["content"]
     assert "소지금: 450" in sent[-1]["content"]
 
     raw = storage.get("sess1/raw", "000000")         # 원본 기준으로 기록됨

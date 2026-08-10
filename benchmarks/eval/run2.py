@@ -33,7 +33,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from benchmarks.eval.config import (DATA, EVAL_DIR, HYPA_EXPORT, MAX_CONTEXT,
-                                    MAX_RUN_REROLLS, MAX_TOKENS, MODEL,
+                                    MAX_REROLL_STREAK, MAX_TOKENS, MODEL,
                                     NPC_EVENT_RETRY, NPC_EVENT_TURN, NPC_NAME,
                                     PROBE_EVERY, TOGGLES, TURNS, UPDATE_EVENTS)
 from benchmarks.eval import prompts
@@ -347,7 +347,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     if few_shot:
         dir_sys += f"\n[실제 유저 발화 예시 — 문체 참고]\n{few_shot}"
     turns, probes = [], []
-    total_rerolls, aborted = 0, ""
+    total_rerolls, reroll_streak, aborted = 0, 0, ""
     sched = probe_schedule(total_turns, probe_every)
     # hypa 상태 — 요약은 세션 안에서 누적된다 (data.summaries).
     hypa_S = hypa.load_hypa_settings(HYPA_EXPORT) if variant == "hypa" else None
@@ -398,6 +398,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                 f"[최근 대화]\n{ctx}\n[지시]\n{pick_beat(i, npc_due)}")
         dir_sec = round(time.time() - t_dir, 1)
 
+        rerolls_before = total_rerolls
         (st, use_window, win_start, kept_start_msg, hypa_data,
          total_rerolls, new_last_reply, turn_aborted) = _play_turn(
             i=i, utext=utext, variant=variant, history=history,
@@ -411,6 +412,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             aborted = turn_aborted
             break
         last_reply = new_last_reply
+        # 흩어진 정상 리롤은 스트릭을 끊는다 — 연속 실패만 런의 파손이다
+        reroll_streak = (reroll_streak + 1 if total_rerolls > rerolls_before
+                         else 0)
 
         _record_probe(i=i, ptype=ptype, fact=fact, wrong=wrong, utext=utext,
                       st=st, dir_sec=dir_sec, director=director,
@@ -423,9 +427,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
         if ttl_wait and i % 10 == 9:
             time.sleep(305)                    # TTL 5m 만료 재현 (옵션)
-        if total_rerolls >= MAX_RUN_REROLLS:
-            aborted = (f"누적 리롤 {total_rerolls}회 (T{i + 1}) — "
-                       f"프로바이더 거부 반복, 런 중단")
+        if reroll_streak >= MAX_REROLL_STREAK:
+            aborted = (f"연속 {reroll_streak}턴 품질 게이트 실패 (T{i + 1}, "
+                       f"누적 리롤 {total_rerolls}회) — 런 중단")
             break
 
     result = _collect_totals(variant=variant, session=session, run_no=run_no,
