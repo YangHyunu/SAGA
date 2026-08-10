@@ -67,9 +67,9 @@ from benchmarks.eval.quality import (abort_reroll_count,
                                      reply_flaw,  # noqa: F401
                                      reroll_until_clean)
 
-from benchmarks.eval.lucid import (DirFact, Ledger, LlmFn, extract_facts,
-                                   make_false_premise, make_probe,
-                                   _probe_mentions_fact_object,
+from benchmarks.eval.lucid import (DirFact, Ledger, LlmFn, count_unprotectable,
+                                   extract_facts, make_false_premise,
+                                   make_probe, _probe_mentions_fact_object,
                                    probe_leaks_value, probe_plan)
 from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
@@ -417,6 +417,10 @@ def _collect_totals(variant: str, session: str, run_no: int,
                          # 0이 정상 — D5 누출 하드 게이트가 걸린 횟수.
                          "probe_leak_retries": probe_leak_retries,
                          "probe_leak_dropped": probe_leak_dropped,
+                         # 값 길이 2 미만이라 eligible()에서 원천 배제된
+                         # 사실 수 — 항상 존재(0 포함), 공급 비용 관측용.
+                         "probe_facts_unprotectable":
+                             count_unprotectable(ledger),
                          # dreaming 전용 계측(A7·C6) — 다른 변형은 None
                          "dream_ran": dream_ran,
                          "episodes_written": episodes_written,
@@ -472,7 +476,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
 
     for i in range(total_turns):
         ptype = sched[i]
-        fact, wrong = None, ""
+        fact = None
         t_dir = time.time()
         if ptype:
             plan = probe_plan(ledger, i, {ptype: 1})
@@ -514,7 +518,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             time.sleep(12)                     # 꿈 트리거 (유휴 Dreamer)
         if ttl_wait and i % 10 == 9:
             # C11/C12 개방용. 이걸 끄면 TTL 재압축 창구는 미시험이며
-            # 캐시율은 과대측정 (EVAL2.md:93).
+            # 캐시율은 과대측정 (EVAL2.md:95).
             time.sleep(305)
         if reroll_streak >= MAX_REROLL_STREAK:
             aborted = (f"연속 {reroll_streak}턴 품질 게이트 실패 (T{i + 1}, "

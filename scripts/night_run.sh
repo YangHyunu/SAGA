@@ -57,7 +57,13 @@ PROXY_PID=$!
 sleep 3
 kill -0 $PROXY_PID 2>/dev/null || { say "프록시 기동 실패 — 나머지 3변형은 계속"; PROXY_PID=""; }
 
-# ── dreaming: 스모크 관통 확인 + 격리 게이트 통과 후에만 본런 ──
+# ── dreaming: 스모크 관통 확인 후 본런. 격리 게이트는 현재 no-op —
+# 아래 QCOUNT가 보는 dreaming_data/${SMOKE_SESSION}/quarantine/ 경로는
+# run2.main()이 실제로 쓰는 ${SMOKE_SESSION}-r0/quarantine/(sess =
+# f"{session}-r{n}")와 안 맞아 ls가 항상 빈 결과 → QCOUNT=0 → 격리가
+# 있어도 게이트가 절대 안 걸린다(한 번도 안 걸림). 브랜치 이전부터의
+# 버그이며, 언제 본런을 중단시킬지는 운영 판단이라 별도 트랙으로 미룬다
+# — 코드는 그대로 둔다 ──
 # 스모크는 run_variant()를 안 거치는 별도 호출이라 --ttl-wait이 자연히
 # 안 붙는다 — 붙여도 SMOKE_TURNS=6에선 i%10==9가 안 걸려 무의미하고,
 # 스모크의 목적 자체가 "실행 가능한가"만 보는 빠른 확인이라 51분 대기와

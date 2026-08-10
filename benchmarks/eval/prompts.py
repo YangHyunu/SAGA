@@ -1,9 +1,10 @@
 """프롬프트 10종 집결 — A/B 오버라이드 + 런 기록.
 
-run2.py(디렉터 유저 페르소나·필러 비트), lucid.py(추출·프로브·false),
-scoring.py(judge)에 흩어져 있던 시스템 프롬프트를 한곳에 모은다. 각 원본
-모듈은 별칭 import로 기존 언더스코어 이름(`_DIRECT_SYS` 등)을 유지한다.
-config는 최하층이라 여기서 import해도 순환이 없다.
+Lucid 페르소나(prompts/lucid_persona.md)·run2.py(필러 비트),
+lucid.py(추출·프로브·false), scoring.py(judge)에 흩어져 있던 시스템
+프롬프트를 한곳에 모은다. 각 원본 모듈은 별칭 import로 기존 언더스코어
+이름(`_BEATS` 등)을 유지한다. config는 최하층이라 여기서 import해도
+순환이 없다.
 """
 
 from __future__ import annotations

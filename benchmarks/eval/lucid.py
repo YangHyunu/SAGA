@@ -81,9 +81,25 @@ RECENT_MAX_AGE = 8   # 단기 대조군(recent) 상한
 
 def eligible(ledger: Ledger, turn_now: int, kind: Optional[str] = None,
              min_age: int = MIN_PROBE_AGE) -> List[DirFact]:
-    """나이가 min_age 이상인 미출제 사실."""
+    """나이가 min_age 이상인 미출제 사실.
+
+    값 길이 2 미만인 사실은 제외한다 — mask_value 가드(위)가 그런 값을
+    마스킹하지 않으므로 probe_leaks_value 게이트로도 보호할 수 없어
+    정직하게 측정할 수 없다. 실측 지배 케이스는 화자 자신의 이름(예:
+    "렌")이라 애초에 기억 시험이 아니다. 제외분 관측은
+    count_unprotectable 참고.
+    """
     return [f for f in ledger.unprobed(kind)
-            if turn_now - f.turn >= min_age]
+            if turn_now - f.turn >= min_age and len(f.value) >= 2]
+
+
+def count_unprotectable(ledger: Ledger) -> int:
+    """값 길이 2 미만이라 eligible()에서 원천 배제되는 사실 수.
+
+    공급 비용 관측용(totals.probe_facts_unprotectable) — 제외분이 출제
+    대상 풀을 얼마나 깎는지 매 런에서 드러낸다.
+    """
+    return sum(1 for f in ledger.facts if len(f.value) < 2)
 
 
 def mask_value(text: str, value: str) -> str:

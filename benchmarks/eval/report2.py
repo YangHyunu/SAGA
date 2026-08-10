@@ -137,8 +137,10 @@ def render(agg: Dict, results: List[Dict]) -> str:
                            for gid, _ in r.get("gates", {}).get("failed", [])})
         mark = " [무효]" if gate_ids else ""
         tail = f" 실패게이트: {','.join(gate_ids)}" if gate_ids else ""
+        # tail은 마지막 셀 안(닫는 파이프 앞)에 붙인다 — 파이프 밖에 붙이면
+        # 헤더보다 열이 하나 늘어나 GFM이 그 셀을 통째로 버린다.
         lines.append(f"| {variant}{mark} | " + " | ".join(cells)
-                     + f" | {a['cost_mean']:.2f} |" + tail)
+                     + f" | {a['cost_mean']:.2f}{tail} |")
     lines.append("")
     lines.append("## 창내(LITM) vs 창밖(eviction) 통과율")
     lines.append("| variant | 창내 | 창밖 |")

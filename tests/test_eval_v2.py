@@ -4,6 +4,7 @@ import json
 from benchmarks.eval.lucid import (
     DirFact,
     Ledger,
+    count_unprotectable,
     eligible,
     extract_facts,
     make_false_premise,
@@ -183,6 +184,31 @@ def test_eligible_distance_gated():
     assert [f.fid for f in eligible(led, 35, kind="relation")] == ["f2"]
     assert [f.fid for f in eligible(led, 17)] == ["f0"]   # 나이 15 경계 포함
     assert eligible(led, 16) == []                        # 나이 14 미달
+
+
+def test_eligible_excludes_unprotectable_single_char_values():
+    """값 길이 1은 mask_value 가드가 마스킹을 건너뛰므로 probe_leaks_value
+    게이트로도 보호 못 한다 — eligible()에서 원천 배제한다. 지배 케이스는
+    화자 자신의 이름("렌")이라 애초에 기억 시험이 아니다. 2글자는 경계로
+    여전히 출제 가능해야 한다."""
+    led = Ledger()
+    led.add([DirFact(fid="short", kind="exact", value="렌", text="사실",
+                     turn=0),
+             DirFact(fid="boundary", kind="exact", value="렌1", text="사실",
+                     turn=0)])
+    got = [f.fid for f in eligible(led, turn_now=20)]
+    assert "short" not in got
+    assert "boundary" in got
+
+
+def test_count_unprotectable_reflects_excluded_facts():
+    """totals.probe_facts_unprotectable의 근거 — eligible()이 제외하는
+    사실 수를 그대로 센다(공급 비용 관측)."""
+    led = Ledger()
+    led.add([DirFact(fid="a", kind="exact", value="렌", text="t", turn=0),
+             DirFact(fid="b", kind="exact", value="렌", text="t", turn=0),
+             DirFact(fid="c", kind="exact", value="렌1", text="t", turn=0)])
+    assert count_unprotectable(led) == 2
 
 
 def test_probe_plan_marks_probed_and_respects_want():
@@ -1525,6 +1551,28 @@ def test_collect_totals_includes_lucid_model():
     assert result["totals"]["lucid_model"] == config.LUCID_MODEL
 
 
+def test_collect_totals_includes_probe_facts_unprotectable():
+    """totals["probe_facts_unprotectable"]은 항상 존재(0 포함) — 게이트가
+    absent와 0을 헷갈리면 안 된다."""
+    from benchmarks.eval import run2
+
+    led = Ledger()
+    led.add([DirFact(fid="a", kind="exact", value="렌", text="t", turn=0)])
+    result = run2._collect_totals(
+        variant="vanilla", session="s", run_no=0, prompt_set={},
+        turns=[], probes=[], ledger=led, lucid=_totals_stub_llm(),
+        judge=_totals_stub_llm(), hypa_cost0=0.0, hypa_truncated0=0,
+        aborted="")
+    assert result["totals"]["probe_facts_unprotectable"] == 1
+
+    empty = run2._collect_totals(
+        variant="vanilla", session="s", run_no=0, prompt_set={},
+        turns=[], probes=[], ledger=Ledger(), lucid=_totals_stub_llm(),
+        judge=_totals_stub_llm(), hypa_cost0=0.0, hypa_truncated0=0,
+        aborted="")
+    assert empty["totals"]["probe_facts_unprotectable"] == 0
+
+
 def test_config_lucid_model_falls_back_to_legacy_env(monkeypatch,
                                                       capsys):
     """구 env(DREAMING_EVAL_DIRECTOR)만 설정 시 폴백 + 경고 1회.
@@ -1694,6 +1742,35 @@ def test_gate_g8_requires_lucid_model_and_prompt_hashes():
     assert "G8" not in dict(gates.evaluate(ok)["failed"])
     assert "G8" in dict(gates.evaluate(no_model)["failed"])
     assert "G8" in dict(gates.evaluate(no_hashes)["failed"])
+
+
+def test_gates_evaluate_handles_old_result_json_without_keyerror():
+    """구 JSON(이 게이트들이 신설되기 전에 저장된 결과) 재현 — lucid_model·
+    prompt_hashes·probes_scheduled·누출 카운터가 전부 없어도 KeyError 없이
+    평가되고, 그 부재 자체가 해당 게이트 실패로 잡혀야 한다(gates.py 모듈
+    docstring의 핵심 계약)."""
+    from benchmarks.eval import gates
+
+    old_result = {
+        "variant": "trim",
+        "session": "old-session",
+        "run": 0,
+        "model": "some/old-model",
+        "turns": [],
+        "probes": [{"turn": 5, "ptype": "recall", "judge": True,
+                    "oracle": True}],
+        "totals": {"probes": 1, "judge_pass": 1, "judge_unparsed": 0,
+                   "oracle_pass": 1, "cost": 0.5, "rerolls": 0},
+        # prompt_hashes 키 자체가 없다 — 구 JSON에는 이 필드가 없었다.
+    }
+
+    result = gates.evaluate(old_result)      # KeyError면 여기서 죽는다
+
+    failed = dict(result["failed"])
+    assert "G3" in failed                    # probe_leak_dropped 부재
+    assert "G4" in failed                    # probes_scheduled 부재
+    assert "G8" in failed                    # lucid_model·prompt_hashes 부재
+    assert result["warnings"]                # G9는 상태 무관 항상 경고
 
 
 def test_gate_g9_always_lands_in_warnings_never_failed():
