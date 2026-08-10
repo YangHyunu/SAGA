@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 TAIL_KEEP = 6      # 원문 꼬리로 남길 최근 pair 수 (스펙 §5)
 T1_MAX = 8         # Tier1 청크 상한 — 초과분은 챕터로 승격 (§6.2)
 CHAPTER_SIZE = 5   # 챕터 1개로 묶을 에피소드 수 — 고정 블록이라 승격이 안정
+EXCERPT_MERGE_MAX = 5   # 챕터 병합 시 발췌 캡 (스펙 §6.2 "병합 시 5")
 
 # 압축 경계가 한 번에 움직이는 턴 수. 매 턴 한 칸씩 움직이면 매 턴 청크가
 # 하나 붙고 그 뒤 꼬리 전체가 새 바이트가 되어 프리픽스 캐시가 상시 깨진다
@@ -34,18 +35,28 @@ def _one_line(text: str) -> str:
 
 
 def assemble_tier1(ep: Episode) -> str:
-    """에피소드 청크 (~70% 압축): 제목 + 요약 + 미회수 복선."""
+    """에피소드 청크 (~70% 압축): 제목 + 요약 + 결정적 원문 + 미회수 복선.
+
+    발췌는 캐시되는 프리픽스에 살므로 턴당 추가 비용은 read 0.1×뿐이다.
+    상주 비용 실측(플랜 리뷰): 리빌드 상각 +~860자/턴 uncached (+11%) —
+    hot zone 주입(턴당 전액)보다 싸서 감수한다.
+    """
     lines = [f"[지난 이야기 · {ep.title}]", ep.summary.strip()]
+    for ex in ep.key_excerpts:
+        lines.append(f'원문: "{ex}"')
     if ep.open_threads:
         lines.append("남은 실마리: " + " / ".join(ep.open_threads))
     return "\n".join(lines)
 
 
 def assemble_tier2(episodes: List[Episode]) -> str:
-    """챕터 청크 (~90% 압축): 에피소드당 한 줄."""
+    """챕터 청크 (~90% 압축): 에피소드당 한 줄 + 병합 발췌 5개 (스펙 §6.2)."""
     lines = ["[지난 장 요약]"]
     for ep in episodes:
         lines.append(f"- {ep.title}: {_one_line(ep.summary)[:100]}")
+    merged = [ex for ep in episodes for ex in ep.key_excerpts]
+    for ex in merged[:EXCERPT_MERGE_MAX]:      # 병합 시 5 — 연대순 선착
+        lines.append(f'원문: "{ex}"')
     return "\n".join(lines)
 
 

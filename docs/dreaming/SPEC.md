@@ -234,6 +234,11 @@ Claude/OpenRouter 유료 유저 (Gemini 무료 티어에는 캐시 가치가 없
 - `@@inject_lore` 매크로 처리 포함 (SAGA 미해결 과제 승계 —
   RisuAI 쪽 처리 로직은 `lorebook.svelte.ts:75`에서 확인, §0.1).
 
+- 주입 예산 실측 (fix-drm-r0, 100턴): confirmed fact 329개 = 약 14K자(≈7~9K tok).
+  "선별 ≤2K"는 비용 상한이지 물리 한계가 아니다 — 예산은 `HOT_ZONE_CHAR_BUDGET`
+  파라미터로 두고, 상향 여부는 benchmarks/retrieval_lab.py의 프로브별 필요예산
+  곡선으로 결정한다 (T59류 패러프레이즈 포함 여부가 관건).
+
 ---
 
 ## 6. 청크 압축
@@ -264,6 +269,11 @@ Claude/OpenRouter 유료 유저 (Gemini 무료 티어에는 캐시 가치가 없
 - 꿈이 이 시점에 재압축 → 돌아온 첫 요청(어차피 cache miss)에 새 프리픽스 적용.
 - 재압축의 한계 캐시 비용 = **0**.
 - 유휴 전 예산 임계 도달 시에만 캐시 파괴를 감수 (턴당 상각 ~2%).
+
+- **프로바이더 한정 주의** (fix-drm-r0 실측, FINDINGS §2): "유휴 재압축 = 공짜"는
+  Anthropic처럼 TTL 만료로 캐시가 소멸하는 프로바이더에서만 성립한다. DeepSeek의
+  자동 프리픽스 캐싱은 유휴와 무관하게 바이트가 바뀌면 그대로 miss — 재압축 비용이
+  0이 아니다. 비-Anthropic에서는 재압축 빈도 자체를 낮추는 것(BOUNDARY_STEP)이 방어선.
 
 ---
 
