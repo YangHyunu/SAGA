@@ -1236,8 +1236,8 @@ def test_collect_totals_includes_lucid_model():
     assert result["totals"]["lucid_model"] == config.LUCID_MODEL
 
 
-def test_config_lucid_model_falls_back_to_old_director_env(monkeypatch,
-                                                            capsys):
+def test_config_lucid_model_falls_back_to_legacy_env(monkeypatch,
+                                                      capsys):
     """구 env(DREAMING_EVAL_DIRECTOR)만 설정 시 폴백 + 경고 1회.
 
     config.py는 import 시점에 env를 읽으므로 importlib.reload가 필요하다.
