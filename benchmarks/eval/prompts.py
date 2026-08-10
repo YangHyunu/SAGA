@@ -8,6 +8,7 @@ config는 최하층이라 여기서 import해도 순환이 없다.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Dict
 
@@ -111,6 +112,17 @@ _NAMES = ("DIRECT_SYS", "UPDATE_BEAT", "BEATS", "NPC_BEAT",
 def active() -> Dict[str, object]:
     """현재 프롬프트 세트 스냅샷 — 결과 JSON에 기록해 A/B 추적용."""
     return {n: globals()[n] for n in _NAMES}
+
+
+def layer_hashes() -> Dict[str, str]:
+    """`active()`의 각 항목을 sha256 앞 12자로 — 결과 JSON `prompt_hashes` 필드용.
+
+    이름 목록을 따로 두지 않고 active()가 반환한 키를 그대로 따른다 — 층이
+    늘어나(_NAMES 확장) active()가 항목을 더 반환하게 되면 이 함수도 수정
+    없이 자동으로 늘어난 항목을 포함한다.
+    """
+    return {n: hashlib.sha256(str(v).encode("utf-8")).hexdigest()[:12]
+            for n, v in active().items()}
 
 
 def override_from(path: str) -> None:

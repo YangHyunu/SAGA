@@ -74,7 +74,7 @@ from benchmarks.eval.lucid import (DirFact, Ledger, LlmFn, extract_facts,
 from benchmarks.eval.fidelity import check_wire_shape
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
 from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
-from benchmarks.eval import hypa
+from benchmarks.eval import gates, hypa
 
 
 def probe_schedule(total: int, every: int = PROBE_EVERY) -> List[Optional[str]]:
@@ -353,20 +353,49 @@ def _record_probe(i: int, ptype: Optional[str], fact: Optional[DirFact],
                            fact, utext)})
 
 
+def _dream_metrics(variant: str, session: str
+                   ) -> Tuple[Optional[bool], Optional[int], Optional[bool]]:
+    """dreaming 저장소 계측 — (dream_ran, episodes_written, compression_planned).
+
+    dreaming 외 변형은 (None, None, None) — 게이트 G1이 dreaming만 본다.
+    경로 규약은 scoring.decompose_miss의 base/{kind}/*.json과 동일
+    (JsonDirStorage 네임스페이스: DATA/{session}/{kind}/{key}.json).
+    dream_ran은 dreamer/cursor.json 존재, episodes_written은 episodes/*.json
+    개수, compression_planned은 compression/plan.json 존재 — plan이 None이면
+    dreamer.py:345-346이 그 파일 자체를 쓰지 않으므로 부재가 모호함 없는
+    "압축 미성립" 신호다(A7·C6).
+    """
+    if variant != "dreaming":
+        return None, None, None
+    base = DATA / session
+    dream_ran = (base / "dreamer" / "cursor.json").is_file()
+    ep_dir = base / "episodes"
+    episodes_written = len(list(ep_dir.glob("*.json"))) if ep_dir.is_dir() else 0
+    compression_planned = (base / "compression" / "plan.json").is_file()
+    return dream_ran, episodes_written, compression_planned
+
+
 def _collect_totals(variant: str, session: str, run_no: int,
                     prompt_set: Dict[str, object], turns: List[Dict],
                     probes: List[Dict], ledger: Ledger, lucid: LlmFn,
                     judge: LlmFn, hypa_cost0: float, hypa_truncated0: int,
                     aborted: str, probe_leak_retries: int = 0,
-                    probe_leak_dropped: int = 0) -> Dict:
+                    probe_leak_dropped: int = 0, probes_scheduled: int = 0,
+                    dream_ran: Optional[bool] = None,
+                    episodes_written: Optional[int] = None,
+                    compression_planned: Optional[bool] = None,
+                    prompt_hashes: Optional[Dict[str, str]] = None) -> Dict:
     # totals 집계: probes/turns에서 판정·비용을 합산해 최종 result를 조립.
     passed = sum(1 for p in probes if p["judge"] is True)
     unparsed = sum(1 for p in probes if p["judge"] is None)
     result = {"variant": variant, "session": session, "run": run_no,
               "model": MODEL, "prompt_set": prompt_set,
+              "prompt_hashes": prompt_hashes or {},
               "turns": turns, "probes": probes,
               "ledger": ledger.to_rows(),
-              "totals": {"probes": len(probes), "judge_pass": passed,
+              "totals": {"probes": len(probes),
+                         "probes_scheduled": probes_scheduled,
+                         "judge_pass": passed,
                          "judge_unparsed": unparsed,
                          "oracle_pass": sum(1 for p in probes if p["oracle"]),
                          # 절단은 기억 실패로 오인된다 — 0인지 매 런 확인한다
@@ -387,7 +416,11 @@ def _collect_totals(variant: str, session: str, run_no: int,
                          "aborted": aborted,
                          # 0이 정상 — D5 누출 하드 게이트가 걸린 횟수.
                          "probe_leak_retries": probe_leak_retries,
-                         "probe_leak_dropped": probe_leak_dropped}}
+                         "probe_leak_dropped": probe_leak_dropped,
+                         # dreaming 전용 계측(A7·C6) — 다른 변형은 None
+                         "dream_ran": dream_ran,
+                         "episodes_written": episodes_written,
+                         "compression_planned": compression_planned}}
     return result
 
 
@@ -486,6 +519,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                        f"누적 리롤 {total_rerolls}회) — 런 중단")
             break
 
+    probes_scheduled = sum(1 for x in sched if x is not None)
+    dream_ran, episodes_written, compression_planned = _dream_metrics(
+        variant, session)
     result = _collect_totals(variant=variant, session=session, run_no=run_no,
                              prompt_set=prompt_set, turns=turns,
                              probes=probes, ledger=ledger, lucid=lucid,
@@ -493,7 +529,15 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
                              hypa_truncated0=hypa_truncated0,
                              aborted=aborted,
                              probe_leak_retries=probe_leak_retries,
-                             probe_leak_dropped=probe_leak_dropped)
+                             probe_leak_dropped=probe_leak_dropped,
+                             probes_scheduled=probes_scheduled,
+                             dream_ran=dream_ran,
+                             episodes_written=episodes_written,
+                             compression_planned=compression_planned,
+                             prompt_hashes=prompts.layer_hashes())
+    # 런 유효성 판정 — 부분/무효 결과도 감사 가치가 있으므로 런을 죽이지
+    # 않는다. main()이 실패 게이트를 보고 비영점 종료한다.
+    result["gates"] = gates.evaluate(result)
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     out = EVAL_DIR / f"v2-{session}-run{run_no}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1))
@@ -523,6 +567,7 @@ def main() -> None:
         prompts.override_from(args.prompts)
     reroll = [int(x) for x in args.reroll_at.split(",") if x]
     edit = [int(x) for x in args.edit_at.split(",") if x]
+    gate_failed = False
     for n in range(args.runs):
         sess = f"{args.session}-r{n}"
         d = DATA / sess
@@ -541,9 +586,19 @@ def main() -> None:
               f"+ judge ${t.get('cost_judge', 0)} "
               f"+ hypa ${t.get('cost_hypa', 0)} = ${round(grand, 4)}",
               flush=True)
+        failed_gates = r["gates"]["failed"]
+        if failed_gates:
+            # 런은 죽이지 않는다 — 부분/무효 결과도 감사 가치가 있다. 대신
+            # 결과 JSON(gates)에 이미 기록됐고, 아래에서 프로세스를
+            # 비영점 종료해 night_run.sh 등 상위 스크립트가 감지하게 한다.
+            gate_failed = True
+            print(f"[run{n}] 게이트 실패: "
+                  + ", ".join(gid for gid, _ in failed_gates), flush=True)
         if t.get("aborted"):
             # 부분 결과는 이미 저장됨 — 비정상 종료로 상위 스크립트에 알린다
             raise SystemExit(f"런 중단: {t['aborted']}")
+    if gate_failed:
+        raise SystemExit("런 유효성 게이트 실패 — 결과 JSON의 gates.failed 참고")
 
 
 if __name__ == "__main__":

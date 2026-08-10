@@ -1355,3 +1355,167 @@ def test_config_lucid_model_falls_back_to_legacy_env(monkeypatch,
     finally:
         monkeypatch.delenv("DREAMING_EVAL_DIRECTOR", raising=False)
         importlib.reload(config)          # 모듈 전역 원복 — 상태 누수 방지
+
+
+# ---- gates.py (Task 2: 런 유효성 게이트) ----
+
+def test_layer_hashes_covers_active_prompts_and_reacts_to_change():
+    """layer_hashes()는 active()의 키 집합을 그대로 따르고(현재 8개),
+    내용이 바뀐 항목만 해시가 바뀐다 — 무관한 항목은 불변."""
+    from benchmarks.eval import prompts
+    hashes = prompts.layer_hashes()
+    assert set(hashes) == set(prompts.active())
+    assert len(hashes) == 8
+    saved = prompts.JUDGE_SYS
+    try:
+        before = hashes["JUDGE_SYS"]
+        prompts.JUDGE_SYS = saved + " (변경됨)"
+        after = prompts.layer_hashes()
+        assert after["JUDGE_SYS"] != before
+        assert after["PROBE_SYS"] == hashes["PROBE_SYS"]
+    finally:
+        prompts.JUDGE_SYS = saved
+
+
+def test_gate_g1_passes_when_dream_ran_episodes_and_compression_present():
+    from benchmarks.eval import gates
+    result = {"variant": "dreaming",
+              "totals": {"dream_ran": True, "episodes_written": 3,
+                        "compression_planned": True},
+              "probes": []}
+    assert "G1" not in dict(gates.evaluate(result)["failed"])
+
+
+def test_gate_g1_fails_when_compression_planned_missing():
+    """G1은 3조건 — dream_ran/episodes_written이 다 살아 있어도 압축 플랜
+    부재(dreamer.py가 plan is None이면 파일을 안 쓴다, C6) 하나로 떨어진다.
+    dreaming 외 변형은 이 게이트 자체가 적용 안 된다."""
+    from benchmarks.eval import gates
+    result = {"variant": "dreaming",
+              "totals": {"dream_ran": True, "episodes_written": 5,
+                        "compression_planned": False},
+              "probes": []}
+    reasons = dict(gates.evaluate(result)["failed"])
+    assert "G1" in reasons and "compression_planned" in reasons["G1"]
+
+    other_variant = {"variant": "vanilla", "totals": {}, "probes": []}
+    assert "G1" not in dict(gates.evaluate(other_variant)["failed"])
+
+
+def test_gate_g2_distance_median_threshold():
+    from benchmarks.eval import gates
+
+    def probes_with(dists):
+        return [{"distance_turns": d, "in_window": True} for d in dists]
+
+    passing = {"variant": "dreaming", "totals": {},
+              "probes": probes_with([15, 20, 30])}
+    failing = {"variant": "dreaming", "totals": {},
+              "probes": probes_with([5, 8, 10])}
+    assert "G2" not in dict(gates.evaluate(passing)["failed"])
+    assert "G2" in dict(gates.evaluate(failing)["failed"])
+
+
+def test_gate_g2_out_of_window_clause_applies_only_to_trim_and_hypa():
+    """FULL_HISTORY 변형(dreaming/vanilla)은 in_window가 구조상 항상 True라
+    '창밖 ≥50%' 절이 아예 적용되지 않는다 — trim/hypa만 대상."""
+    from benchmarks.eval import gates
+
+    def probes_with(n_out, n_in, variant):
+        probes = ([{"distance_turns": 20, "in_window": False}] * n_out
+                  + [{"distance_turns": 20, "in_window": True}] * n_in)
+        return {"variant": variant, "totals": {}, "probes": probes}
+
+    trim_low_out = probes_with(1, 9, "trim")             # 10% out — 미달
+    assert "G2" in dict(gates.evaluate(trim_low_out)["failed"])
+
+    trim_high_out = probes_with(6, 4, "trim")            # 60% out — 통과
+    assert "G2" not in dict(gates.evaluate(trim_high_out)["failed"])
+
+    trim_all_in = probes_with(0, 10, "trim")             # 0% out — 미달
+    assert "G2" in dict(gates.evaluate(trim_all_in)["failed"])
+
+    dreaming_all_in = probes_with(0, 10, "dreaming")     # 비대상이라 통과
+    assert "G2" not in dict(gates.evaluate(dreaming_all_in)["failed"])
+
+
+def test_gate_g3_probe_leak_dropped():
+    from benchmarks.eval import gates
+    ok = {"variant": "trim", "totals": {"probe_leak_dropped": 0}, "probes": []}
+    bad = {"variant": "trim", "totals": {"probe_leak_dropped": 2}, "probes": []}
+    missing = {"variant": "trim", "totals": {}, "probes": []}
+    assert "G3" not in dict(gates.evaluate(ok)["failed"])
+    assert "G3" in dict(gates.evaluate(bad)["failed"])
+    assert "G3" in dict(gates.evaluate(missing)["failed"])    # 구 JSON 재현
+
+
+def test_gate_g4_probe_delivery_ratio():
+    from benchmarks.eval import gates
+    ok = {"variant": "vanilla",
+         "totals": {"probes": 8, "probes_scheduled": 10}, "probes": []}
+    bad = {"variant": "vanilla",
+          "totals": {"probes": 5, "probes_scheduled": 10}, "probes": []}
+    missing = {"variant": "vanilla", "totals": {"probes": 5}, "probes": []}
+    assert "G4" not in dict(gates.evaluate(ok)["failed"])
+    assert "G4" in dict(gates.evaluate(bad)["failed"])
+    assert "G4" in dict(gates.evaluate(missing)["failed"])    # 구 JSON 재현
+
+
+def test_gates_g5_g6_g7_flag_truncation_flaw_abort_and_unparsed():
+    from benchmarks.eval import gates
+
+    def base():
+        return {"variant": "vanilla",
+                "totals": {"truncated": 0, "flawed": 0, "aborted": "",
+                          "judge_unparsed": 0},
+                "probes": []}
+
+    healthy = base()
+    assert not {"G5", "G6", "G7"} & set(dict(gates.evaluate(healthy)["failed"]))
+
+    trunc = base()
+    trunc["totals"]["truncated"] = 1
+    assert "G5" in dict(gates.evaluate(trunc)["failed"])
+
+    flaw = base()
+    flaw["totals"]["flawed"] = 2
+    assert "G6" in dict(gates.evaluate(flaw)["failed"])
+
+    aborted = base()
+    aborted["totals"]["aborted"] = "누적 리롤 10회 (T78) — 프로바이더 거부 반복, 런 중단"
+    assert "G6" in dict(gates.evaluate(aborted)["failed"])
+
+    unparsed = base()
+    unparsed["totals"]["judge_unparsed"] = 3
+    assert "G7" in dict(gates.evaluate(unparsed)["failed"])
+
+
+def test_gate_g8_requires_lucid_model_and_prompt_hashes():
+    from benchmarks.eval import gates
+    ok = {"variant": "vanilla", "totals": {"lucid_model": "m"},
+         "prompt_hashes": {"JUDGE_SYS": "abc123"}, "probes": []}
+    no_model = {"variant": "vanilla", "totals": {},
+               "prompt_hashes": {"JUDGE_SYS": "abc123"}, "probes": []}
+    no_hashes = {"variant": "vanilla", "totals": {"lucid_model": "m"},
+                "prompt_hashes": {}, "probes": []}
+    assert "G8" not in dict(gates.evaluate(ok)["failed"])
+    assert "G8" in dict(gates.evaluate(no_model)["failed"])
+    assert "G8" in dict(gates.evaluate(no_hashes)["failed"])
+
+
+def test_gate_g9_always_lands_in_warnings_never_failed():
+    """G9(judge-사람 일치율)는 수동 감사가 없어 자동 판정 불가 — 런 상태와
+    무관하게 항상 warnings에만 들어가고 failed에는 절대 안 들어간다."""
+    from benchmarks.eval import gates
+    healthy = {"variant": "vanilla",
+              "totals": {"truncated": 0, "flawed": 0, "aborted": "",
+                        "judge_unparsed": 0, "probes": 8,
+                        "probes_scheduled": 10, "probe_leak_dropped": 0,
+                        "lucid_model": "m"},
+              "prompt_hashes": {"JUDGE_SYS": "x"},
+              "probes": [{"distance_turns": 20, "in_window": True}] * 5}
+    unhealthy = {"variant": "dreaming", "totals": {}, "probes": []}
+    for result in (healthy, unhealthy):
+        out = gates.evaluate(result)
+        assert "G9" not in [gid for gid, _ in out["failed"]]
+        assert "G9" in [gid for gid, _ in out["warnings"]]
