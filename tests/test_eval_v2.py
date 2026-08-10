@@ -880,8 +880,8 @@ def test_recent_dialogue_gives_last_pairs_with_roles():
 
 
 def test_lucid_sys_forbids_card_knowledge_preemption():
-    from benchmarks.eval.run2 import _DIRECT_SYS
-    assert "먼저 입에 올리지" in _DIRECT_SYS
+    from benchmarks.eval import prompts
+    assert "먼저 입에 올리지" in prompts.LUCID_RULES
 
 
 def test_reply_flaw_catches_refusal_and_language_drift():
@@ -909,8 +909,8 @@ def test_reply_flaw_catches_preset_guard_leak():
 
 
 def test_lucid_sys_forbids_character_impersonation():
-    from benchmarks.eval.run2 import _DIRECT_SYS
-    assert "대신 쓰지 마라" in _DIRECT_SYS
+    from benchmarks.eval import prompts
+    assert "대신 쓰지 마라" in prompts.LUCID_RULES
 
 
 def test_reply_flaw_treats_empty_reply_as_drift():
@@ -1082,17 +1082,17 @@ def test_call_upstream_retries_transient_5xx(monkeypatch):
 def test_lucid_prompts_use_polite_speech():
     # 유저 피드백: 렌(27)이 연상 신녀(31)에게 첫만남부터 반말 — 부자연.
     # 디렉터·프로브·오염 프롬프트 전부 존댓말로 통일한다.
-    from benchmarks.eval.run2 import _DIRECT_SYS
+    from benchmarks.eval import prompts
     from benchmarks.eval.lucid import _PROBE_SYS, _FALSE_SYS
-    for sys_prompt in (_DIRECT_SYS, _PROBE_SYS, _FALSE_SYS):
+    for sys_prompt in (prompts.LUCID_PERSONA, _PROBE_SYS, _FALSE_SYS):
         assert "존댓말" in sys_prompt and "반말 채팅체" not in sys_prompt
 
 
 def test_lucid_sys_keeps_introduced_npcs():
     # 유저 피드백: 등장한 NPC(당채련)를 한 턴 만에 흘려보냄 — 실제 유저라면
     # 상호작용한다. 무시·조기 퇴장 금지 규칙.
-    from benchmarks.eval.run2 import _DIRECT_SYS
-    assert "퇴장" in _DIRECT_SYS
+    from benchmarks.eval import prompts
+    assert "퇴장" in prompts.LUCID_RULES
 
 
 def test_dreaming_variant_sends_full_history():
@@ -1191,6 +1191,105 @@ def test_prompts_override_reaches_judge_pass_call_site(tmp_path):
         assert captured["system"] == "OVERRIDDEN_JUDGE_SYS"
     finally:
         prompts.JUDGE_SYS = before          # 모듈 전역 원복
+
+
+# ---- prompts.py (Task 4: Lucid 프롬프트 2층 분리 — RULES/PERSONA) ----
+
+def test_compose_lucid_sys_includes_each_layer_exactly_once():
+    from benchmarks.eval import prompts
+    user = ", 이름 렌"
+    out = prompts.compose_lucid_sys(user=user)
+    persona_filled = prompts.LUCID_PERSONA.replace("{user}", user)
+    assert out.count(persona_filled) == 1
+    assert out.count(prompts.LUCID_RULES) == 1
+
+
+def test_compose_lucid_sys_reflects_lucid_rules_override(tmp_path):
+    from benchmarks.eval import prompts
+    p = tmp_path / "ab-rules.json"
+    p.write_text(json.dumps({"LUCID_RULES": "OVERRIDDEN_RULES"}),
+                encoding="utf-8")
+    before = prompts.LUCID_RULES
+    try:
+        prompts.override_from(str(p))
+        assert "OVERRIDDEN_RULES" in prompts.compose_lucid_sys(user="")
+    finally:
+        prompts.LUCID_RULES = before        # 모듈 전역 원복
+
+
+def test_compose_lucid_sys_reflects_direct_sys_template_override(tmp_path):
+    """DIRECT_SYS 자체(메타 템플릿)도 오버라이드 대상 — 층 순서를 바꾸는
+    실험을 override_from 하나로 할 수 있어야 한다."""
+    from benchmarks.eval import prompts
+    p = tmp_path / "ab-template.json"
+    p.write_text(json.dumps(
+        {"DIRECT_SYS": "[RULES]{rules}[/RULES][PERSONA]{persona}[/PERSONA]"}),
+        encoding="utf-8")
+    before = prompts.DIRECT_SYS
+    try:
+        prompts.override_from(str(p))
+        out = prompts.compose_lucid_sys(user="")
+        assert out.startswith("[RULES]" + prompts.LUCID_RULES)
+        assert prompts.LUCID_PERSONA.replace("{user}", "") in out
+    finally:
+        prompts.DIRECT_SYS = before         # 모듈 전역 원복
+
+
+def test_layer_hashes_includes_lucid_layers_and_reacts_to_their_change():
+    from benchmarks.eval import prompts
+    hashes = prompts.layer_hashes()
+    assert len(hashes) == 10
+    assert "LUCID_RULES" in hashes and "LUCID_PERSONA" in hashes
+    saved = prompts.LUCID_PERSONA
+    try:
+        before = hashes["LUCID_PERSONA"]
+        prompts.LUCID_PERSONA = saved + " (변경됨)"
+        after = prompts.layer_hashes()
+        assert after["LUCID_PERSONA"] != before
+        assert after["LUCID_RULES"] == hashes["LUCID_RULES"]      # 무관 층 불변
+    finally:
+        prompts.LUCID_PERSONA = saved       # 모듈 전역 원복
+
+
+def test_compose_lucid_sys_is_sentence_equivalent_to_pre_split_direct_sys():
+    """등가성 — 이 테스트가 Task 4의 실질적 산출물이다. 분할 전 DIRECT_SYS는
+    .format(user=...)로 소비됐다(베이스 커밋 e73776f, prompts.py 18-32행).
+    그 본문을 문자 그대로 리터럴로 박아 — 새 .md 레이어에서 역유도하면 이
+    테스트가 항상 통과하는 무의미한 검사가 된다 — compose_lucid_sys(user=X)
+    결과와 정규화 문장 집합을 비교한다. 순서·구분자(단락 줄바꿈 vs 층
+    이음매) 차이는 허용하되, 문장이 하나라도 빠지거나 중복되면 Counter
+    불일치로 잡는다."""
+    import re
+    from collections import Counter
+
+    from benchmarks.eval import prompts
+
+    pre_split_direct_sys = (
+        "너는 RP에서 유저(1인칭{user}) 역할을 연기한다. 작품 "
+        "설정과 직전 장면에 자연스럽게 이어지는 유저 발화 하나만 출력. "
+        "3문장 이내, 메타 발언 금지. 상대는 연상이자 신비한 존재다 — "
+        "정중한 존댓말을 쓴다 (반말 금지). 예의는 지키되 굽신거리지 "
+        "마라 — 감사·사과만 반복하지 말고 유저 자신의 목적과 사정을 "
+        "갖고 움직여라. 상대 캐릭터의 "
+        "대사나 행동을 네가 대신 쓰지 마라 — 유저 자신의 말과 행동만.\n"
+        "[작품 설정]은 배경 이해용이다 — 대화에서 아직 드러나지 않은 "
+        "정보(호칭·직함·이름·과거사·신체 특징)를 네가 먼저 입에 올리지 "
+        "마라. 상대가 말해주기 전까지 모르는 사람으로 산다. "
+        "(파일럿 실측: '신녀님' 호칭을 대화에 나온 적 없는데 선취했다)\n"
+        "장면에 새 인물이 등장하면 실제 유저처럼 호기심을 갖고 "
+        "상호작용하라 — 등장한 인물을 이유 없이 무시하거나 서둘러 "
+        "퇴장시키지 마라. 장면에 남아 있는 조연에게도 가끔 말을 걸어라. "
+        "(실측: 등장한 조연을 한 턴 만에 흘려보냈다)")
+
+    def sentences(text):
+        norm = re.sub(r"\s+", " ", text).strip()
+        parts = re.split(r"(?<=[.!?)])\s+", norm)
+        return Counter(p for p in parts if p)
+
+    user = ", 이름 렌"
+    expected = sentences(pre_split_direct_sys.format(user=user))
+    actual = sentences(prompts.compose_lucid_sys(user=user))
+    assert actual == expected
 
 
 def test_run_once_offline_with_fake_narrator(tmp_path, monkeypatch):
@@ -1453,12 +1552,13 @@ def test_config_lucid_model_falls_back_to_legacy_env(monkeypatch,
 # ---- gates.py (Task 2: 런 유효성 게이트) ----
 
 def test_layer_hashes_covers_active_prompts_and_reacts_to_change():
-    """layer_hashes()는 active()의 키 집합을 그대로 따르고(현재 8개),
+    """layer_hashes()는 active()의 키 집합을 그대로 따르고(현재 10개,
+    Task 4가 LUCID_RULES/LUCID_PERSONA를 추가해 8→10),
     내용이 바뀐 항목만 해시가 바뀐다 — 무관한 항목은 불변."""
     from benchmarks.eval import prompts
     hashes = prompts.layer_hashes()
     assert set(hashes) == set(prompts.active())
-    assert len(hashes) == 8
+    assert len(hashes) == 10
     saved = prompts.JUDGE_SYS
     try:
         before = hashes["JUDGE_SYS"]

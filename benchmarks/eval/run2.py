@@ -446,7 +446,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     last_reply = card.get("greeting") or "(첫 장면)"
     few_shot = "\n".join(f"- {s}" for s in card.get("style_examples", [])[:8])
     uname = card.get("user_name", "")
-    dir_sys = prompts.DIRECT_SYS.format(user=f", 이름 {uname}" if uname else "·무명")
+    dir_sys = prompts.compose_lucid_sys(user=f", 이름 {uname}" if uname else "·무명")
     if few_shot:
         dir_sys += f"\n[실제 유저 발화 예시 — 문체 참고]\n{few_shot}"
     turns, probes = [], []

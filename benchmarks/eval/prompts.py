@@ -1,4 +1,4 @@
-"""프롬프트 8종 집결 — A/B 오버라이드 + 런 기록.
+"""프롬프트 10종 집결 — A/B 오버라이드 + 런 기록.
 
 run2.py(디렉터 유저 페르소나·필러 비트), lucid.py(추출·프로브·false),
 scoring.py(judge)에 흩어져 있던 시스템 프롬프트를 한곳에 모은다. 각 원본
@@ -10,26 +10,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 from typing import Dict
 
 from benchmarks.eval.config import NPC_NAME
 
-# 디렉터 페르소나 — run2.run_once 매 턴 system (유저 발화 생성)
-DIRECT_SYS = ("너는 RP에서 유저(1인칭{user}) 역할을 연기한다. 작품 "
-              "설정과 직전 장면에 자연스럽게 이어지는 유저 발화 하나만 출력. "
-              "3문장 이내, 메타 발언 금지. 상대는 연상이자 신비한 존재다 — "
-              "정중한 존댓말을 쓴다 (반말 금지). 예의는 지키되 굽신거리지 "
-              "마라 — 감사·사과만 반복하지 말고 유저 자신의 목적과 사정을 "
-              "갖고 움직여라. 상대 캐릭터의 "
-              "대사나 행동을 네가 대신 쓰지 마라 — 유저 자신의 말과 행동만.\n"
-              "[작품 설정]은 배경 이해용이다 — 대화에서 아직 드러나지 않은 "
-              "정보(호칭·직함·이름·과거사·신체 특징)를 네가 먼저 입에 올리지 "
-              "마라. 상대가 말해주기 전까지 모르는 사람으로 산다. "
-              "(파일럿 실측: '신녀님' 호칭을 대화에 나온 적 없는데 선취했다)\n"
-              "장면에 새 인물이 등장하면 실제 유저처럼 호기심을 갖고 "
-              "상호작용하라 — 등장한 인물을 이유 없이 무시하거나 서둘러 "
-              "퇴장시키지 마라. 장면에 남아 있는 조연에게도 가끔 말을 걸어라. "
-              "(실측: 등장한 조연을 한 턴 만에 흘려보냈다)")
+_LAYER_DIR = pathlib.Path(__file__).parent / "prompts"
+
+
+def _read(name: str) -> str:
+    return (_LAYER_DIR / name).read_text(encoding="utf-8").strip()
+
+
+# Lucid 2층 — 페르소나(누구인지)와 규칙(어떻게 행동하는지)을 분리해
+# 독립적으로 버전관리·A/B할 수 있게 한다. 원문은 run2.run_once 매 턴
+# system(유저 발화 생성)으로 쓰이던 단일 DIRECT_SYS를 문장 단위로 재배치한
+# 것 — 새로 추가된 문구는 없다.
+LUCID_PERSONA = _read("lucid_persona.md")
+LUCID_RULES = _read("lucid_rules.md")
+# 조립 메타 템플릿 — compose_lucid_sys()가 두 층을 여기 꽂는다.
+DIRECT_SYS = "{persona}\n\n{rules}"
 # 지식갱신 강제 비트 — run2.pick_beat이 UPDATE_EVENTS 턴에 사용
 UPDATE_BEAT = ("이번 발화에서 이전에 언급된 수치나 소지품 상태를 명확히 바꾸는 "
                "행동을 한다 (지불, 획득, 분실 중 하나). 새 값이 드러나게.")
@@ -106,12 +106,29 @@ JUDGE_SYS = """너는 채점관이다.
 
 
 _NAMES = ("DIRECT_SYS", "UPDATE_BEAT", "BEATS", "NPC_BEAT",
-          "EXTRACT_SYS", "PROBE_SYS", "FALSE_SYS", "JUDGE_SYS")
+          "EXTRACT_SYS", "PROBE_SYS", "FALSE_SYS", "JUDGE_SYS",
+          "LUCID_RULES", "LUCID_PERSONA")
 
 
 def active() -> Dict[str, object]:
     """현재 프롬프트 세트 스냅샷 — 결과 JSON에 기록해 A/B 추적용."""
     return {n: globals()[n] for n in _NAMES}
+
+
+def compose_lucid_sys(user: str) -> str:
+    """Lucid 시스템 프롬프트 단일 조립 지점 — PERSONA·RULES 층을 합친다.
+
+    2단계로 조립한다: 먼저 str.replace로 두 층 본문을 메타 템플릿에 심고,
+    그 다음에야 .format(user=...)을 건다. 순서를 바꿔 .format을 먼저 쓰면
+    층 본문 안의 {user}를 만나 KeyError가 난다. globals() 접근은
+    override_from()이 런타임에 재바인딩한 값을 즉시 반영하기 위함 —
+    import 시점 별칭은 스냅샷이라 오버라이드가 조용히 무시된다
+    (active()와 동일 패턴).
+    """
+    tpl = (globals()["DIRECT_SYS"]
+           .replace("{rules}", globals()["LUCID_RULES"])
+           .replace("{persona}", globals()["LUCID_PERSONA"]))
+    return tpl.format(user=user)
 
 
 def layer_hashes() -> Dict[str, str]:
