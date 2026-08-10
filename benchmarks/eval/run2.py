@@ -39,11 +39,10 @@ from benchmarks.eval.config import (DATA, EVAL_DIR, HYPA_EXPORT, MAX_CONTEXT,
                                     PROBE_EVERY, TOGGLES, TURNS, UPDATE_EVENTS)
 from benchmarks.eval import config
 from benchmarks.eval import prompts
-# 별칭 재노출(이 파일 안에서는 안 쓰임) — 기존 테스트(run2._DIRECT_SYS 등)가
+# 별칭 재노출(이 파일 안에서는 안 쓰임) — 기존 테스트(run2._BEATS 등)가
 # 이 이름으로 내용을 검증한다. 실제 호출부는 override_from 반영을 위해
 # prompts.X(점 접근)를 쓴다.
 from benchmarks.eval.prompts import (BEATS as _BEATS,  # noqa: F401
-                                     DIRECT_SYS as _DIRECT_SYS,  # noqa: F401
                                      NPC_BEAT as _NPC_BEAT,  # noqa: F401
                                      UPDATE_BEAT as _UPDATE_BEAT)  # noqa: F401
 # transport 모듈 자체를 쓴다 — run_once의 call_fn 심은
