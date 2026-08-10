@@ -94,10 +94,12 @@ def eligible(ledger: Ledger, turn_now: int, kind: Optional[str] = None,
 
 
 def count_unprotectable(ledger: Ledger) -> int:
-    """값 길이 2 미만이라 eligible()에서 원천 배제되는 사실 수.
+    """값 길이 2 미만이라 어떤 프로브 유형으로도 출제될 수 없는 사실 수.
 
-    공급 비용 관측용(totals.probe_facts_unprotectable) — 제외분이 출제
-    대상 풀을 얼마나 깎는지 매 런에서 드러낸다.
+    eligible()(recall/relation/false/update)과 probe_plan의 recent 풀 —
+    둘 다 이 문턱을 각자 적용한다. 공급 비용 관측용
+    (totals.probe_facts_unprotectable) — 제외분이 전체 출제 대상 풀을
+    얼마나 깎는지 매 런에서 드러낸다.
     """
     return sum(1 for f in ledger.facts if len(f.value) < 2)
 
@@ -195,12 +197,16 @@ def probe_plan(ledger: Ledger, turn_now: int, want: Dict[str, int],
     """유형별 수만큼 뽑고 probed 마킹.
 
     recent만 젊은 사실(단기 대조군), 나머지는 나이 min_age 이상에서 뽑는다.
+    recent는 eligible()을 안 거치므로 값 길이 2 미만 제외 가드를 여기서
+    직접 반복한다 — eligible()의 근거와 동일: 마스킹 못 하는 값은 게이트로도
+    보호 못 해 어떤 유형으로도 정직하게 출제할 수 없다.
     """
     plan: List[Tuple[str, DirFact]] = []
     for ptype, n in want.items():
         if ptype == "recent":
             pool = [f for f in ledger.unprobed(_PTYPE_KIND[ptype])
-                    if turn_now - f.turn <= RECENT_MAX_AGE]
+                    if turn_now - f.turn <= RECENT_MAX_AGE
+                    and len(f.value) >= 2]
         else:
             pool = eligible(ledger, turn_now, kind=_PTYPE_KIND[ptype],
                             min_age=min_age)

@@ -226,6 +226,19 @@ def test_probe_plan_recent_pool_is_young():
     assert [f.fid for _, f in plan] == ["f1"]          # 나이 5 ≤ 8만 recent
 
 
+def test_probe_plan_recent_pool_excludes_unprotectable_single_char_values():
+    """recent 풀은 eligible()을 안 거치고 ledger.unprobed()를 직접 쓰므로
+    값 길이 2 미만 가드가 별도로 반복돼야 한다 — 젊어도(나이 5) 1글자
+    값(예: "렌")은 recent로도 출제되면 안 된다."""
+    led = Ledger()
+    led.add([DirFact(fid="short", kind="exact", value="렌", text="사실",
+                     turn=30),
+             DirFact(fid="ok", kind="exact", value="v1", text="사실",
+                     turn=30)])
+    plan = probe_plan(led, 35, want={"recent": 2})
+    assert [f.fid for _, f in plan] == ["ok"]
+
+
 def test_false_premise_corrupts_value():
     q, wrong = make_false_premise(
         _fake_llm("질문: 그때 350골드 남았댔지?\n오염값: 350골드"),
