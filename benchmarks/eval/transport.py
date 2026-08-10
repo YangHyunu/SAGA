@@ -76,9 +76,20 @@ def call_upstream(variant: str, session: str, key: str,
 def call_upstream_once(variant: str, session: str, key: str,
                        msgs: List[Dict]) -> Dict:
     t0 = time.time()
-    body: Dict = {"model": MODEL, "max_tokens": MAX_TOKENS, "messages": msgs}
+    body: Dict = {"model": MODEL, "max_tokens": MAX_TOKENS, "messages": msgs,
+                  # 기본 라우팅은 프로바이더 룰렛 — 실측: 같은 11.8K 와이어가
+                  # SiliconFlow 무한 행(하트비트 공백만 옴, read timeout 안
+                  # 터짐), GMICloud 173s(reasoning 12K 폭주), CoreWeave 9s.
+                  # throughput 정렬로 빠른 쪽 고정. 프록시는 body를 그대로
+                  # 전달하므로 dreaming 경로에도 적용된다.
+                  "provider": {"sort": "throughput"}}
     if config.REASONING_EFFORT:            # 미설정이면 필드 자체를 안 보낸다
-        body["reasoning"] = {"effort": config.REASONING_EFFORT}
+        # 숫자면 추론 예산(토큰 상한), 아니면 effort 문자열. flash는
+        # effort=max에서 추론이 1K~19K로 확률 폭주(동일 요청·동일
+        # 프로바이더 실측) — 예산 캡만이 시간·비용을 묶는다.
+        rv = config.REASONING_EFFORT
+        body["reasoning"] = ({"max_tokens": int(rv)} if rv.isdigit()
+                             else {"effort": rv})
     if variant == "dreaming":
         r = httpx.post(PROXY + "/v1/chat/completions", timeout=300,
                        headers={"x-dreaming-session-id": session}, json=body)

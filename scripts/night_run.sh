@@ -15,7 +15,9 @@ TURNS="${TURNS:-100}"
 SMOKE_TURNS="${SMOKE_TURNS:-6}"
 TRIM_TOKENS="${TRIM_TOKENS:-100000}"
 export DREAMING_EVAL_MAX_TOKENS="${DREAMING_EVAL_MAX_TOKENS:-30000}"
-export DREAMING_EVAL_REASONING="${DREAMING_EVAL_REASONING:-max}"
+# 추론 예산 4000 토큰 상한 — effort=max는 flash에서 추론이 1K~19K로
+# 폭주해 턴당 400s+·업스트림 행까지 발생 (2026-08-10 발사 중단 실측).
+export DREAMING_EVAL_REASONING="${DREAMING_EVAL_REASONING:-4000}"
 # 나레이터 flash — 유저 실사용 확인(Pro와 체감 무차이) + 저비용 100턴 테스트.
 export DREAMING_EVAL_MODEL="${DREAMING_EVAL_MODEL:-deepseek/deepseek-v4-flash-0731}"
 LOG="dreaming_data/eval/${SESSION_PREFIX}-run.log"
