@@ -4,6 +4,7 @@ import time
 
 from fastapi.testclient import TestClient
 
+from dreaming.assembly import KNOWLEDGE_SEP
 from dreaming.proxy import Settings, create_app
 from dreaming.records import StateCommit
 from dreaming.storage import JsonDirStorage
@@ -81,7 +82,7 @@ def test_non_stream_injects_marks_and_records(tmp_path):
     sent = up.payloads[0]["messages"]
     sys_part = sent[0]["content"][0]                 # BP1 → content part 변환
     assert sys_part["cache_control"]["type"] == "ephemeral"
-    assert "<dreaming_context>" in sent[-1]["content"]
+    assert KNOWLEDGE_SEP in sent[-1]["content"]
     assert "소지금: 450" in sent[-1]["content"]
 
     raw = storage.get("sess1/raw", "000000")         # 원본 기준으로 기록됨
@@ -182,16 +183,20 @@ def test_stored_plan_compresses_outbound_but_records_original(tmp_path):
 
 
 _E2E_EXTRACTION = json.dumps({"episodes": [
-    {"start_turn": 0, "end_turn": 3, "title": "포션 흥정",
+    {"start_turn": 0, "end_turn": 9, "title": "포션 흥정",
      "summary": "리사와 가격을 흥정했다.", "open_threads": []}]},
     ensure_ascii=False)
+
+# 압축 경계는 BOUNDARY_STEP(10)턴 계단으로만 전진한다 — 꼬리 TAIL_KEEP(6)
+# 밖에 한 계단이 쌓이려면 히스토리가 최소 16턴이어야 한다 (chunks.py).
+_E2E_TURNS = 20
 
 
 def test_full_loop_dream_then_compressed_prefix(tmp_path):
     storage = JsonDirStorage(tmp_path)
     _seed_ledger(storage, "sess1",
-                 [(f"질문{t}", f"답{t}") for t in range(10)])
-    for t in range(10):
+                 [(f"질문{t}", f"답{t}") for t in range(_E2E_TURNS)])
+    for t in range(_E2E_TURNS):
         storage.put("sess1/raw", f"{t:06d}", {
             "turn_number": t, "user_text": f"질문{t}",
             "assistant_text": f"답{t}", "user_hash": f"u{t}",
@@ -200,7 +205,7 @@ def test_full_loop_dream_then_compressed_prefix(tmp_path):
     app = create_app(_settings(tmp_path), upstream=up,
                      dream_llm=FakeLLM(_E2E_EXTRACTION))
     history = []
-    for t in range(10):
+    for t in range(_E2E_TURNS):
         history += [f"질문{t}", f"답{t}"]
 
     with TestClient(app) as client:
@@ -220,11 +225,11 @@ def test_full_loop_dream_then_compressed_prefix(tmp_path):
         assert r2.status_code == 200
 
     plan = storage.get("sess1/compression", "plan")
-    assert plan["covers_until_turn"] == 4
+    assert plan["covers_until_turn"] == 10
     sent = up.payloads[1]["messages"]
     joined = json.dumps(sent, ensure_ascii=False)
     assert "포션 흥정" in joined                       # 청크 등장
-    assert "질문0" not in joined and "질문4" in joined  # 선두 치환, 꼬리 보존
+    assert "질문9" not in joined and "질문10" in joined  # 선두 치환, 꼬리 보존
     marks = sum(1 for m in sent
                 if isinstance(m.get("content"), list)
                 and "cache_control" in m["content"][0])

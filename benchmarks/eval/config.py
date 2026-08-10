@@ -1,0 +1,87 @@
+"""eval v2 설정 — env 오버라이드 + 벤치 상수. 최하층: eval 내부 import 금지."""
+
+import os
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+DATA = ROOT / "dreaming_data"
+EVAL_DIR = DATA / "eval"
+PROXY = os.environ.get("DREAMING_EVAL_PROXY", "http://127.0.0.1:8790")
+UPSTREAM = os.environ.get("DREAMING_EVAL_UPSTREAM",
+                          "https://openrouter.ai/api/v1")
+MODEL = os.environ.get("DREAMING_EVAL_MODEL", "deepseek/deepseek-v4-pro")
+JUDGE_MODEL = os.environ.get("DREAMING_EVAL_JUDGE",
+                             "anthropic/claude-sonnet-4.5")
+_LUCID_ENV = os.environ.get("DREAMING_EVAL_LUCID")
+_OLD_DIRECTOR_ENV = os.environ.get("DREAMING_EVAL_DIRECTOR")
+if _LUCID_ENV is not None:
+    LUCID_MODEL = _LUCID_ENV
+elif _OLD_DIRECTOR_ENV is not None:
+    # 구 env 폴백 — 셸에 남은 DREAMING_EVAL_DIRECTOR export가 조용히 기본
+    # 모델로 떨어뜨려 런 전체가 다른 모델로 도는 사고를 막는다.
+    print("DREAMING_EVAL_LUCID 미설정 — 구 env DREAMING_EVAL_DIRECTOR로 "
+         "폴백함 (권장: DREAMING_EVAL_LUCID로 이전)", file=sys.stderr)
+    LUCID_MODEL = _OLD_DIRECTOR_ENV
+else:
+    LUCID_MODEL = "google/gemini-3-flash-preview"
+HYPA_EXPORT = os.environ.get(
+    "DREAMING_EVAL_HYPA_EXPORT",
+    str(pathlib.Path.home() / "Downloads" / "뮈토스6.2"
+        / "🏺뮈토스 프롬프트 하이파" / "hypaV3_export_뮈토스 하이파 V5.json"))
+TURNS = 80
+PROBE_EVERY = 10              # 이 간격마다 발화 하나가 과거를 슬며시 되짚는다
+# maxContext — RisuAI의 단일 토큰 풀 (index.svelte.ts:614-618). trim·hypa 공용.
+# 원 프리셋 200K 대비 4.4× 축소라 hypa의 memoryTokens 선점도 78,000 → 17,550이다.
+MAX_CONTEXT = 45000
+UPDATE_EVENTS = (12, 28)      # 지식갱신 강제 턴
+# NPC 등장은 당채련 하나로 고정 — 런 간 같은 사건 축이라 비교 가능하다.
+# 로어 7엔트리는 항상 주입되므로(키워드 게이팅 없음) 활성화 문제가 아니라
+# 장면 유도 문제다: 이름을 직접 불러 나레이터가 꺼내게 한다. 이 이름이
+# 디렉터 카드 지식 선취 금지의 유일한 예외. 파일럿 50/80턴 NPC 0명 실측.
+NPC_NAME = "당채련"
+NPC_EVENT_TURN = 40           # 0-기준 (표시 T41)에 첫 유도
+NPC_EVENT_RETRY = 44          # 이때까지 미등장이면 다시 유도
+# 캡처에서 RisuAI가 실제로 보낸 값이 4000이다 (capture-mythos req-001).
+# 실측 완성 평균은 771토큰이라 캡이 물리지 않는다 — 절단은 기억 실패로
+# 오인되는 교란이라 finish_reason을 턴마다 기록해 0%임을 증명한다.
+# 2026-08-10: 분량 밴드(1500–3000단어) 시나리오는 한글 완성이 4000을 넘을 수
+# 있어 env로 상향한다. 트림 예산식(max_context − 고정부 − MAX_TOKENS − 50)에도
+# 들어가므로 RisuAI의 maxResponse 선점과 같은 의미를 가진다.
+MAX_TOKENS = int(os.environ.get("DREAMING_EVAL_MAX_TOKENS", "4000"))
+# OpenRouter reasoning 파라미터 (예: "high", "max"). 빈 값이면 미전송 —
+# 기존 런과의 비교성을 위해 기본 off. night_run/스모크에서 env로 켠다.
+REASONING_EFFORT = os.environ.get("DREAMING_EVAL_REASONING", "")
+# 품질 게이트가 **연속으로** 이 턴 수만큼 걸리면 런이 실제로 망가진 것 —
+# 결과를 저장하고 중단한다. 누적 캡이었을 땐 건강한 런도 죽었다: flash는
+# 한국어 RP에서 language_drift가 상수처럼 섞여(100턴당 8~10회 실측) 흩어진
+# 정상 리롤만으로 누적 10에 닿는다 (night-drm-r0 T78 중단 — FLAW §4).
+MAX_REROLL_STREAK = 3
+
+# 확정 토글: RP 모드·한국어·성인 지침 ON·중립 렌더링 프리필 ON, 나머지 기본
+# select은 옵션 인덱스 문자열: response_language 1=🇰🇷 한국어, execution_mode 0=💬 RP.
+# 나머지는 불리언. 미설정 전역변수는 "null"이라(preset2wire.UNSET) 실행 모드는
+# 반드시 명시해야 tis:: 분기가 걸린다.
+TOGGLES = {"mythos_response_language": "1",           # 🇰🇷 한국어
+           "mythos_execution_mode": "0",              # 💬 RP
+           "mythos_user_persona_usage": "0",          # 🙋 사용 — 안 켜면 슬롯이 통째로 빈다
+           "mythos_bot_structure": "0",               # 💬 캐릭터 중심
+           # select 토글은 미설정이면 사이드바 SelectInput이 바인딩하며 첫 옵션
+           # 인덱스를 써 넣는다. 프리셋의 templateDefaultVariables는 여기 안
+           # 먹는다 — getChatVar 전용이고 tis는 getGlobalChatVar를 본다
+           # (chatVar.svelte.ts:15 vs 35, parser.svelte.ts:1284).
+           "mythos_user_character_authorship": "0",   # 🛡️ 보호 — 캡처 req-005 확인
+           "mythos_input_authority": "0",             # 🔨 사실 확정
+           # 2026-08-10 유저 확정 시나리오: 웹소설·3인칭 초점·1500–3000단어·
+           # 독백 강화·믿을 수 없는 화자. 고정부 +254tok(실카드 포함 11,810tok
+           # 실측). 분량 밴드 단위는 **단어** — 완성 길이·비용에 직결.
+           "mythos_prose_register": "2",              # 📱 웹소설
+           "mythos_narrative_pov": "6",               # 🤖 주요 캐릭터 3인칭
+           "mythos_narrative_pacing": "0",            # 🤷 자율
+           "mythos_response_length_band": "2",        # 📝 1500–3000단어
+           "mythos_internal_monologue_emphasis": "1", # 🧩 내면 독백 강화
+           "mythos_unreliable_narrator": "1",         # 🤥 믿을 수 없는 화자
+           "mythos_size_scenario": "0",               # 🤷 미지정
+           "mythos_genre_ero": "1",
+           "mythos_mature_content_guidance": "1",
+           "mythos_domain_neutral_rendering_prefill": "1"}

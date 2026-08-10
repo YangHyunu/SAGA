@@ -9,40 +9,70 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from dreaming.assembly import clip_knowledge, inject_knowledge
+from dreaming.assembly import (HOT_ZONE_CHAR_BUDGET, clip_knowledge,
+                               inject_knowledge)
 from dreaming.chunks import apply_compression
 from dreaming.identity import PairLedger, Verdict
 from dreaming.lore_shift import shift_keyed
 from dreaming.marking import mark_cache
 from dreaming.resolver import SessionResolver
 from dreaming.storage import Storage
+from dreaming import scaffold
 from dreaming.store import MemoryStore
 from saga.services.pair_ledger import extract_pairs
 
-_MAX_FACTS = 20
+_BLOCK_SEP = "\n\n"
+_FACT_HEADER = "[확정 사실]\n"
+
+# 연속 미정렬이 이 횟수에 닿으면 원장을 버리고 다시 베이스라인을 잡는다.
+# 격리 턴은 record_turn을 안 타서 체인이 자라지 않는다 — 한 번 오염된
+# 베이스라인은 스스로 못 빠져나온다 (night2-drm-r0: 105/106턴 격리).
+_MISALIGN_LIMIT = 3
 
 
-def render_knowledge(store: MemoryStore) -> str:
-    parts: List[str] = []
+def render_knowledge(store: MemoryStore,
+                     budget: int = HOT_ZONE_CHAR_BUDGET) -> str:
+    """지식 3블록 렌더 — 상태·인물 먼저 확보하고 사실에 잔여 예산을 준다.
 
+    사실은 **pinned 우선, 그 안에서 최신순**이다. 오름차순으로 앞에서 자르면
+    초반 사실에 영구 고정돼 이후 배운 게 하나도 안 들어간다 (실측: confirmed
+    179개 중 인덱스 0~19만 주입 — docs/DREAMING_FLAW.md §3).
+
+    예산을 사실이 다 먹게 두면 뒤에 붙는 인물 블록을 clip_knowledge가 통째로
+    날린다. 그래서 개수 상한이 아니라 **잔여 예산**으로 자른다.
+    """
     state = store.current_state()
+    state_block = ""
     if state:
-        lines = [f"- {slot}: {value}" for slot, value in sorted(state.items())]
-        parts.append("[현재 상태]\n" + "\n".join(lines))
+        state_block = "[현재 상태]\n" + "\n".join(
+            f"- {slot}: {value}" for slot, value in sorted(state.items()))
+
+    actors = [a for a in store.list_actors() if a.tier == "main"]
+    actor_block = ""
+    if actors:
+        actor_block = "[주요 인물]\n" + "\n".join(
+            f"- {a.names[0]}: {a.profile}" if a.profile else f"- {a.names[0]}"
+            for a in sorted(actors, key=lambda a: a.names[0]))
 
     facts = [f for f in store.list_facts()
              if f.pinned or f.status == "confirmed"]
-    facts = sorted(facts, key=lambda f: (not f.pinned, f.recorded_at))[:_MAX_FACTS]
-    if facts:
-        parts.append("[확정 사실]\n" + "\n".join(f"- {f.claim}" for f in facts))
+    facts.sort(key=lambda f: (f.pinned, f.recorded_at), reverse=True)
+    room = budget - len(_FACT_HEADER)
+    for block in (state_block, actor_block):
+        if block:
+            room -= len(block) + len(_BLOCK_SEP)
+    fact_lines: List[str] = []
+    for f in facts:
+        line = f"- {f.claim}"
+        if len(line) + 1 > room:
+            break
+        fact_lines.append(line)
+        room -= len(line) + 1
 
-    actors = [a for a in store.list_actors() if a.tier == "main"]
-    if actors:
-        lines = [f"- {a.names[0]}: {a.profile}" if a.profile else f"- {a.names[0]}"
-                 for a in sorted(actors, key=lambda a: a.names[0])]
-        parts.append("[주요 인물]\n" + "\n".join(lines))
-
-    return "\n\n".join(parts)
+    parts = [b for b in (state_block,
+                         _FACT_HEADER + "\n".join(fact_lines) if fact_lines else "",
+                         actor_block) if b]
+    return _BLOCK_SEP.join(parts)
 
 
 def demote_after(storage: Storage, session: str, from_turn: int) -> None:
@@ -85,16 +115,69 @@ class SyncPath:
         self._store = MemoryStore(storage, session_id)
         self._keyed_lore = keyed_lore or []
 
+    def _wire_state(self) -> Dict:
+        return self._storage.get(f"{self._session}/wire", "scaffold") or {}
+
+    def _split(self, messages: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+        """프리셋 프리필 꼬리를 벗긴다 (dreaming/scaffold.py).
+
+        꼬리를 달고 처리하면 쌍 판정·주입 위치·BP3가 전부 프리필을 가리킨다.
+        """
+        return scaffold.split(messages, self._wire_state().get("tail_fp"))
+
+    def _rebaseline(self) -> None:
+        """오염된 원장을 버린다 — 다음 판정이 이번 요청으로 다시 잡는다.
+
+        어떤 요청 해시와도 안 맞는 행(프리필 등)이 베이스라인이면 정렬이
+        영구 실패하고, 격리 턴은 record_turn을 안 타 체인이 자라지도 않는다.
+        무효화는 리롤과 같은 primitive(demote_after)를 쓴다 — raw를 읽으므로
+        raw 삭제보다 반드시 먼저 부른다.
+        """
+        rows = [r for _, r in self._storage.scan(f"{self._session}/ledger")]
+        turns = [r["turn_number"] for r in rows
+                 if r.get("turn_number") is not None]
+        if turns:
+            demote_after(self._storage, self._session, min(turns))
+            for key, row in list(self._storage.scan(f"{self._session}/raw")):
+                if row.get("turn_number", 0) >= min(turns):
+                    self._storage.delete(f"{self._session}/raw", key)
+        for key, _ in list(self._storage.scan(f"{self._session}/ledger")):
+            self._storage.delete(f"{self._session}/ledger", key)
+
     def process(self, messages: List[Dict]) -> Tuple[List[Dict], Verdict]:
+        state = self._wire_state()
+        # 첫 요청은 직전 요청이 없어 프리필 꼬리를 배울 수단이 없다
+        # (scaffold.learn은 prev_fp 없이 항상 None)
+        first_request = not state.get("prev_fp")
+        tail_fp = state.get("tail_fp") or scaffold.learn(messages,
+                                                         state.get("prev_fp"))
+        new_state = {"prev_fp": scaffold.fingerprint(messages),
+                     "tail_fp": tail_fp, "misaligned": 0}
+        messages, tail = scaffold.split(messages, tail_fp)
+
+        ledger_was_empty = first_request and not self._ledger.chain()
         pairs, last_user_hash = extract_pairs(messages)
         verdict = self._ledger.analyze_and_apply(pairs, last_user_hash)
+        if verdict.quarantine:
+            n = (state.get("misaligned") or 0) + 1
+            if n >= _MISALIGN_LIMIT:
+                self._rebaseline()                 # 자기치유 — 재판정
+                verdict = self._ledger.analyze_and_apply(pairs, last_user_hash)
+            else:
+                new_state["misaligned"] = n
+        self._storage.put(f"{self._session}/wire", "scaffold", new_state)
+        if pairs and ledger_was_empty:
+            # 꼬리를 못 배운 첫 요청의 pair가 진짜 히스토리인지 프리셋
+            # 프리필인지 가릴 정보가 없다 — 베이스라인 기록을 한 턴 미룬다.
+            # (원장이 이미 있으면 정렬이 pair의 실재성을 증명하므로 제외)
+            verdict = verdict.model_copy(update={"baseline_deferred": True})
         if (verdict.kind in ("reroll", "diverged")
                 and verdict.reroll_turn_number is not None):
             demote_after(self._storage, self._session, verdict.reroll_turn_number)
         if verdict.quarantine:
             # 판정 불확실 — 주입·압축·마킹 없이 무가공 passthrough,
             # 기록은 격리 버퍼로 (스펙 §3.1)
-            return messages, verdict
+            return messages + tail, verdict
         out, _ = shift_keyed(messages, self._keyed_lore)   # 1안 (스펙 §5)
         knowledge = clip_knowledge(render_knowledge(self._store))
         bp2 = None
@@ -105,10 +188,13 @@ class SyncPath:
                                          window_start_turn=verdict.offset)
         out = inject_knowledge(out, knowledge)
         out = mark_cache(out, bp2_index=bp2)
-        return out, verdict
+        return out + tail, verdict
 
     def record_response(self, verdict: Verdict, messages: List[Dict],
                         assistant_text: str) -> None:
+        if verdict.baseline_deferred:
+            return                  # 다음 턴이 꼬리를 벗기고 베이스라인을 잡는다
+        messages, _ = self._split(messages)
         pairs, last_user_hash = extract_pairs(messages)
         user_text = ""
         for m in reversed(messages):

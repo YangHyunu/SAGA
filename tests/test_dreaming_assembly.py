@@ -1,5 +1,6 @@
 """지식 주입: 마지막 user prepend — 캐시 밖 (스펙 §3.1, §5)."""
-from dreaming.assembly import HOT_ZONE_CHAR_BUDGET, clip_knowledge, inject_knowledge
+from dreaming.assembly import (HOT_ZONE_CHAR_BUDGET, KNOWLEDGE_SEP,
+                               clip_knowledge, inject_knowledge)
 
 
 def _msgs():
@@ -18,10 +19,18 @@ def _msgs():
 def test_injects_into_last_user_only():
     msgs = _msgs()
     out = inject_knowledge(msgs, "소지금: 450골드")
-    assert out[3]["content"].startswith("<dreaming_context>\n소지금: 450골드\n</dreaming_context>\n\n")
-    assert out[3]["content"].endswith("포션 얼마야?")
+    assert out[3]["content"] == f"소지금: 450골드{KNOWLEDGE_SEP}포션 얼마야?"
     # 다른 메시지 무변경 — 프리픽스(캐시 계층) 불가침 (스펙 §5)
     assert out[0] == msgs[0] and out[1] == msgs[1] and out[2] == msgs[2]
+
+
+def test_injection_carries_no_tag_or_instruction():
+    # 태그·명령문은 프리셋 주입 방어를 건드린다 (DREAMING_FLAW.md §4.5:
+    # T36+ 더듬기 붕괴, T70 가드 문구 유출 — dreaming 변형에만 발생)
+    out = inject_knowledge(_msgs(), "소지금: 450골드")
+    body = out[3]["content"]
+    assert "<" not in body and ">" not in body
+    assert "dreaming_context" not in body
 
 
 def test_original_list_is_not_mutated():

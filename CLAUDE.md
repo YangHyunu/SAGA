@@ -62,6 +62,15 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Plan Postmortems (플랜 실행 후기)
+
+**플랜도 코드처럼 결함이 있다. 실행 중 발견하면 이탈을 공개하고 교정하되, 완료 후 플랜 문서에 후기로 기록한다.**
+
+- 구현 중 플랜의 오류(잘못된 스케치, 불가능한 수치 목표, 틀린 인터페이스 목록)를 발견하면: 조용히 따르지 말고, 교정 + 이탈 사유를 리포트에 명시.
+- 플랜 실행 완료 후, 플랜 문서 하단에 "실행 후기" 섹션으로 발견된 플랜 결함을 기록 — 다음 플랜 작성 시 재발 방지 자료.
+
+사례: [2026-08-10 eval 리팩터 후기](docs/superpowers/plans/2026-08-10-eval-refactor.md) — 결함 4건 전부 구현자가 발견·교정 (별칭 import-시점 바인딩 → 오버라이드 무효, `transport.key` 패치 no-op, "<400줄" 산술 불가능, 재수출·의존 목록 오기). 핵심 교훈: **패치·오버라이드가 도달해야 하는 호출부는 `module.NAME` 점 접근** (import-시점 별칭은 스냅샷이라 무효).
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

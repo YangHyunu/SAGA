@@ -36,6 +36,7 @@ class Verdict(BaseModel):
     aligned: bool = False
     offset: Optional[int] = None      # 윈도우 첫 pair의 세션 턴 번호
     quarantine: bool = False          # 판정 불확실 — 격리 버퍼로 (스펙 §3.1)
+    baseline_deferred: bool = False   # 꼬리 미확정 첫 요청 — 기록 보류
 
 
 def _map_kind(raw: Dict, chain_len: int, request_pairs: List[Dict],

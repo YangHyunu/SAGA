@@ -65,7 +65,7 @@ def _risu_msgs():
         {"role": "assistant", "content": "어서 와."},                   # 2
         {"role": "user", "content": "포션 얼마야?"},                    # 3
         {"role": "assistant", "content": "금화 10닢."},                 # 4
-        {"role": "user", "content": "<dreaming_context>…</>\n두 개 줘"},  # 5
+        {"role": "user", "content": "[확정 사실]\n- …\n\n---\n\n두 개 줘"},  # 5
         {"role": "system", "content": "PHI: 항상 한국어로 답해라."},     # 6
     ]
 

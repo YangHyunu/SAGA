@@ -12,3 +12,6 @@ openai>=1.50.0
 google-genai>=1.0.0
 langsmith>=0.7.0
 python-dotenv>=1.0.0
+# hypa 변형(benchmarks/eval/hypa.py)의 similar 선택 전용 — torch를 동반해
+# 설치가 무겁다(~2GB). lazy import라 다른 경로는 없어도 동작한다.
+sentence-transformers>=3.0.0

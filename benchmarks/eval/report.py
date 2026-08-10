@@ -1,3 +1,4 @@
+# [v1 하네스] 현행은 run2 계열 — 이 파일은 구 테스트·PR 호환용으로 보존.
 """변형별 결과 JSON → 비교 표 (스펙 §9 병기 지표 + 수동 감사용 원문).
 
 usage: python3 -m benchmarks.eval.report dreaming_data/eval/result-*.json

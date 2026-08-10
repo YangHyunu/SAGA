@@ -34,7 +34,7 @@ def test_tier2_is_one_line_per_episode():
 
 import json
 
-from dreaming.chunks import TAIL_KEEP, build_compression
+from dreaming.chunks import BOUNDARY_STEP, TAIL_KEEP, build_compression
 from dreaming.storage import JsonDirStorage
 from dreaming.store import MemoryStore
 
@@ -53,27 +53,38 @@ def _store_with(tmp_path, episodes):
 
 
 def test_contiguous_prefix_outside_tail_is_chunked(tmp_path):
-    store = _store_with(tmp_path, [_ep(0, 3), _ep(4, 7)])
-    plan = build_compression(store, last_turn=7 + TAIL_KEEP)
-    assert plan["covers_until_turn"] == 8
+    store = _store_with(tmp_path, [_ep(0, 4), _ep(5, 9)])
+    plan = build_compression(store, last_turn=9 + TAIL_KEEP)
+    assert plan["covers_until_turn"] == 10
     assert [m["role"] for m in plan["messages"]] == ["assistant", "assistant"]
     assert "에피0" in plan["messages"][0]["content"]
 
 
+def test_padded_baseline_turns_are_chunked(tmp_path):
+    # 프로덕션 턴 번호는 0이 아니라 _BASELINE_PAD(1024)부터 시작한다
+    # (identity.py:95-99). 0-베이스 픽스처만 있어서 압축이 프로덕션에서
+    # 100% 실패하는 걸 테스트가 못 잡았다 (docs/DREAMING_FLAW.md §2).
+    store = _store_with(tmp_path, [_ep(1025, 1029), _ep(1030, 1034)])
+    plan = build_compression(store, last_turn=1034 + TAIL_KEEP)
+    assert plan is not None
+    assert plan["covers_until_turn"] == 1035
+    assert len(plan["messages"]) == 2
+
+
 def test_tail_and_gap_stop_chunking(tmp_path):
-    # 꼬리 안 에피소드는 미압축, 턴 갭(4 누락)에서 중단
-    store = _store_with(tmp_path, [_ep(0, 3), _ep(5, 6)])
-    plan = build_compression(store, last_turn=6 + TAIL_KEEP)
-    assert plan["covers_until_turn"] == 4                 # 갭 앞까지만
-    store2 = _store_with(tmp_path / "b", [_ep(0, 3)])
-    assert build_compression(store2, last_turn=3) is None  # 전부 꼬리 안
+    # 꼬리 안 에피소드는 미압축, 턴 갭(5 누락)에서 중단
+    store = _store_with(tmp_path, [_ep(0, 4), _ep(6, 9)])
+    plan = build_compression(store, last_turn=9 + TAIL_KEEP)
+    assert plan["covers_until_turn"] == 5                  # 갭 앞까지만
+    store2 = _store_with(tmp_path / "b", [_ep(0, 4)])
+    assert build_compression(store2, last_turn=4) is None   # 전부 꼬리 안
 
 
 def test_overlapping_redream_episode_is_skipped(tmp_path):
-    store = _store_with(tmp_path, [_ep(0, 3), _ep(0, 2, title="중복"),
-                                   _ep(4, 5)])
-    plan = build_compression(store, last_turn=5 + TAIL_KEEP)
-    assert plan["covers_until_turn"] == 6
+    store = _store_with(tmp_path, [_ep(0, 4), _ep(0, 2, title="중복"),
+                                   _ep(5, 9)])
+    plan = build_compression(store, last_turn=9 + TAIL_KEEP)
+    assert plan["covers_until_turn"] == 10
     assert len(plan["messages"]) == 2                     # 중복 스킵
 
 
@@ -96,6 +107,38 @@ def test_tier2_promotion_is_stable(tmp_path):
     store.save_episode(_ep(20, 21))                       # 11개 → 그룹 경계 불변
     plan2 = build_compression(store, last_turn=21 + TAIL_KEEP)
     assert plan2["messages"][0] == plan["messages"][0]
+
+
+def test_boundary_moves_in_steps_not_every_turn(tmp_path):
+    # 경계가 매 턴 움직이면 플랜이 매 턴 바뀌고 그 뒤 꼬리가 통째로 새
+    # 바이트가 된다 → 프리픽스 캐시 상시 파괴 (fix-drm-r0 실측 47%).
+    # 계단 안에서는 바이트가 동일해야 하고, 계단을 넘을 때만 자라야 한다.
+    eps = [_ep(1025 + i, 1025 + i) for i in range(40)]      # 프로덕션 패딩
+    store = _store_with(tmp_path, eps)
+    plans = {t: build_compression(store, last_turn=t)
+             for t in range(1030, 1070)}
+    covers = sorted({p["covers_until_turn"] for p in plans.values() if p})
+    assert len(covers) >= 2                                  # 실제로 전진함
+    assert all(b - a == BOUNDARY_STEP for a, b in zip(covers, covers[1:]))
+
+    changes = sum(1 for t in range(1031, 1070)
+                  if json.dumps(plans[t], ensure_ascii=False)
+                  != json.dumps(plans[t - 1], ensure_ascii=False))
+    assert changes == len(covers)          # 계단 수만큼만 바뀜 (39턴 아님)
+
+
+def test_emitted_chapters_keep_their_bytes_across_steps(tmp_path):
+    # 이미 낸 챕터가 다시 쓰이면 그 지점부터 캐시가 죽는다 — 계단을
+    # 넘어가도 앞 챕터 바이트는 불변이어야 한다.
+    eps = [_ep(1025 + i, 1025 + i) for i in range(40)]
+    store = _store_with(tmp_path, eps)
+    early = build_compression(store, last_turn=1050)
+    late = build_compression(store, last_turn=1069)
+    assert early is not None and late is not None
+    chapters = [m for m in early["messages"]
+                if m["content"].startswith("[지난 장 요약]")]
+    assert chapters                                          # 승격이 실제로 일어남
+    assert late["messages"][:len(chapters)] == chapters
 
 
 def test_plan_is_deterministic(tmp_path):

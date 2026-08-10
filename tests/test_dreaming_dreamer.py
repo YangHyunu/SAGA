@@ -97,15 +97,17 @@ def test_concurrent_dream_skips(tmp_path):
 
 
 def test_dream_writes_compression_plan(tmp_path):
+    # 압축 경계는 BOUNDARY_STEP(10)턴 단위로만 전진한다 (chunks.py) —
+    # 꼬리 TAIL_KEEP(6) 밖에 최소 한 계단이 쌓여야 플랜이 생긴다.
     storage = JsonDirStorage(tmp_path)
-    _seed_raw(storage, turns=10)
+    _seed_raw(storage, turns=20)
     ext = json.dumps({"episodes": [
-        {"start_turn": 0, "end_turn": 3, "title": "초반",
+        {"start_turn": 0, "end_turn": 9, "title": "초반",
          "summary": "만남과 흥정.", "open_threads": []}]}, ensure_ascii=False)
     report = asyncio.run(Dreamer(storage, FakeLLM(ext)).dream("sess1"))
     assert report["chunks"] == 1
     plan = storage.get("sess1/compression", "plan")
-    assert plan["covers_until_turn"] == 4
+    assert plan["covers_until_turn"] == 10
     assert "초반" in plan["messages"][0]["content"]
 
 
