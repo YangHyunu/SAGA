@@ -72,6 +72,7 @@ from benchmarks.eval.lucid import (DirFact, Ledger, LlmFn, count_unprotectable,
                                    make_probe, _probe_mentions_fact_object,
                                    probe_leaks_value, probe_plan)
 from benchmarks.eval.fidelity import check_wire_shape
+from benchmarks.eval.keyed_lore import activate
 from benchmarks.eval.preset2wire import assemble, decode_risup, reformat
 from benchmarks.eval.scoring import decompose_miss, judge_pass, oracle_pass
 from benchmarks.eval import gates, hypa
@@ -105,16 +106,20 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
     toggles: 기본은 config.TOGGLES(현행 시나리오). 실캡처 재현 테스트처럼
     캡처 당시 토글로 조립해야 할 때만 명시한다.
     """
+    lore, extra_post = activate(card, [m.get("content", "") for m in window])
+    post = card.get("post_everything", "")
+    if extra_post:
+        post = f"{post}\n\n{extra_post}" if post else extra_post
     msgs = assemble(preset, toggles if toggles is not None else TOGGLES,
                     window, memory=memory,
                     card={"description": card.get("description", ""),
                           "persona": card.get("persona", ""),
-                          "lore": card.get("lore", []),
+                          "lore": lore,
                           "system_prompt": card.get("system_prompt", ""),
                           "replace_globalnote":
                               card.get("replace_globalnote", ""),
                           "authornote": card.get("authornote", ""),
-                          "post_everything": card.get("post_everything", "")},
+                          "post_everything": post},
                     char_name=card.get("name", ""),
                     user_name=card.get("user_name", ""))
     # 캡처 확인: Custom API 경로는 hasFullSystemPrompt + requiresAlternateRole
