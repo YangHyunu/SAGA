@@ -25,6 +25,21 @@ _DECO = re.compile(r"^\s*@@(\w+)([^\n]*)\n?", re.M)
 # 있는 것들. 그 외 데코레이터는 활성 조건·순서·역할을 바꾸므로 조용히 지나가면
 # 안 된다 (lorebook.svelte.ts:300-514 switch 전수).
 _HANDLED = {"depth", "end"}
+# RisuAI lorebook.svelte.ts:302-507 switch가 인식하는 전체 목록 (case-sensitive).
+# 여기 있는데 _HANDLED에 없으면 = 본체는 처리하지만 우리는 재현 불가 → 중단.
+# 여기도 없으면 = 본체도 몰라서 줄만 지우고 무시 (511-513 default) → 미러.
+_RISU_KNOWN = {
+    "end", "activate_only_after", "activate_only_every",
+    "keep_activate_after_match", "dont_activate_after_match", "depth",
+    "reverse_depth", "instruct_depth", "reverse_instruct_depth",
+    "instruct_scan_depth", "role", "scan_depth", "is_greeting", "position",
+    "inject_lore", "inject_at", "inject_replace", "inject_prepend",
+    "ignore_on_max_context", "additional_keys", "exclude_keys",
+    "exclude_keys_all", "match_full_word", "match_partial_word",
+    "is_user_icon", "activate", "dont_activate", "disable_ui_prompt",
+    "probability", "priority", "unrecursive", "recursive",
+    "no_recursive_search",
+}
 
 
 def _strip_deco(content: str) -> Tuple[str, Optional[int]]:
@@ -37,17 +52,25 @@ def _strip_deco(content: str) -> Tuple[str, Optional[int]]:
     depth = None
     for m in _DECO.finditer(content):
         name, arg = m.group(1), m.group(2).strip()
-        if name not in _HANDLED:
+        if name in _HANDLED:
+            depth = 0 if name == "end" else int(arg)
+        elif name in _RISU_KNOWN:
             raise SystemExit(
                 f"@@{name} 데코레이터는 배치·활성 조건을 바꾼다 — 평탄한 카드 "
                 f"필드로 옮길 수 없다 (lorebook.svelte.ts:300-514)")
-        depth = 0 if name == "end" else int(arg)
+        else:
+            print(f"경고: 미인식 데코레이터 @@{name} — RisuAI 본체도 무시하므로 "
+                  f"줄만 제거 (lorebook.svelte.ts:511-513)", file=sys.stderr)
     return _DECO.sub("", content).lstrip("\n"), depth
 
 
 def _split_lore(book: Dict, budget: Optional[int] = None
-                ) -> Tuple[List[str], str]:
-    """항상 활성(constant) 엔트리를 (로어북 블록, postEverything 주입분)으로 가른다.
+                ) -> Tuple[List[str], str, List[Dict], List[int]]:
+    """엔트리를 (로어북 블록, postEverything 주입분, keyed 원형, block의 order)로 가른다.
+
+    constant 엔트리는 항상 활성이라 지금 배치를 확정할 수 있다. keyed(=
+    constant가 아닌) 엔트리는 활성 조건이 걸려 있어 여기서는 원형만 뽑아
+    keyed_lore로 넘긴다 — 활성화 판정은 별도(keyed_lore.py)가 매 턴 담당.
 
     @@depth 0 (role != assistant) 엔트리는 로어북 블록이 아니라 postEverything
     슬롯으로 간다 — index.svelte.ts:582-590이 `pos==='depth' && depth===0 &&
@@ -85,18 +108,33 @@ def _split_lore(book: Dict, budget: Optional[int] = None
                 kept.append(e)                    # 안 맞는 건 건너뛰고 계속
         entries = kept
     entries.reverse()
-    block, post = [], []
+    block, post, orders = [], [], []
     for e in entries:
         body, depth = _strip_deco(e["content"])
         if depth is None:
             block.append(body)
+            orders.append(e.get("insertion_order", 0))
         elif depth == 0:
             post.append(body)
         else:
             raise SystemExit(
                 f"@@depth {depth} 엔트리는 히스토리 중간으로 splice된다 — "
                 f"평탄한 카드 필드로 옮길 수 없다: {e.get('name', '')}")
-    return block, "\n\n".join(post)
+    # keyed(constant=False) 엔트리: 활성 조건이 있으므로 여기서 활성 판정은
+    # 하지 않고 원형만 보존한다 — 런타임 활성화는 keyed_lore.py(신규)가
+    # 매 턴 최근 메시지를 스캔해 담당한다 (lorebook.svelte.ts:174-222).
+    keyed = []
+    for e in book.get("entries", []):
+        if e.get("constant") or not e.get("content"):
+            continue
+        if not e.get("enabled", True) or not [k for k in e.get("keys", []) if k]:
+            continue
+        body, depth = _strip_deco(e["content"])
+        keyed.append({"name": e.get("name", ""),
+                      "keys": [k for k in e["keys"] if k],
+                      "content": body, "depth": depth,
+                      "order": e.get("insertion_order", 0)})
+    return block, "\n\n".join(post), keyed, orders
 
 
 def extract(charx_path: str) -> Dict:
@@ -105,12 +143,22 @@ def extract(charx_path: str) -> Dict:
     d = card["data"]
     greetings = [g for g in [d.get("first_mes", "")]
                  + list(d.get("alternate_greetings", [])) if g.strip()]
-    lore, post_everything = _split_lore(d.get("character_book") or {})
+    book = d.get("character_book") or {}
+    lore, post_everything, keyed_lore, lore_orders = _split_lore(book)
     return {
         "name": d.get("name", ""),
         "description": d.get("description", ""),
         "greeting": greetings[0] if greetings else "",
         "lore": lore,
+        "keyed_lore": keyed_lore,
+        "lore_orders": lore_orders,
+        # character_book 레벨 스캔 설정 — 카드에 없으면 RisuAI 기본값
+        # (lorebook.svelte.ts:174-222 스캔, database.svelte.ts 기본치).
+        "lore_settings": {
+            "scan_depth": book.get("scan_depth", 5),
+            "recursive_scanning": book.get("recursive_scanning", False),
+            "token_budget": book.get("token_budget", 99999),
+        },
         # charx의 두 필드는 프롬프트 슬롯이 아니라 프리셋 아이템 **덮어쓰기**다.
         # system_prompt → char.systemPrompt: main 아이템 텍스트를 대체하고
         #   {{original}}에 원래 텍스트가 들어간다 (index.svelte.ts:411).

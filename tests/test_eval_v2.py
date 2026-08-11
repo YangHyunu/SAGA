@@ -637,7 +637,7 @@ def test_lore_decorator_line_is_stripped_and_routed():
         {"constant": True, "insertion_order": 1, "content": "세계관"},
         {"constant": True, "insertion_order": 9,
          "content": "@@depth 0\n이미지 규칙"}]}
-    block, post = _split_lore(book)
+    block, post, _, _ = _split_lore(book)
     assert block == ["세계관"] and post == "이미지 규칙"
 
 
