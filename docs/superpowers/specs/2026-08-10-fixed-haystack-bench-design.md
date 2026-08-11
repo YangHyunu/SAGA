@@ -148,6 +148,31 @@ python3 -m benchmarks.fixed_haystack.run --haystack fix-drm-r0 --variants dreami
 9. **카드 파일 정합성**: [HANDOFF](../../HANDOFF-2026-08-10.md)의 카드 경로(`dreaming_data/eval/card-soyeon-v2.json`)가 haystack v0(`fix-drm-r0` 세션)를 만든 실제 카드와 파일명 버전이 일치하는지 미검증 — 불일치 시 조립된 wire가 원문 생성 당시와 달라진다.
 10. **프로브 누출 게이트 소급 검증**: `fix-drm-r0-run0.json`의 `totals`에 `probe_leak_dropped` 필드가 없다(현재 `lucid.probe_leaks_value` 게이트 도입 이전 버전일 가능성) — haystack 채택 전 9개 프로브 발화를 `probe_leaks_value`로 재검증해 실제로 정답을 누출하지 않는지 확인 필요.
 
+## 9. 데이터 위생 (오염 방지 — 2026-08-11 추가)
+
+`dreaming_data/`에는 세션 16개가 혼재한다(2026-08-11 실사): 코드 버전
+(keyExcerpts 이전/이후), 설정(`DREAMING_IDLE_SECONDS=10` 병리 vs 정상 배치),
+카드·프리셋이 제각각인데 **어떤 조건에서 생성됐는지 기록이 전무**하다.
+정상 조건 산물은 `pilot-rules-r0`(08-11, 새 규칙+IDLE=100)뿐이고,
+`fix-drm-r0`·`night-drm-r0` 등은 1턴 꿈 병리 데이터다. 벤치가 이 디렉터리를
+직접 읽으면 오염이 그대로 측정에 들어간다. 다음 4규칙은 구현 시 의무다.
+
+1. **벤치는 세션 디렉터리를 직접 읽지 않는다.** 입력은 오직 §2.2 동결
+   파일(`fixed_haystack/{id}.json`)뿐. 원본 세션은 동결 파일로 변환하는
+   시점에 1회만 읽는다.
+2. **동결 파일에 provenance 메타데이터 의무**: `source_session`, 생성 당시
+   git commit, 생성 설정(`DREAMING_IDLE_SECONDS`·dream model·narrator model·
+   preset/card 경로와 해시), gates 검증 결과, `frozen_at`. 메타데이터 없는
+   haystack은 로더가 거부한다.
+3. **벤치 산출물은 전용 네임스페이스**(`dreaming_data/fixed_haystack/{id}/runs/…`)
+   에만 쓴다. 기존 세션 디렉터리에 쓰기 금지.
+4. **병리 데이터의 용도 한정**: `fix-drm-r0` 재사용(§2.1)은 진행 구간의
+   **원문 텍스트만** 얼리는 것이다. 그 세션의 `facts/`·`episodes/` 스토어는
+   1턴 꿈 병리 산물이므로 **재사용 금지** — dreaming 변형의 인제스천은 반드시
+   현행 코드로 새로 리플레이한다(§3-d와 일치).
+
+구세션 정리는 삭제 대신 `dreaming_data/archive/`로 이동을 권고 (유저 승인 후).
+
 ---
 
 ## 핵심 설계 결정 5줄 요약
