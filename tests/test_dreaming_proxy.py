@@ -54,7 +54,9 @@ class FakeLLM:
 
 
 def _settings(tmp_path, idle=300.0):
-    return Settings(data_dir=str(tmp_path), upstream_base_url="http://up",
+    # URL에 openrouter가 있어야 cache_control 마킹이 켜진다 (프로덕션 기본)
+    return Settings(data_dir=str(tmp_path),
+                    upstream_base_url="http://openrouter.test",
                     upstream_api_key="k", idle_seconds=idle)
 
 
@@ -312,6 +314,20 @@ def test_deepseek_thinking_translation(tmp_path):
     sent = up.payloads[0]
     assert "thinking_tokens" not in sent
     assert sent["thinking"] == {"type": "disabled"}
+
+
+def test_deepseek_gets_no_cache_control(tmp_path):
+    """자동 프리픽스 캐싱 업스트림엔 cache_control(Anthropic 규약)을 안 보낸다."""
+    up = FakeUpstream()
+    st = Settings(data_dir=str(tmp_path),
+                  upstream_base_url="https://api.deepseek.com",
+                  upstream_api_key="k")
+    client = TestClient(create_app(st, upstream=up))
+    client.post("/v1/chat/completions", json=_body("안녕"))
+    sent = up.payloads[0]["messages"]
+    assert all("cache_control" not in json.dumps(m, ensure_ascii=False)
+               for m in sent)
+    assert isinstance(sent[0]["content"], str)   # parts 변환도 없어야 한다
 
 
 def test_thinking_untouched_for_other_upstreams(tmp_path):

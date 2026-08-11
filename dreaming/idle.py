@@ -1,7 +1,12 @@
 """dreaming/idle.py — IdleTrigger 추상화 (스펙 §3.2, §8).
 
-유휴 기준 = 캐시 TTL 경과(기본 5m) — 캐시가 이미 죽은 시점이라
-꿈(과 Plan 4의 재압축)이 공짜인 창구다. cron 아님, 세션별 타이머.
+유휴 기준 기본 5m는 Anthropic 캐시 TTL과 동기다. 단, "유휴 = 캐시 죽음
+= 재압축 공짜" 등식은 **Anthropic처럼 TTL 만료로 캐시가 소멸하는
+프로바이더에서만** 성립한다 (스펙 §6.3 프로바이더 한정 주의). 자동
+프리픽스 캐싱(DeepSeek 등)은 유휴와 무관하게 캐시가 수 시간 살아 있어
+유휴 재압축이 오히려 살아 있는 캐시를 깨뜨린다 — 그쪽 방어선은
+chunks.BOUNDARY_STEP(플랜 바이트 변경 빈도 자체를 낮춤)이다.
+cron 아님, 세션별 타이머.
 """
 
 from __future__ import annotations

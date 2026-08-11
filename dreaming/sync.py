@@ -109,13 +109,18 @@ def demote_after(storage: Storage, session: str, from_turn: int) -> None:
 
 class SyncPath:
     def __init__(self, storage: Storage, session_id: str,
-                 keyed_lore: Optional[List[str]] = None) -> None:
+                 keyed_lore: Optional[List[str]] = None,
+                 mark_cache_enabled: bool = True) -> None:
         self._storage = storage
         self._session = session_id
         self._resolver = SessionResolver(storage)
         self._ledger = PairLedger(storage, session_id, resolver=self._resolver)
         self._store = MemoryStore(storage, session_id)
         self._keyed_lore = keyed_lore or []
+        # cache_control(BP 마킹)은 Anthropic 규약이다. 이해 못 하는 업스트림
+        # (DeepSeek 본가 등)엔 미지 필드 + parts 변환(upstream.to_wire)을
+        # 보내게 되므로 프록시가 업스트림 보고 끈다 (스펙 §6.3 프로바이더 한정).
+        self._mark_cache = mark_cache_enabled
 
     def _wire_state(self) -> Dict:
         return self._storage.get(f"{self._session}/wire", "scaffold") or {}
@@ -193,7 +198,8 @@ class SyncPath:
             out, bp2 = apply_compression(out, plan,
                                          window_start_turn=verdict.offset)
         out = inject_knowledge(out, knowledge)
-        out = mark_cache(out, bp2_index=bp2)
+        if self._mark_cache:
+            out = mark_cache(out, bp2_index=bp2)
         return out + tail, verdict
 
     def record_response(self, verdict: Verdict, messages: List[Dict],

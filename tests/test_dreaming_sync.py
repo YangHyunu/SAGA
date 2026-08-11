@@ -118,6 +118,18 @@ def test_process_injects_and_marks(tmp_path):
     assert "소지금: 450" in out[-1]["content"]
 
 
+def test_process_skips_marking_when_disabled(tmp_path):
+    # cache_control은 Anthropic 규약 — 비활성이면 어디에도 안 붙어야 한다
+    # (DeepSeek 본가 등 자동 캐싱 업스트림에 미지 필드 전송 방지)
+    storage = JsonDirStorage(tmp_path)
+    ms = MemoryStore(storage, "sess1")
+    ms.append_commit(StateCommit(slot="소지금", op="set", value=450, turn=1))
+    sp = SyncPath(storage, "sess1", mark_cache_enabled=False)
+    out, verdict = sp.process(_msgs("안녕"))
+    assert all("cache_control" not in m for m in out)
+    assert "소지금: 450" in out[-1]["content"]     # 주입은 마킹과 무관하게 동작
+
+
 def test_full_turn_cycle_then_reroll(tmp_path):
     storage = JsonDirStorage(tmp_path)
     sp = SyncPath(storage, "sess1")
