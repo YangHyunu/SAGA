@@ -236,6 +236,51 @@ def test_full_loop_dream_then_compressed_prefix(tmp_path):
     assert marks == 3                                  # BP1 + BP2 + BP3
 
 
+def _chat_turn(client, t, session="sess1"):
+    """t번째 턴 채팅 — 히스토리는 이전 턴 전부(직전 응답 포함)로 일관 재구성."""
+    history = [x for i in range(t) for x in (f"질문{i}", "50골드다.")]
+    r = client.post("/v1/chat/completions",
+                    json=_body(*history, f"질문{t}"),
+                    headers={"x-dreaming-session-id": session})
+    assert r.status_code == 200
+
+
+def test_pressure_forces_dream_without_idle(tmp_path):
+    """§6.3 폴백: 유휴 타이머가 매 요청 리셋돼도(연속 채팅) 임계 초과 시
+    다음 유휴를 기다리지 않고 백그라운드 꿈이 돈다."""
+    storage = JsonDirStorage(tmp_path)
+    settings = _settings(tmp_path)                 # idle 300s — 테스트 중 안 옴
+    settings.pressure_chars = 10                   # 매 요청 임계 초과
+    app = create_app(settings, upstream=FakeUpstream(),
+                     dream_llm=FakeLLM('{"facts": []}'))
+    with TestClient(app) as client:
+        for t in range(4):
+            _chat_turn(client, t)
+        assert storage.get("sess1/dreamer", "cursor") is None   # backlog 4 < 5
+        _chat_turn(client, 4)                      # backlog 5 → 강제 꿈
+        for _ in range(100):                       # 백그라운드 완료 대기
+            if storage.get("sess1/dreamer", "cursor"):
+                break
+            time.sleep(0.02)
+    cursor = storage.get("sess1/dreamer", "cursor")
+    assert cursor is not None and cursor["next_turn"] == 5
+
+
+def test_no_forced_dream_below_threshold(tmp_path):
+    storage = JsonDirStorage(tmp_path)
+    app = create_app(_settings(tmp_path), upstream=FakeUpstream(),
+                     dream_llm=FakeLLM('{"facts": []}'))   # 임계 기본 120K
+    with TestClient(app) as client:
+        for t in range(6):
+            _chat_turn(client, t)
+    assert storage.get("sess1/dreamer", "cursor") is None
+
+
+def test_pressure_chars_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DREAMING_PRESSURE_CHARS", "55000")
+    assert Settings.from_env(root=tmp_path).pressure_chars == 55000
+
+
 def test_health(tmp_path):
     app = create_app(_settings(tmp_path), upstream=FakeUpstream())
     assert TestClient(app).get("/health").json() == {"ok": True}

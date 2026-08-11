@@ -24,6 +24,7 @@ try:
 except ImportError:          # dotenv 없어도 동작 (환경변수 직접 export)
     load_dotenv = None
 
+from dreaming import pressure
 from dreaming.dreamer import Dreamer
 from dreaming.idle import IdleWatcher
 from dreaming.llm import LLMClient, OpenAICompatLLM
@@ -46,6 +47,7 @@ class Settings(BaseModel):
     upstream_base_url: str
     upstream_api_key: str = ""
     idle_seconds: float = 300.0          # 캐시 TTL 5m와 동기 (스펙 §3.2)
+    pressure_chars: int = pressure.DEFAULT_THRESHOLD_CHARS   # §6.3, 0=비활성
     dream_base_url: str = ""
     dream_api_key: str = ""
     dream_model: str = ""                # 비면 Dreamer 비활성
@@ -64,6 +66,9 @@ class Settings(BaseModel):
                 "DREAMING_UPSTREAM_BASE", "https://openrouter.ai/api/v1"),
             upstream_api_key=os.environ.get("DREAMING_UPSTREAM_KEY", ""),
             idle_seconds=float(os.environ.get("DREAMING_IDLE_SECONDS", "300")),
+            pressure_chars=int(os.environ.get(
+                "DREAMING_PRESSURE_CHARS",
+                str(pressure.DEFAULT_THRESHOLD_CHARS))),
             dream_base_url=os.environ.get("DREAMING_DREAM_BASE", ""),
             dream_api_key=os.environ.get("DREAMING_DREAM_KEY", ""),
             dream_model=os.environ.get("DREAMING_DREAM_MODEL", ""),
@@ -132,8 +137,8 @@ def create_app(settings: Settings, *,
         return syncpaths[session]
 
     def _finish(session: str, verdict, original_messages: List[Dict],
-                assistant_text: str) -> None:
-        """응답 완료 후: 원장 기록 → 유휴 타이머. 전부 fail-open."""
+                assistant_text: str, prompt_size: int = 0) -> None:
+        """응답 완료 후: 원장 기록 → 유휴 타이머 → 임계 강제 꿈. 전부 fail-open."""
         if verdict is not None and assistant_text:
             try:
                 _sync(session).record_response(
@@ -141,6 +146,19 @@ def create_app(settings: Settings, *,
             except Exception:
                 logger.exception("[proxy] record failed: %s", session)
         watcher.touch(session)
+        # §6.3 폴백: 연속 채팅으로 유휴가 영원히 안 와도 임계 초과 시 강제 꿈.
+        # 기록 후에 재야 방금 턴이 backlog에 포함된다. 다음 요청이 새 플랜을
+        # 받아 캐시가 한 번 깨진다 — BOUNDARY_STEP 계단 + MIN_BACKLOG_TURNS가
+        # 그 빈도를 묶어 턴당 상각을 지킨다 (dreaming/pressure.py).
+        if dreamer is None or not (0 < settings.pressure_chars <= prompt_size):
+            return                       # 크기 선-게이트 — backlog 스캔 절약
+        try:
+            backlog = len(dreamer.snapshot(session))
+            if pressure.should_force(prompt_size, settings.pressure_chars,
+                                     backlog):
+                asyncio.create_task(dreamer.dream(session))
+        except Exception:
+            logger.exception("[proxy] forced dream failed: %s", session)
 
     @app.get("/health")
     async def health():
@@ -164,6 +182,10 @@ def create_app(settings: Settings, *,
         except Exception:
             logger.exception("[proxy] sync path failed (fail-open): %s", session)
             out, verdict = original_messages, None
+
+        # §6.3 압박 신호: 압축·주입이 끝난 실제 발신 프롬프트 크기 —
+        # 압축이 못 줄인 잔여분이 곧 압박이다 (원문 누적량 아님).
+        prompt_size = pressure.prompt_chars(out)
 
         payload = dict(body)
         payload["messages"] = to_wire(out)
@@ -208,7 +230,8 @@ def create_app(settings: Settings, *,
                                 parts.append(delta)
                         yield chunk
                 finally:
-                    _finish(session, verdict, original_messages, "".join(parts))
+                    _finish(session, verdict, original_messages, "".join(parts),
+                            prompt_size=prompt_size)
             return StreamingResponse(relay(), media_type="text/event-stream")
 
         try:
@@ -217,7 +240,8 @@ def create_app(settings: Settings, *,
             logger.exception("[proxy] upstream failed")
             return JSONResponse(status_code=502, content={
                 "error": "upstream_error", "message": "upstream request failed"})
-        _finish(session, verdict, original_messages, _assistant_text(resp))
+        _finish(session, verdict, original_messages, _assistant_text(resp),
+                prompt_size=prompt_size)
         return JSONResponse(resp)
 
     return app
