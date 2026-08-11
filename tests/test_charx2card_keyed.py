@@ -27,12 +27,14 @@ def test_keyed_entries_extracted_with_order():
          "insertion_order": 860, "name": "길드", "enabled": True},
         {"constant": False, "content": "", "keys": [], "name": "폴더"},
     ])
-    block, post, keyed, orders = _split_lore(book)
+    block, post, keyed, orders, indices = _split_lore(book)
     assert block == ["상시로어"] and orders == [10]
+    assert indices == [0]              # book["entries"][0]이 원위치
     assert len(keyed) == 1
     assert keyed[0]["keys"] == ["Guilds", "길드"]
     assert keyed[0]["order"] == 860
     assert keyed[0]["depth"] is None
+    assert keyed[0]["index"] == 1      # book["entries"][1]이 원위치
 
 
 def test_keyed_depth0_marked():
@@ -40,7 +42,7 @@ def test_keyed_depth0_marked():
         {"constant": False, "content": "@@depth 0\n지침", "keys": ["k"],
          "insertion_order": 1, "enabled": True},
     ])
-    _, _, keyed, _ = _split_lore(book)
+    _, _, keyed, _, _ = _split_lore(book)
     assert keyed[0]["depth"] == 0 and keyed[0]["content"] == "지침"
 
 
@@ -49,7 +51,7 @@ def test_disabled_keyed_skipped():
         {"constant": False, "content": "죽은로어", "keys": ["k"],
          "insertion_order": 1, "enabled": False},
     ])
-    _, _, keyed, _ = _split_lore(book)
+    _, _, keyed, _, _ = _split_lore(book)
     assert keyed == []
 
 

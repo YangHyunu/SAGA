@@ -65,8 +65,9 @@ def _strip_deco(content: str) -> Tuple[str, Optional[int]]:
 
 
 def _split_lore(book: Dict, budget: Optional[int] = None
-                ) -> Tuple[List[str], str, List[Dict], List[int]]:
-    """엔트리를 (로어북 블록, postEverything 주입분, keyed 원형, block의 order)로 가른다.
+                ) -> Tuple[List[str], str, List[Dict], List[int], List[int]]:
+    """엔트리를 (로어북 블록, postEverything 주입분, keyed 원형, block의 order,
+    block의 북 원위치)로 가른다.
 
     constant 엔트리는 항상 활성이라 지금 배치를 확정할 수 있다. keyed(=
     constant가 아닌) 엔트리는 활성 조건이 걸려 있어 여기서는 원형만 뽑아
@@ -84,8 +85,16 @@ def _split_lore(book: Dict, budget: Optional[int] = None
     전부 통과시켰다 — 즉 그 클라이언트의 loreBookToken이 크다. 카드의
     character_book.token_budget은 비어 있어(이 카드 기준) 카드에서 알 수 없다.
     다른 설정을 재현하려면 budget을 명시해 넘겨라.
+
+    lore_indices(block과 병렬)와 keyed 각 원소의 "index"는 book["entries"]의
+    정렬 전 원위치다. keyed_lore.activate가 이미 한 번 이 함수의 정렬규칙(T)을
+    적용받은 block 리스트에 keyed 히트를 합쳐 T를 재적용할 때, order만으로
+    재정렬하면 동점 그룹이 T∘T에서 원시 순서로 되돌아간다(2026-08-11 리뷰
+    발견 — stable sort + 전체 reverse는 그 자체로 멱등이 아니다). 원위치를
+    같이 넘겨야 매번 원시 데이터부터 T를 다시 계산할 수 있다.
     """
-    entries = [e for e in book.get("entries", [])
+    raw = list(book.get("entries", []))
+    entries = [(i, e) for i, e in enumerate(raw)
                if e.get("constant") and e.get("content")]
     # RisuAI 최종 순서: priority 내림차순 → 예산 필터 → order 내림차순 →
     # .reverse() (lorebook.svelte.ts:608-662). charx 임포트는 order·priority가
@@ -94,26 +103,27 @@ def _split_lore(book: Dict, budget: Optional[int] = None
     # 카드 기재 역순으로 뒤집힌 것** — JS sort가 안정 정렬이라 마지막 reverse가
     # 동점 안쪽 순서까지 뒤집는다. 위지소연의 NPC 5명이 전부 order=100이라
     # 이게 실제로 캡처와 갈렸다.
-    entries.sort(key=lambda e: -e.get("insertion_order", 0))
+    entries.sort(key=lambda t: -t[1].get("insertion_order", 0))
     if budget is not None:
         import tiktoken
         # reverse_proxy의 기본 토크나이저는 tik → o200k_base다
         # (tokenizer.ts:105-133의 default 분기, database.svelte.ts:482).
         enc = tiktoken.get_encoding("o200k_base")
         kept, used = [], 0
-        for e in entries:                         # priority 내림차순 그대로
+        for i, e in entries:                       # priority 내림차순 그대로
             n = len(enc.encode(e["content"]))
             if used + n <= budget:
                 used += n
-                kept.append(e)                    # 안 맞는 건 건너뛰고 계속
+                kept.append((i, e))                # 안 맞는 건 건너뛰고 계속
         entries = kept
     entries.reverse()
-    block, post, orders = [], [], []
-    for e in entries:
+    block, post, orders, indices = [], [], [], []
+    for i, e in entries:
         body, depth = _strip_deco(e["content"])
         if depth is None:
             block.append(body)
             orders.append(e.get("insertion_order", 0))
+            indices.append(i)
         elif depth == 0:
             post.append(body)
         else:
@@ -124,7 +134,7 @@ def _split_lore(book: Dict, budget: Optional[int] = None
     # 하지 않고 원형만 보존한다 — 런타임 활성화는 keyed_lore.py(신규)가
     # 매 턴 최근 메시지를 스캔해 담당한다 (lorebook.svelte.ts:174-222).
     keyed = []
-    for e in book.get("entries", []):
+    for i, e in enumerate(raw):
         if e.get("constant") or not e.get("content"):
             continue
         if not e.get("enabled", True) or not [k for k in e.get("keys", []) if k]:
@@ -137,8 +147,9 @@ def _split_lore(book: Dict, budget: Optional[int] = None
         keyed.append({"name": e.get("name", ""),
                       "keys": [k for k in e["keys"] if k],
                       "content": body, "depth": depth,
-                      "order": e.get("insertion_order", 0)})
-    return block, "\n\n".join(post), keyed, orders
+                      "order": e.get("insertion_order", 0),
+                      "index": i})
+    return block, "\n\n".join(post), keyed, orders, indices
 
 
 def extract(charx_path: str) -> Dict:
@@ -148,7 +159,8 @@ def extract(charx_path: str) -> Dict:
     greetings = [g for g in [d.get("first_mes", "")]
                  + list(d.get("alternate_greetings", [])) if g.strip()]
     book = d.get("character_book") or {}
-    lore, post_everything, keyed_lore, lore_orders = _split_lore(book)
+    lore, post_everything, keyed_lore, lore_orders, lore_indices = \
+        _split_lore(book)
     return {
         "name": d.get("name", ""),
         "description": d.get("description", ""),
@@ -156,6 +168,9 @@ def extract(charx_path: str) -> Dict:
         "lore": lore,
         "keyed_lore": keyed_lore,
         "lore_orders": lore_orders,
+        # lore와 병렬 — 각 블록의 book["entries"] 원위치. keyed_lore.activate가
+        # 재정렬 시 T를 원시 데이터부터 다시 계산하는 데 쓴다(동점 재역전 방지).
+        "lore_indices": lore_indices,
         # character_book 레벨 스캔 설정 — 카드에 없으면 RisuAI 기본값
         # (lorebook.svelte.ts:174-222 스캔, database.svelte.ts 기본치).
         "lore_settings": {
