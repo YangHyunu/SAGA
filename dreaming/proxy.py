@@ -95,6 +95,15 @@ def create_app(settings: Settings, *,
     up = upstream or OpenAIUpstream(
         settings.upstream_base_url, settings.upstream_api_key)
 
+    # cache_control 마킹은 Anthropic 규약 — 직접 Anthropic이거나 OpenRouter
+    # (프로바이더별 번역/제거를 대신 해줌)일 때만 보낸다. DeepSeek 본가처럼
+    # 자동 프리픽스 캐싱인 곳엔 미지 필드라 보내지 않는다 (스펙 §6.3).
+    mark_cache_enabled = any(
+        h in settings.upstream_base_url for h in ("openrouter", "anthropic"))
+    if not mark_cache_enabled:
+        logger.info("[proxy] cache_control 마킹 비활성 — 업스트림 %s",
+                    settings.upstream_base_url)
+
     keyed_lore: List[str] = []
     if settings.card_path and settings.card_user:
         try:
@@ -128,7 +137,8 @@ def create_app(settings: Settings, *,
     def _sync(session: str) -> SyncPath:
         if session not in syncpaths:
             syncpaths[session] = SyncPath(storage, session,
-                                          keyed_lore=keyed_lore)
+                                          keyed_lore=keyed_lore,
+                                          mark_cache_enabled=mark_cache_enabled)
         return syncpaths[session]
 
     def _finish(session: str, verdict, original_messages: List[Dict],
