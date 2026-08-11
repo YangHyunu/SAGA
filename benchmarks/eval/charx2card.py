@@ -130,6 +130,10 @@ def _split_lore(book: Dict, budget: Optional[int] = None
         if not e.get("enabled", True) or not [k for k in e.get("keys", []) if k]:
             continue
         body, depth = _strip_deco(e["content"])
+        if depth is not None and depth > 0:            # block/post 루프와 동일 거부
+            raise SystemExit(
+                f"@@depth {depth} 엔트리는 히스토리 중간으로 splice된다 — "
+                f"평탄한 카드 필드로 옮길 수 없다: {e.get('name', '')}")
         keyed.append({"name": e.get("name", ""),
                       "keys": [k for k in e["keys"] if k],
                       "content": body, "depth": depth,

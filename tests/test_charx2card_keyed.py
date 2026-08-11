@@ -51,3 +51,13 @@ def test_disabled_keyed_skipped():
     ])
     _, _, keyed, _ = _split_lore(book)
     assert keyed == []
+
+
+def test_keyed_depth_gt0_rejected():
+    # depth>0은 히스토리 중간 splice라 block/post 경로처럼 keyed도 멈춰야 한다.
+    book = _book([
+        {"constant": False, "content": "@@depth 5\n본문", "keys": ["k"],
+         "insertion_order": 1, "enabled": True},
+    ])
+    with pytest.raises(SystemExit):
+        _split_lore(book)
