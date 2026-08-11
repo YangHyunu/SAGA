@@ -1,4 +1,6 @@
 """RisuAI 키워드 활성화 에뮬 테스트 (lorebook.svelte.ts 시맨틱)."""
+import copy
+
 from benchmarks.eval.keyed_lore import activate
 
 
@@ -24,13 +26,36 @@ def test_key_match_case_insensitive_substring():
     assert "길드로어" in blocks
 
 
-def test_key_match_ignores_whitespace():
-    # RisuAI는 공백 제거 후 substring (lorebook.svelte.ts:206-222)
+def test_key_match_ignores_only_space():
+    # RisuAI는 스페이스(U+0020)만 지운다 — replace(/ /g,'')
+    # (lorebook.svelte.ts:206,208). 2026-08-11 리뷰: \s+로 개행·탭까지
+    # 지우면 245키 중 공백 포함 11개가 과활성된다.
+    card = _card(keyed_lore=[{"name": "", "keys": ["황금 사자"],
+                              "content": "문장로어", "depth": None,
+                              "order": 1, "index": 2}])
+    blocks, _ = activate(card, ["그 황금 사자 문양을 보았다"])
+    assert "문장로어" in blocks
+
+
+def test_key_match_newline_does_not_activate():
+    # 개행은 스페이스가 아니라 지워지지 않는다 — "황금\n사자"는 미활성이
+    # 정답 (리뷰 실증: 키 "White Lotus"가 "White\nLotus" 발화에도 붙던
+    # 과활성 버그의 반대 케이스).
     card = _card(keyed_lore=[{"name": "", "keys": ["황금 사자"],
                               "content": "문장로어", "depth": None,
                               "order": 1, "index": 2}])
     blocks, _ = activate(card, ["그 황금\n사자 문양을 보았다"])
-    assert "문장로어" in blocks
+    assert "문장로어" not in blocks
+
+
+def test_key_match_does_not_bleed_across_messages():
+    # \x00 메시지 구분자는 공백이 아니므로 정규식을 스페이스로 좁혀도
+    # 크로스 메시지 매칭 차단은 그대로 유지된다.
+    card = _card(keyed_lore=[{"name": "", "keys": ["가나"],
+                              "content": "붙은로어", "depth": None,
+                              "order": 1, "index": 2}])
+    blocks, _ = activate(card, ["...가", "나..."])
+    assert "붙은로어" not in blocks
 
 
 def test_scan_depth_window():
@@ -88,3 +113,12 @@ def test_merge_ties_preserved_across_reinsertion():
                                    "depth": None, "order": 100, "index": 3}])
     blocks, _ = activate(card, ["k"])
     assert blocks == ["C", "K", "B", "A"]
+
+
+def test_activate_does_not_mutate_card():
+    # 플랜이 못박은 계약: activate는 읽기만 한다 — 다음 턴 스캔 오염 금지.
+    card = _tied_card(keyed_lore=[{"name": "", "keys": ["k"], "content": "K",
+                                   "depth": None, "order": 100, "index": 3}])
+    before = copy.deepcopy(card)
+    activate(card, ["k"])
+    assert card == before

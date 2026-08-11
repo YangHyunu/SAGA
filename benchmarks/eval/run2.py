@@ -94,6 +94,20 @@ def probe_schedule(total: int, every: int = PROBE_EVERY) -> List[Optional[str]]:
     return out
 
 
+def _activated_lore(card: Dict, texts: List[str]) -> Tuple[List[str], str]:
+    """activate() 결과를 카드의 post_everything과 병합해 반환.
+
+    build_wire와 _fixed_wire_tokens(고정비 실측)가 공유한다 — 둘 다 같은
+    activate() 호출·병합 규칙을 써야 이 턴의 실제 활성 로어와 예산 산정이
+    어긋나지 않는다.
+    """
+    lore, extra_post = activate(card, texts)
+    post = card.get("post_everything", "")
+    if extra_post:
+        post = f"{post}\n\n{extra_post}" if post else extra_post
+    return lore, post
+
+
 def build_wire(preset: Dict, card: Dict, window: List[Dict],
                memory: str = "", toggles: Optional[Dict[str, str]] = None
                ) -> List[Dict]:
@@ -106,10 +120,7 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
     toggles: 기본은 config.TOGGLES(현행 시나리오). 실캡처 재현 테스트처럼
     캡처 당시 토글로 조립해야 할 때만 명시한다.
     """
-    lore, extra_post = activate(card, [m.get("content", "") for m in window])
-    post = card.get("post_everything", "")
-    if extra_post:
-        post = f"{post}\n\n{extra_post}" if post else extra_post
+    lore, post = _activated_lore(card, [m.get("content", "") for m in window])
     msgs = assemble(preset, toggles if toggles is not None else TOGGLES,
                     window, memory=memory,
                     card={"description": card.get("description", ""),
@@ -126,6 +137,27 @@ def build_wire(preset: Dict, card: Dict, window: List[Dict],
     # 해제로 동작한다 — 중간 system(req-005의 2534자)도, 연속 user(req-006)도
     # 그대로 실린다. 둘 다 끄지 않으면 우리 와이어만 다른 모양이 된다.
     return reformat(msgs, fold_mid_system=False, alternate=False)
+
+
+def _fixed_wire_tokens(preset: Dict, card: Dict, history: List[Dict],
+                       cost_fn: Callable[[Dict], int]) -> int:
+    """프리셋+카드 고정 비용 실측 — 이 턴까지의 history로 활성화된 keyed
+    로어를 반영한다 (index.svelte.ts:614-618, 히스토리 앞에 먼저 태우는 몫).
+
+    activate()는 최근 scan_depth개 메시지만 보므로(꼬리만 쓴다) history
+    전체를 넘겨도 안전하다. 측정 자체는 빈 window로 한다 — 대화 메시지
+    토큰은 여기서 중복 계산하지 않는다. 실제로 보낼 요청은
+    build_wire(..., use_window)가 그 몫을 이미 카운트한다.
+
+    2026-08-11 리뷰 발견(Important): 빈 window로 activate까지 같이 재는
+    이전 방식은 keyed 로어를 영구히 미적중 취급해 trim_budget/hypa 고정비가
+    과소평가됐다 — 헌터스처럼 keyed 로어가 턴마다 몇 건씩 붙는 카드에서
+    실요청이 max_context를 조용히 초과했다(중앙값 2,165자 × 턴당 3~8건
+    적중 = 10~20% 오버슛 실측). 매 턴 이 함수로 다시 재는 것으로 교정한다.
+    """
+    lore, post = _activated_lore(card, [m.get("content", "") for m in history])
+    probed = dict(card, lore=lore, post_everything=post, keyed_lore=[])
+    return sum(cost_fn(m) for m in build_wire(preset, probed, []))
 
 
 def pick_beat(i: int, npc_due: bool = False) -> str:
@@ -223,8 +255,8 @@ def _play_turn(i: int, utext: str, variant: str, history: List[Dict],
                session: str, key: str,
                call: Callable[[str, str, str, List[Dict]], Dict],
                hypa_S: Optional[hypa.HypaSettings], hypa_data: Dict,
-               hypa_state: pathlib.Path, fixed_tokens: int, max_context: int,
-               trim_budget: int, kept_start_msg: int, preset: Dict,
+               hypa_state: pathlib.Path, max_context: int,
+               kept_start_msg: int, preset: Dict,
                card: Dict, reroll_at: List[int], edit_at: List[int],
                turns: List[Dict], total_rerolls: int
                ) -> Tuple[Optional[Dict], List[Dict], Optional[int], int,
@@ -236,6 +268,16 @@ def _play_turn(i: int, utext: str, variant: str, history: List[Dict],
     #        total_rerolls, last_reply, aborted) — aborted가 있으면
     #        st/last_reply는 None, 호출부는 즉시 break해야 한다.
     history.append({"role": "user", "content": utext})
+    # 고정비/trim 예산은 매 턴 여기서 새로 잰다 — history가 방금 이 턴의
+    # 유저 발화까지 반영했으므로 그 발화가 트리거하는 keyed 로어도 잡힌다
+    # (2026-08-11 리뷰 교정: 예전에는 run_once 루프 밖에서 빈 history로
+    # 한 번만 재서 keyed 로어가 영구 미적중 취급됐다).
+    fixed_tokens = (_fixed_wire_tokens(preset, card, history, hypa.tok_chat)
+                    if variant == "hypa" else 0)
+    trim_budget = (max_context
+                   - _fixed_wire_tokens(preset, card, history,
+                                       lambda m: _count(m["content"]))
+                   - MAX_TOKENS - 50) if variant == "trim" else max_context
     memory_text = None
     win_start = None
     if variant == "hypa":
@@ -467,16 +509,9 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
     hypa_state = EVAL_DIR / f"hypa-state-{session}.json"
     hypa_cost0 = hypa.SUMMARY_COST
     hypa_truncated0 = hypa.SUMMARY_TRUNCATED
-    # 프리셋+카드 고정 비용 — RisuAI가 히스토리 앞에 먼저 태우는 몫
-    # (index.svelte.ts:614-618). 빈 히스토리 와이어로 실측한다.
-    fixed_tokens = (sum(hypa.tok_chat(m) for m in build_wire(preset, card, []))
-                    if variant == "hypa" else 0)
-    # trim 예산 = 공유 풀 - 프리셋/카드 고정 비용 - 응답 예약(maxResponse+50)
-    # (index.svelte.ts:614,618) — hypa와 같은 실측 패턴, 카운터만 o200k.
-    trim_budget = (max_context
-                   - sum(_count(m["content"])
-                        for m in build_wire(preset, card, []))
-                   - MAX_TOKENS - 50) if variant == "trim" else max_context
+    # 고정비/trim 예산은 이제 턴마다 _play_turn 안에서 그 턴까지의 실제
+    # history로 다시 잰다(_fixed_wire_tokens) — 여기서 한 번만 재던 옛
+    # 방식은 keyed 로어를 영구 미적중 취급했다 (2026-08-11 리뷰 교정).
     kept_start_msg = 0
 
     for i in range(total_turns):
@@ -500,8 +535,7 @@ def run_once(preset_path: str, card_path: str, variant: str, session: str,
             i=i, utext=utext, variant=variant, history=history,
             session=session, key=key, call=call, hypa_S=hypa_S,
             hypa_data=hypa_data, hypa_state=hypa_state,
-            fixed_tokens=fixed_tokens, max_context=max_context,
-            trim_budget=trim_budget, kept_start_msg=kept_start_msg,
+            max_context=max_context, kept_start_msg=kept_start_msg,
             preset=preset, card=card, reroll_at=reroll_at,
             edit_at=edit_at, turns=turns, total_rerolls=total_rerolls)
         if turn_aborted:

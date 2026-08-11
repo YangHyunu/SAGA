@@ -669,6 +669,29 @@ def test_lore_budget_skips_oversized_and_keeps_going():
     assert _split_lore(book, budget=100)[0] == ["나" * 30]
 
 
+def test_fixed_wire_tokens_reflects_active_keyed_lore():
+    """고정비 실측이 그 턴 활성 keyed 로어를 반영해야 trim 예산이 정확하다
+    (2026-08-11 리뷰 교정 — Important). 빈 window로만 재던 옛 방식은 keyed
+    로어를 영구 미적중 취급해 trim_budget/hypa 고정비가 과대평가됐다
+    (헌터스 실측: 실요청이 max_context를 조용히 초과). 활성 keyed가 있으면
+    고정비가 늘어 산정 예산(max_context - 고정비)이 무적중 대비 줄어야
+    한다."""
+    from benchmarks.eval.run2 import _fixed_wire_tokens
+    preset = {"promptTemplate": [{"type": "lorebook", "role": "system"}]}
+    card = {"lore": ["상시"], "lore_orders": [1], "lore_indices": [0],
+            "post_everything": "", "lore_settings": {"scan_depth": 5},
+            "keyed_lore": [{"name": "", "keys": ["트리거"],
+                            "content": "많이" * 200, "depth": None,
+                            "order": 2, "index": 1}]}
+    cost_fn = lambda m: len(m["content"])
+    max_context = 100000
+    no_hit_budget = max_context - _fixed_wire_tokens(
+        preset, card, [{"role": "user", "content": "관련없는 발화"}], cost_fn)
+    hit_budget = max_context - _fixed_wire_tokens(
+        preset, card, [{"role": "user", "content": "트리거 언급"}], cost_fn)
+    assert hit_budget < no_hit_budget
+
+
 def test_assembly_is_byte_identical_to_real_capture():
     """실캡처 재현 회귀 — 프리셋·카드·캡처가 다 있을 때만 돈다.
 
