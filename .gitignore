@@ -8,7 +8,10 @@ build/
 .pytest_cache/
 
 # External source references (local symlinks, see AGENTS.md)
+# 두 줄 다 필요하다 — `external/`은 디렉터리만 매칭해서, 워크트리가 다른
+# 워크트리의 external을 심링크로 걸면(파일 취급) 추적 대상으로 새어 나온다.
 external/
+external
 
 # Research materials (3rd-party code w/ AGPL·CC-NC licenses + community scans — never commit)
 research/
