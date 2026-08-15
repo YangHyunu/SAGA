@@ -53,10 +53,20 @@ def test_replay_string_slots_set_only():
     assert state == {"현재_장소": "여관"}
 
 
-def test_replay_add_to_string_raises():
-    with pytest.raises(TypeError):
-        replay([_c("현재_장소", "set", "시장", turn=1),
-                _c("현재_장소", "add", 1, turn=2)])
+def test_replay_add_to_string_skips_commit():
+    """전항 리플레이 — 타입 어긋난 add는 건너뛴다 (raise 금지).
+
+    원장은 LLM이 쓴 비신뢰 데이터다. raise하면 오염 커밋 1건이 동기 경로의
+    모든 지식 렌더를 영구 사살한다 (실측: set time="…" 뒤 add time으로
+    인제스천 전체가 죽었다)."""
+    state = replay([_c("현재_장소", "set", "시장", turn=1),
+                    _c("현재_장소", "add", 1, turn=2)])
+    assert state == {"현재_장소": "시장"}          # add만 무시, set은 유효
+
+
+def test_replay_non_numeric_add_value_skips_commit():
+    state = replay([_c("time", "add", "아침", turn=1)])
+    assert state == {}
 
 
 def test_replay_manual_commits_apply():
