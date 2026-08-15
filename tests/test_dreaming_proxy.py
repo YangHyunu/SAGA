@@ -143,9 +143,11 @@ def test_sessions_are_isolated(tmp_path):
 
 def test_catchup_dream_runs_in_background(tmp_path):
     storage = JsonDirStorage(tmp_path)
-    storage.put("sess1/raw", "000000", {          # 이전 기동에서 밀린 턴
-        "turn_number": 0, "user_text": "포션 얼마야?",
-        "assistant_text": "50골드다.", "user_hash": "u0", "assistant_hash": "a0"})
+    for t in range(10):                           # 이전 기동에서 밀린 완전 양자
+        storage.put("sess1/raw", f"{t:06d}", {    # (BATCH_TURNS 미달이면 원문
+            "turn_number": t, "user_text": "포션 얼마야?",       # 유지가 정답)
+            "assistant_text": "50골드다.",
+            "user_hash": f"u{t}", "assistant_hash": f"a{t}"})
     up = FakeUpstream()
     app = create_app(_settings(tmp_path), upstream=up,
                      dream_llm=FakeLLM(_EXTRACTION))
@@ -247,25 +249,25 @@ def _chat_turn(client, t, session="sess1"):
     assert r.status_code == 200
 
 
-def test_pressure_forces_dream_without_idle(tmp_path):
-    """§6.3 폴백: 유휴 타이머가 매 요청 리셋돼도(연속 채팅) 임계 초과 시
-    다음 유휴를 기다리지 않고 백그라운드 꿈이 돈다."""
+def test_turn_batch_forces_dream_without_idle(tmp_path):
+    """배치 결정론: 유휴 타이머가 매 요청 리셋돼도(연속 채팅) backlog가
+    완전 양자(dreamer.BATCH_TURNS=10)에 도달하면 다음 유휴를 기다리지 않고
+    백그라운드 꿈이 돈다. §6.3 압박 폴백은 이 경로 뒤의 보조선으로 남는다."""
     storage = JsonDirStorage(tmp_path)
     settings = _settings(tmp_path)                 # idle 300s — 테스트 중 안 옴
-    settings.pressure_chars = 10                   # 매 요청 임계 초과
     app = create_app(settings, upstream=FakeUpstream(),
                      dream_llm=FakeLLM('{"facts": []}'))
     with TestClient(app) as client:
-        for t in range(4):
+        for t in range(9):
             _chat_turn(client, t)
-        assert storage.get("sess1/dreamer", "cursor") is None   # backlog 4 < 5
-        _chat_turn(client, 4)                      # backlog 5 → 강제 꿈
+        assert storage.get("sess1/dreamer", "cursor") is None   # backlog 9 < 10
+        _chat_turn(client, 9)                      # backlog 10 = 완전 양자
         for _ in range(100):                       # 백그라운드 완료 대기
             if storage.get("sess1/dreamer", "cursor"):
                 break
             time.sleep(0.02)
     cursor = storage.get("sess1/dreamer", "cursor")
-    assert cursor is not None and cursor["next_turn"] == 5
+    assert cursor is not None and cursor["next_turn"] == 10
 
 
 def test_no_forced_dream_below_threshold(tmp_path):

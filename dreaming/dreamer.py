@@ -1,9 +1,18 @@
-"""dreaming/dreamer.py — 유휴 이해 사이클 B-0~B-3 (스펙 §3.2).
+"""dreaming/dreamer.py — 이해 사이클 B-0~B-3 (스펙 §3.2, 배치 결정론 개정).
 
 B-1(에피소드 경계)과 B-2(추출)는 단일 구조화 출력 1콜로 병합한다 —
 스펙의 "사이클 = LLM 1콜 + 임베딩"에서 임베딩은 후속 플랜.
 B-4 재압축(청크 조립)은 Plan 4 — 이 모듈의 꿈은 지식 계층만 쓰므로
 프리픽스가 불변이고, 꿈 도중 요청이 와도 캐시 충돌이 없다.
+
+**배치 결정론 (2026-08-13)**: 사이클은 backlog 전체가 아니라 가장 오래된
+BATCH_TURNS턴 양자만 소화하고, 완전 양자가 없으면 꿈꾸지 않는다. 원래는
+유휴(5분) 시점의 backlog 전체가 배치였는데, 그러면 유저가 언제 쉬느냐가
+에피소드 경계·사실 밀도를 정한다 — 같은 100턴이 턴당 꿈에선 사실 353/
+에피소드 98(중앙값 1턴), 10턴 배치에선 39/18(중앙값 5턴)로 실측 9배
+갈렸다. 트리거(유휴·압박·캐치업·턴 도달)는 이제 "언제"만 정하고
+"무엇을"은 양자 규칙이 정한다. 잔량 <BATCH_TURNS은 원문 그대로 남는다 —
+최근 턴은 어차피 창 안이라 지식이 필요 없다.
 """
 
 from __future__ import annotations
@@ -27,6 +36,12 @@ from dreaming.store import MemoryStore
 logger = logging.getLogger(__name__)
 
 _MAX_PROMPT_FACTS = 50
+
+# 결정론 배치 양자 — chunks.BOUNDARY_STEP(10)과 정렬해 꿈 주기와 압축 플랜
+# 계단이 한 리듬으로 맞물린다. HypaV3의 max_chats_per_summary(8메시지=4턴)와
+# 같은 "고정 개수 배치" 계열이되, 우리 기억은 프리픽스 밖이라 주기를 더
+# 길게 잡을 수 있다.
+BATCH_TURNS = 10
 
 
 # ------------------------------------------------------------------ #
@@ -284,7 +299,12 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
     for ec in ext.commits:
         raw = raw_by_turn.get(ec.turn)
         status = "applied"
-        if isinstance(ec.value, (int, float)) and not isinstance(ec.value, bool):
+        if ec.op == "add" and not (isinstance(ec.value, (int, float))
+                                   and not isinstance(ec.value, bool)):
+            # add는 수치 전용 (프롬프트 규칙) — LLM이 서술 슬롯('time' 등)에
+            # add를 주면 리플레이 타입이 어긋난다. 관찰 상태로 강등.
+            status = "pending_contradiction"
+        elif isinstance(ec.value, (int, float)) and not isinstance(ec.value, bool):
             text = _turn_text(raw) if raw else ""
             # add 음수 델타의 원문 표기는 양수("50을 치렀다") — abs로 대조
             probe = ExtractedNumber(name=ec.slot, value=abs(float(ec.value)))
@@ -337,9 +357,11 @@ def apply_extraction(store: MemoryStore, ext: DreamExtraction,
 # ------------------------------------------------------------------ #
 
 class Dreamer:
-    def __init__(self, storage: Storage, llm: LLMClient) -> None:
+    def __init__(self, storage: Storage, llm: LLMClient,
+                 batch_turns: int = BATCH_TURNS) -> None:
         self._storage = storage
         self._llm = llm
+        self._batch = batch_turns
         self._active: set = set()
 
     def _cursor(self, session: str) -> int:
@@ -355,24 +377,46 @@ class Dreamer:
     def has_backlog(self, session: str) -> bool:
         return bool(self.snapshot(session))
 
+    def ready(self, session: str) -> bool:
+        """완전 양자가 쌓였는가 — 턴 기반 트리거(proxy._finish)의 게이트."""
+        return len(self.snapshot(session)) >= self._batch
+
     async def dream(self, session: str) -> Optional[Dict]:
+        """완전 양자를 전부 소화한다 (양자당 사이클 1회 = LLM 1콜).
+
+        잔량 < batch_turns이면 손대지 않는다 — 부분 배치를 허용하면 트리거
+        타이밍이 배치 내용을 정하는 원래 병리로 돌아간다. 사이클이 실패하면
+        완료된 양자는 유효하고(커서 이미 전진) 실패 양자만 폐기된다.
+        """
         # 체크와 점유 사이 await 없음 — 이벤트 루프 단일 스레드에서 원자
         if session in self._active:
             return None
         self._active.add(session)
+        total: Optional[Dict] = None
         try:
-            return await self._cycle(session)
+            while True:
+                report = await self._cycle(session)
+                if report is None:
+                    return total
+                if total is None:
+                    total = dict(report)
+                    total["cycles"] = 1
+                else:
+                    for k, v in report.items():
+                        total[k] = total.get(k, 0) + v
+                    total["cycles"] += 1
         except Exception:
-            # 사이클 폐기, 커서 불변 → 다음 유휴에 재시도 (스펙 §2.6, §3.2)
+            # 실패 양자 폐기, 커서 불변 → 다음 트리거에 재시도 (스펙 §2.6, §3.2)
             logger.exception("[dreamer] cycle discarded: %s", session)
-            return None
+            return total
         finally:
             self._active.discard(session)
 
     async def _cycle(self, session: str) -> Optional[Dict]:
         raw_turns = self.snapshot(session)                       # B-0
-        if not raw_turns:
+        if len(raw_turns) < self._batch:
             return None
+        raw_turns = raw_turns[:self._batch]                      # 양자 절단
         store = MemoryStore(self._storage, session)
         system, user = build_dream_prompt(
             raw_turns, store.list_facts(), store.current_state(),

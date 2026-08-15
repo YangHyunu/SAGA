@@ -40,7 +40,7 @@ def test_dream_full_cycle_advances_cursor(tmp_path):
     storage = JsonDirStorage(tmp_path)
     _seed_raw(storage)
     llm = FakeLLM(_EXTRACTION)
-    report = asyncio.run(Dreamer(storage, llm).dream("sess1"))
+    report = asyncio.run(Dreamer(storage, llm, batch_turns=1).dream("sess1"))
     assert report["facts"] == 1 and report["commits"] == 1
     assert report["actors"] == 1 and report["episodes"] == 1
     assert report["blocked"] == 0
@@ -57,7 +57,7 @@ def test_dream_without_backlog_is_noop(tmp_path):
     storage = JsonDirStorage(tmp_path)
     _seed_raw(storage)
     llm = FakeLLM(_EXTRACTION)
-    d = Dreamer(storage, llm)
+    d = Dreamer(storage, llm, batch_turns=1)
     asyncio.run(d.dream("sess1"))
     assert asyncio.run(d.dream("sess1")) is None                 # 두 번째: 잔량 없음
     assert len(llm.calls) == 1
@@ -66,7 +66,7 @@ def test_dream_without_backlog_is_noop(tmp_path):
 def test_llm_failure_discards_cycle_keeps_cursor(tmp_path):
     storage = JsonDirStorage(tmp_path)
     _seed_raw(storage)
-    d = Dreamer(storage, FakeLLM(RuntimeError("api down")))
+    d = Dreamer(storage, FakeLLM(RuntimeError("api down")), batch_turns=1)
     assert asyncio.run(d.dream("sess1")) is None                 # fail-open
     assert storage.get("sess1/dreamer", "cursor") is None        # 커서 불변
     assert d.has_backlog("sess1")                                # 다음 유휴에 재시도
@@ -75,7 +75,7 @@ def test_llm_failure_discards_cycle_keeps_cursor(tmp_path):
 def test_garbage_json_discards_cycle(tmp_path):
     storage = JsonDirStorage(tmp_path)
     _seed_raw(storage)
-    d = Dreamer(storage, FakeLLM("JSON 아님"))
+    d = Dreamer(storage, FakeLLM("JSON 아님"), batch_turns=1)
     assert asyncio.run(d.dream("sess1")) is None
     assert storage.get("sess1/dreamer", "cursor") is None
 
@@ -83,7 +83,7 @@ def test_garbage_json_discards_cycle(tmp_path):
 def test_concurrent_dream_skips(tmp_path):
     storage = JsonDirStorage(tmp_path)
     _seed_raw(storage)
-    d = Dreamer(storage, FakeLLM(_EXTRACTION))
+    d = Dreamer(storage, FakeLLM(_EXTRACTION), batch_turns=1)
 
     async def scenario():
         d._active.add("sess1")                # 꿈꾸는 중 시뮬레이션
@@ -109,6 +109,28 @@ def test_dream_writes_compression_plan(tmp_path):
     plan = storage.get("sess1/compression", "plan")
     assert plan["covers_until_turn"] == 10
     assert "초반" in plan["messages"][0]["content"]
+
+
+def test_dream_batches_fixed_turn_quanta(tmp_path):
+    """배치 결정론: 완전 양자만, 오래된 순으로, 잔량은 원문 유지.
+
+    트리거가 언제 오든 배치 내용이 같아야 한다 — 유휴 타이밍이 에피소드
+    경계를 정하던 병리(같은 100턴이 사실 353 vs 39로 갈림)의 재발 방지.
+    """
+    storage = JsonDirStorage(tmp_path)
+    _seed_raw(storage, turns=25)
+    llm = FakeLLM(_EXTRACTION)
+    d = Dreamer(storage, llm, batch_turns=10)
+    report = asyncio.run(d.dream("sess1"))
+    assert report["cycles"] == 2 and len(llm.calls) == 2     # 양자당 1콜
+    assert storage.get("sess1/dreamer", "cursor") == {"next_turn": 20}
+    # 각 콜의 프롬프트가 정확히 자기 양자 구간만 담는다
+    assert "[턴 0]" in llm.calls[0][1] and "[턴 9]" in llm.calls[0][1]
+    assert "[턴 10]" not in llm.calls[0][1]
+    assert "[턴 10]" in llm.calls[1][1] and "[턴 19]" in llm.calls[1][1]
+    # 잔량 5턴 < 양자 — 부분 배치 금지, 원문으로 남는다
+    assert asyncio.run(d.dream("sess1")) is None
+    assert d.has_backlog("sess1") and not d.ready("sess1")
 
 
 def test_has_backlog_and_snapshot_respect_cursor(tmp_path):

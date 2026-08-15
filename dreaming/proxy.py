@@ -156,11 +156,25 @@ def create_app(settings: Settings, *,
             except Exception:
                 logger.exception("[proxy] record failed: %s", session)
         watcher.touch(session)
+        if dreamer is None:
+            return
+        # 턴 기반 배치 트리거 (배치 결정론, dreamer.BATCH_TURNS): backlog가
+        # 완전 양자에 도달하면 즉시 꿈. 유저가 언제 쉬든 배치 내용이 같도록
+        # "무엇을"은 dreamer의 양자 규칙이 정하고 여기선 "언제"만 앞당긴다.
+        # 지식은 프리픽스 밖 주입이라 즉시 꿈이 캐시를 깨지 않고, 플랜은
+        # BOUNDARY_STEP 계단이 빈도를 묶는다. 유휴·압박 트리거는 이 경로가
+        # 놓친 경우(재시작 직후 등)의 보조 폴백으로 남는다.
+        try:
+            if dreamer.ready(session):
+                asyncio.create_task(dreamer.dream(session))
+                return
+        except Exception:
+            logger.exception("[proxy] batch dream failed: %s", session)
         # §6.3 폴백: 연속 채팅으로 유휴가 영원히 안 와도 임계 초과 시 강제 꿈.
         # 기록 후에 재야 방금 턴이 backlog에 포함된다. 다음 요청이 새 플랜을
         # 받아 캐시가 한 번 깨진다 — BOUNDARY_STEP 계단 + MIN_BACKLOG_TURNS가
         # 그 빈도를 묶어 턴당 상각을 지킨다 (dreaming/pressure.py).
-        if dreamer is None or not (0 < settings.pressure_chars <= prompt_size):
+        if not (0 < settings.pressure_chars <= prompt_size):
             return                       # 크기 선-게이트 — backlog 스캔 절약
         try:
             backlog = len(dreamer.snapshot(session))
