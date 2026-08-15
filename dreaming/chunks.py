@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 TAIL_KEEP = 6      # 원문 꼬리로 남길 최근 pair 수 (스펙 §5)
 T1_MAX = 8         # Tier1 청크 상한 — 초과분은 챕터로 승격 (§6.2)
 CHAPTER_SIZE = 5   # 챕터 1개로 묶을 에피소드 수 — 고정 블록이라 승격이 안정
-EXCERPT_MERGE_MAX = 5   # 챕터 병합 시 발췌 캡 (스펙 §6.2 "병합 시 5")
+EXCERPT_MERGE_MAX = 8   # 챕터 병합 시 발췌 캡 — 유닛당 5개(dreamer.EXCERPT_MAX)
+                        # 증설에 맞춰 스펙 §6.2의 5에서 상향
 
 # 압축 경계가 한 번에 움직이는 턴 수. 매 턴 한 칸씩 움직이면 매 턴 청크가
 # 하나 붙고 그 뒤 꼬리 전체가 새 바이트가 되어 프리픽스 캐시가 상시 깨진다
