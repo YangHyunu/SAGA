@@ -21,7 +21,7 @@ from dreaming.resolver import SessionResolver
 from dreaming.retrieval import (expand_query, last_user_query, rank_episodes,
                                 rank_facts, scene_query)
 from dreaming.storage import Storage
-from dreaming import scaffold
+from dreaming import scaffold, tracing
 from dreaming.store import MemoryStore
 from saga.services.pair_ledger import extract_pairs
 
@@ -262,6 +262,10 @@ class SyncPath:
             # 기록은 격리 버퍼로 (스펙 §3.1). 격리도 rlog에 남긴다 —
             # fail-open의 그림자는 침묵 사망이라 가시화가 필수다.
             self._rlog({"quarantine": True, "kind": verdict.kind})
+            tracing.log_run("dreaming.turn",
+                            inputs={"session": self._session},
+                            outputs={"quarantine": True, "kind": verdict.kind},
+                            metadata={"session": self._session})
             return messages + tail, verdict
         out, _ = shift_keyed(messages, self._keyed_lore)   # 1안 (스펙 §5)
         # 첫 요청은 tail_fp를 못 배워 프리셋 프리필이 messages에 섞여 있다
@@ -279,6 +283,14 @@ class SyncPath:
         self._rlog({"quarantine": False, "kind": verdict.kind,
                     "turn": verdict.position, "query": query[-300:],
                     **kmeta})
+        tracing.log_run(
+            "dreaming.turn",
+            inputs={"query": query, "ep_query": ep_q},
+            outputs={"knowledge": knowledge,
+                     "episodes": kmeta["episodes"],
+                     "n_facts": len(kmeta["facts"])},
+            metadata={"session": self._session, "turn": verdict.position,
+                      "kind": verdict.kind, "chars": kmeta["chars"]})
         bp2 = None
         plan = self._storage.get(f"{self._session}/compression", "plan")
         if (plan is not None and verdict.aligned

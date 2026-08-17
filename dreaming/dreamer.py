@@ -24,6 +24,7 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
+from dreaming import tracing
 from dreaming.chunks import build_compression
 from dreaming.facts import dreamer_can_modify, supersede
 from dreaming.llm import LLMClient
@@ -422,6 +423,12 @@ class Dreamer:
             return total
         finally:
             self._active.discard(session)
+            if total is not None:
+                tracing.log_run("dreaming.dream",
+                                inputs={"session": session,
+                                        "batch_turns": self._batch},
+                                outputs=total,
+                                metadata={"session": session})
 
     async def _cycle(self, session: str) -> Optional[Dict]:
         raw_turns = self.snapshot(session)                       # B-0
