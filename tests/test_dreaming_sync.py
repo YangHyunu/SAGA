@@ -315,3 +315,114 @@ def test_persistent_misalignment_rebaselines(tmp_path):
     assert hashes == [hash_text("U3"), hash_text("U4")]
     texts = [r["user_text"] for _, r in storage.scan("s/raw")]
     assert "Confirmed. Apply ..." not in texts       # 오염 raw 폐기
+
+
+# ------------------------------------------------------------------ #
+# 에피소드 핫존 주입 (RAG 수리 ①)
+# ------------------------------------------------------------------ #
+
+def _mk_ep(ms, title, summary, excerpts=(), start=1, end=2):
+    from dreaming.records import Episode
+    ms.save_episode(Episode(range_start="a", range_end="b", title=title,
+                            summary=summary, key_excerpts=list(excerpts),
+                            start_turn=start, end_turn=end))
+
+
+def test_render_쿼리_관련_에피소드가_핫존에_들어간다(tmp_path):
+    ms = MemoryStore(JsonDirStorage(tmp_path), "s")
+    _mk_ep(ms, "눈 내리는 산장의 밤", "렌이 하룻밤 머물기로 했다",
+           ["하룻밤만 더 곁에 있어 주세요."])
+    text = render_knowledge(ms, query="그때 하룻밤 재워주셨잖아요")
+    assert "[지난 장면 · 눈 내리는 산장의 밤]" in text
+    assert "렌이 하룻밤 머물기로 했다" in text
+    assert '원문: "하룻밤만 더 곁에 있어 주세요."' in text
+
+
+def test_render_무관하거나_빈_쿼리면_에피소드_없음(tmp_path):
+    ms = MemoryStore(JsonDirStorage(tmp_path), "s")
+    _mk_ep(ms, "시장의 아침", "쌀값을 흥정했다")
+    assert "[지난 장면" not in render_knowledge(ms, query="")
+    assert "[지난 장면" not in render_knowledge(ms, query="zzz")
+
+
+def test_render_에피소드는_최대_2개(tmp_path):
+    ms = MemoryStore(JsonDirStorage(tmp_path), "s")
+    for i in range(4):
+        _mk_ep(ms, f"무덤터 장면 {i}", f"무덤터에서 흔적 {i}을 찾았다")
+    text = render_knowledge(ms, query="무덤터에서 뭘 찾았죠")
+    assert text.count("[지난 장면") == 2
+
+
+def test_render_episode_캡_초과_발췌는_통째로_떨어진다():
+    from dreaming.records import Episode
+    from dreaming.sync import _render_episode
+    ep = Episode(range_start="a", range_end="b", title="긴 장면",
+                 summary="요약.", key_excerpts=["가" * 400, "나" * 380])
+    out = _render_episode(ep, cap=600)
+    assert "가" * 400 in out               # 첫 발췌는 통짜로
+    assert "나" not in out                 # 둘째는 반쪽 절단 없이 통째 드랍
+    assert len(out) <= 600
+
+
+def test_render_에피소드가_사실_예산을_잠식한다(tmp_path):
+    # 에피소드 블록만큼 사실 줄이 줄어야 총예산이 지켜진다
+    ms = MemoryStore(JsonDirStorage(tmp_path), "s")
+    _mk_ep(ms, "무덤터", "무덤터에서 뼈를 찾았다")
+    for i in range(50):
+        ms.save_fact(Fact(claim=f"무덤터 관련 사실 {i:02d}번이다", status="confirmed"))
+    text, meta = __import__("dreaming.sync", fromlist=["render_knowledge_meta"]) \
+        .render_knowledge_meta(ms, query="무덤터", budget=800)
+    assert len(text) <= 800
+    assert "[지난 장면 · 무덤터]" in text
+    assert meta["episodes"] and meta["facts"]
+
+
+# ------------------------------------------------------------------ #
+# 검색 관측 로그 (RAG 수리 ③)
+# ------------------------------------------------------------------ #
+
+def test_process_writes_rlog(tmp_path):
+    storage = JsonDirStorage(tmp_path)
+    sp = SyncPath(storage, "sess-r", mark_cache_enabled=False)
+    msgs = _msgs("안녕", "반가워", "잘 지냈어?")
+    sp.process(msgs)
+    rows = [r for _, r in storage.scan("sess-r/rlog")]
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["quarantine"] is False
+    assert "facts" in r and "episodes" in r and "chars" in r
+
+
+def test_rlog_counter_survives_new_syncpath(tmp_path):
+    storage = JsonDirStorage(tmp_path)
+    sp = SyncPath(storage, "sess-r", mark_cache_enabled=False)
+    sp.process(_msgs("안녕", "반가워", "잘 지냈어?"))
+    sp2 = SyncPath(storage, "sess-r", mark_cache_enabled=False)
+    sp2.process(_msgs("안녕", "반가워", "잘 지냈어?", "응답", "다음 턴"))
+    keys = [k for k, _ in storage.scan("sess-r/rlog")]
+    assert len(keys) == len(set(keys)) == 2   # 덮어쓰기 없음
+
+
+def test_render_episode_실마리가_발췌보다_먼저_들어간다():
+    # fix-drm-r0 T39 실측: 값이 open_threads에만 있어 빼면 전달 불가
+    from dreaming.records import Episode
+    from dreaming.sync import _render_episode
+    ep = Episode(range_start="a", range_end="b", title="산장의 밤",
+                 summary="요약.", open_threads=["렌이 산 아래 마을로 향하던 진짜 목적"],
+                 key_excerpts=["가" * 560])
+    out = _render_episode(ep, cap=600)
+    assert "남은 실마리: 렌이 산 아래 마을로" in out
+    assert "가" not in out          # 발췌는 잔여 예산 부족으로 통째 드랍
+
+
+def test_render_meta_에피소드는_ep_query로_랭킹된다(tmp_path):
+    # 사실 쿼리(직전 응답 포함)와 에피소드 쿼리(유저턴만)의 분리
+    from dreaming.sync import render_knowledge_meta
+    ms = MemoryStore(JsonDirStorage(tmp_path), "s")
+    _mk_ep(ms, "산장의 밤", "하룻밤 머물렀다")
+    _mk_ep(ms, "핏자국 추적", "눈밭의 핏자국을 따라갔다")
+    text, meta = render_knowledge_meta(
+        ms, query="눈밭의 핏자국이 이어졌다\n그때 재워주신 밤 이야기",
+        ep_query="그때 재워주신 하룻밤 이야기")
+    titles = [m["title"] for m in meta["episodes"]]
+    assert titles and titles[0] == "산장의 밤"

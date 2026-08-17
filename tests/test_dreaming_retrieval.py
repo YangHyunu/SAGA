@@ -93,3 +93,70 @@ def test_retrieval_lab_실데이터_로드():
     from dreaming.store import MemoryStore
     ms = MemoryStore(JsonDirStorage(_DATA), "fix-drm-r0")
     assert len(ms.list_facts()) > 300
+
+
+# ------------------------------------------------------------------ #
+# rank_episodes (RAG 수리 ①)
+# ------------------------------------------------------------------ #
+
+def _ep(title, summary, **kw):
+    from dreaming.records import Episode
+    kw.setdefault("range_start", "a")
+    kw.setdefault("range_end", "b")
+    return Episode(title=title, summary=summary, **kw)
+
+
+def test_rank_episodes_관련_장면이_점수와_함께_온다():
+    from dreaming.retrieval import rank_episodes
+    hit = _ep("눈 내리는 산장의 밤", "렌이 하룻밤 머물기로 했다")
+    other = _ep("시장의 아침", "쌀값을 흥정했다")
+    out = rank_episodes([other, hit], "저녁만 먹고 내려가라 하셨지만 하룻밤만 더")
+    assert out and out[0][0].title == "눈 내리는 산장의 밤"
+    assert out[0][1] > 0
+
+
+def test_rank_episodes_점수_0은_반환하지_않는다():
+    # 사실(최신순 폴백)과 다른 결정 — 에피소드는 통이 커서 무관 주입은
+    # 예산 낭비 + 프리픽스 청크와 중복이다 (rank_episodes 주석)
+    from dreaming.retrieval import rank_episodes
+    eps = [_ep("시장의 아침", "쌀값을 흥정했다")]
+    assert rank_episodes(eps, "zzz qqq") == []
+    assert rank_episodes(eps, "") == []
+
+
+def test_rank_episodes_발췌도_매칭에_참여():
+    from dreaming.retrieval import rank_episodes
+    ep = _ep("옛 무덤터", "두 사람은 능선으로 향했다",
+             key_excerpts=["12년 전, 이 산에 나와 함께 살던 이가 있었지."])
+    out = rank_episodes([ep], "12년 전에 같이 살던 분 이야기")
+    assert out and out[0][0].title == "옛 무덤터"
+
+
+# ------------------------------------------------------------------ #
+# expand_query (RAG 수리 ②)
+# ------------------------------------------------------------------ #
+
+def test_expand_query_별칭이_쿼리에_합류():
+    from dreaming.records import Actor
+    from dreaming.retrieval import expand_query
+    actors = [Actor(names=["위지소연", "소연"], tier="main")]
+    out = expand_query("소연 님이 그때 뭐라고 하셨죠", actors)
+    assert "위지소연" in out
+    assert out.startswith("소연 님이")      # 원 쿼리 보존
+
+
+def test_expand_query_한글자_이름은_대조하지_않는다():
+    # "준"이 "준비"에 걸리면 무관한 별칭이 쿼리를 오염시킨다
+    from dreaming.records import Actor
+    from dreaming.retrieval import expand_query
+    actors = [Actor(names=["준", "어린도령"], tier="main")]
+    q = "출발 준비는 끝났나요"
+    assert expand_query(q, actors) == q
+
+
+def test_expand_query_매칭_없으면_원본_그대로():
+    from dreaming.records import Actor
+    from dreaming.retrieval import expand_query
+    actors = [Actor(names=["위지소연", "소연"], tier="main")]
+    q = "날씨가 참 좋네요"
+    assert expand_query(q, actors) == q

@@ -7,6 +7,7 @@ main actor 결정론 템플릿이다.
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional, Tuple
 
 from dreaming.assembly import (HOT_ZONE_CHAR_BUDGET, clip_knowledge,
@@ -15,15 +16,48 @@ from dreaming.chunks import apply_compression
 from dreaming.identity import PairLedger, Verdict
 from dreaming.lore_shift import shift_keyed
 from dreaming.marking import mark_cache
+from dreaming.records import Episode
 from dreaming.resolver import SessionResolver
-from dreaming.retrieval import rank_facts, scene_query
+from dreaming.retrieval import (expand_query, last_user_query, rank_episodes,
+                                rank_facts, scene_query)
 from dreaming.storage import Storage
 from dreaming import scaffold
 from dreaming.store import MemoryStore
 from saga.services.pair_ledger import extract_pairs
 
+logger = logging.getLogger(__name__)
+
 _BLOCK_SEP = "\n\n"
 _FACT_HEADER = "[확정 사실]\n"
+
+# 핫존 에피소드 주입 (§3.1 확장): 프리픽스 청크에 있는 정보도 활용이 안 되는
+# 실측(fix-drm-r0 T39·T79 — 값이 청크에 실렸는데 나레이터가 무시, 핫존 전달분만
+# 활용 3/3) 때문에, 장면 관련 에피소드를 핫존으로 끌어온다.
+_EP_TOP_K = 2        # 예산 정책: 2×600=1200자 = 총예산의 20%, 사실이 주력 유지
+_EP_CHAR_CAP = 600   # 실측 P100 커버(에피 렌더 최소215/중앙392/최대587) — 이상치 방어
+
+
+def _render_episode(e: Episode, cap: int = _EP_CHAR_CAP) -> str:
+    """에피소드 핫존 렌더 — 요약·실마리는 우선, 발췌는 통째로 들어갈 때만.
+
+    반쪽 문장이 주입되면 모델이 이어 쓰려는 사고가 나므로 문장 중간 절단
+    금지 — 초과분은 뒤에서부터 통째로 떨군다. open_threads는 짧고(한 줄)
+    "그때 그 얘기" 회상의 단골 목표물이라 발췌보다 먼저 넣는다 (실측:
+    fix-drm-r0 T39 — 값이 threads에만 있어 빼면 전달 불가).
+    """
+    text = f"[지난 장면 · {e.title}]\n{e.summary.strip()}"
+    if len(text) > cap:
+        return text[:cap]        # 병리 방어 — 실측 분포에선 도달하지 않는다
+    if e.open_threads:
+        line = "\n남은 실마리: " + " / ".join(e.open_threads)
+        if len(text) + len(line) <= cap:
+            text += line
+    for ex in e.key_excerpts:
+        line = f'\n원문: "{ex}"'
+        if len(text) + len(line) > cap:
+            break
+        text += line
+    return text
 
 # 연속 미정렬이 이 횟수에 닿으면 원장을 버리고 다시 베이스라인을 잡는다.
 # 격리 턴은 record_turn을 안 타서 체인이 자라지 않는다 — 한 번 오염된
@@ -31,17 +65,27 @@ _FACT_HEADER = "[확정 사실]\n"
 _MISALIGN_LIMIT = 3
 
 
-def render_knowledge(store: MemoryStore, query: str = "",
-                     budget: int = HOT_ZONE_CHAR_BUDGET) -> str:
-    """지식 3블록 렌더 — 상태·인물 먼저 확보하고 사실에 잔여 예산을 준다.
+def render_knowledge_meta(store: MemoryStore, query: str = "",
+                          budget: int = HOT_ZONE_CHAR_BUDGET,
+                          ep_query: Optional[str] = None
+                          ) -> Tuple[str, Dict]:
+    """지식 4블록 렌더 + 관측 메타 — 상태·인물·에피소드 먼저 확보하고
+    사실에 잔여 예산을 준다.
 
     사실은 **pinned 우선, 그 안에서 장면 관련도순**이다(어휘 랭킹, 빈
     쿼리면 최신순). 오름차순으로 앞에서 자르면 초반 사실에 영구 고정돼
     이후 배운 게 하나도 안 들어간다 (실측: confirmed 179개 중 인덱스
     0~19만 주입 — docs/DREAMING_FLAW.md §3).
 
+    에피소드는 쿼리와 겹칠 때만(top-2, 개당 캡) — rank_episodes 주석 참조.
+    ep_query가 따로 오면 에피소드 랭킹은 그걸 쓴다(기본은 query와 동일).
+    사실 쿼리엔 직전 응답이 필요(대명사 선행사)하지만 에피소드엔 독이다
+    (현재 장면 어휘가 과거 회상을 밀어냄 — last_user_query 주석의 실측).
+
     예산을 사실이 다 먹게 두면 뒤에 붙는 인물 블록을 clip_knowledge가 통째로
     날린다. 그래서 개수 상한이 아니라 **잔여 예산**으로 자른다.
+
+    메타는 검색 관측 로그(rlog)용: 주입된 사실 id·에피소드 id/점수·자수.
     """
     state = store.current_state()
     state_block = ""
@@ -56,25 +100,42 @@ def render_knowledge(store: MemoryStore, query: str = "",
             f"- {a.names[0]}: {a.profile}" if a.profile else f"- {a.names[0]}"
             for a in sorted(actors, key=lambda a: a.names[0]))
 
+    ep_blocks: List[str] = []
+    ep_meta: List[Dict] = []
+    eq = query if ep_query is None else ep_query
+    for ep, score in rank_episodes(store.list_episodes(), eq)[:_EP_TOP_K]:
+        ep_blocks.append(_render_episode(ep))
+        ep_meta.append({"id": ep.id, "title": ep.title,
+                        "score": round(score, 2)})
+
     facts = [f for f in store.list_facts()
              if f.pinned or f.status == "confirmed"]
     facts = rank_facts(facts, query)
     room = budget - len(_FACT_HEADER)
-    for block in (state_block, actor_block):
+    for block in (state_block, actor_block, *ep_blocks):
         if block:
             room -= len(block) + len(_BLOCK_SEP)
     fact_lines: List[str] = []
+    fact_ids: List[str] = []
     for f in facts:
         line = f"- {f.claim}"
         if len(line) + 1 > room:
             break
         fact_lines.append(line)
+        fact_ids.append(f.id)
         room -= len(line) + 1
 
     parts = [b for b in (state_block,
                          _FACT_HEADER + "\n".join(fact_lines) if fact_lines else "",
+                         *ep_blocks,
                          actor_block) if b]
-    return _BLOCK_SEP.join(parts)
+    text = _BLOCK_SEP.join(parts)
+    return text, {"facts": fact_ids, "episodes": ep_meta, "chars": len(text)}
+
+
+def render_knowledge(store: MemoryStore, query: str = "",
+                     budget: int = HOT_ZONE_CHAR_BUDGET) -> str:
+    return render_knowledge_meta(store, query, budget)[0]
 
 
 def demote_after(storage: Storage, session: str, from_turn: int) -> None:
@@ -117,6 +178,7 @@ class SyncPath:
         self._ledger = PairLedger(storage, session_id, resolver=self._resolver)
         self._store = MemoryStore(storage, session_id)
         self._keyed_lore = keyed_lore or []
+        self._rlog_n = sum(1 for _ in storage.scan(f"{session_id}/rlog"))
         # cache_control(BP 마킹)은 Anthropic 규약이다. 이해 못 하는 업스트림
         # (DeepSeek 본가 등)엔 미지 필드 + parts 변환(upstream.to_wire)을
         # 보내게 되므로 프록시가 업스트림 보고 끈다 (스펙 §6.3 프로바이더 한정).
@@ -124,6 +186,20 @@ class SyncPath:
 
     def _wire_state(self) -> Dict:
         return self._storage.get(f"{self._session}/wire", "scaffold") or {}
+
+    def _rlog(self, rec: Dict) -> None:
+        """검색 관측 로그 — 실사용 미스를 추출/전달 퍼널로 분해할 데이터.
+
+        턴당 한 건, <session>/rlog/<연번>. 벤치의 값 생존 감사를 실사용에서
+        재현하는 장치이자 격리 침묵 사망의 가시화. 로깅 실패가 채팅을 막으면
+        본말전도라 fail-open.
+        """
+        try:
+            self._storage.put(f"{self._session}/rlog",
+                              f"{self._rlog_n:06d}", rec)
+            self._rlog_n += 1
+        except Exception:
+            logger.exception("[sync] rlog failed: %s", self._session)
 
     def _split(self, messages: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
         """프리셋 프리필 꼬리를 벗긴다 (dreaming/scaffold.py).
@@ -183,14 +259,26 @@ class SyncPath:
             demote_after(self._storage, self._session, verdict.reroll_turn_number)
         if verdict.quarantine:
             # 판정 불확실 — 주입·압축·마킹 없이 무가공 passthrough,
-            # 기록은 격리 버퍼로 (스펙 §3.1)
+            # 기록은 격리 버퍼로 (스펙 §3.1). 격리도 rlog에 남긴다 —
+            # fail-open의 그림자는 침묵 사망이라 가시화가 필수다.
+            self._rlog({"quarantine": True, "kind": verdict.kind})
             return messages + tail, verdict
         out, _ = shift_keyed(messages, self._keyed_lore)   # 1안 (스펙 §5)
         # 첫 요청은 tail_fp를 못 배워 프리셋 프리필이 messages에 섞여 있다
         # (위 first_request 계산과 동일 조건) — 쿼리가 영문 보일러플레이트로
         # 오염되므로 빈 쿼리(=최신순 폴백)로 렌더한다.
-        query = "" if first_request else scene_query(messages)
-        knowledge = clip_knowledge(render_knowledge(self._store, query=query))
+        if first_request:
+            query = ep_q = ""
+        else:
+            actors = self._store.list_actors()
+            query = expand_query(scene_query(messages), actors)
+            ep_q = expand_query(last_user_query(messages), actors)
+        knowledge, kmeta = render_knowledge_meta(self._store, query=query,
+                                                 ep_query=ep_q)
+        knowledge = clip_knowledge(knowledge)
+        self._rlog({"quarantine": False, "kind": verdict.kind,
+                    "turn": verdict.position, "query": query[-300:],
+                    **kmeta})
         bp2 = None
         plan = self._storage.get(f"{self._session}/compression", "plan")
         if (plan is not None and verdict.aligned
