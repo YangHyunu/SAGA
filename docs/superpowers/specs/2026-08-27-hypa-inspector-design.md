@@ -26,8 +26,8 @@ main = 프리셋 없는 기본값 유저 경로. 인스펙터에 impl 축(`--imp
 | impl | exp | exp / main 각각 |
 | memoryTokensRatio | 0.39 (export 원본) | **0.2** (오버라이드) |
 | extraSummarizationRatio | 0.01 (export 원본) | **0.1** (오버라이드) |
-| maxContext | 45000 (config.MAX_CONTEXT) | 45000 |
-| maxResponse | 4000 (config.MAX_TOKENS) | 4000 |
+| maxContext | **100000** (건초더미 run_params 동결값 — 실측 확인) | **45000** (사용자 지정) |
+| maxResponse | 30000 (run_params) — hypa_step에선 가감이 상쇄돼 동작 무영향 | 동일 |
 | 요약 모델 | google/gemini-3-flash-preview (캐시 원본) | **google/gemini-2.5-flash-lite** |
 | 임베딩 | MiniLM (all-MiniLM-L6-v2, 로컬) | MiniLM — RisuAI 기본값 재현. 한국어 약점 자체가 관찰 대상 |
 | 비용 | ₩0 (캐시 전부 히트) | 첫 실행만 캐시 미스분 실콜 (< $0.5 예상), 이후 ₩0 |
@@ -43,6 +43,12 @@ summaryChunkSeparator `\n\n`.
 
 검증 앵커 주의: 기존 프로브 스냅샷(t19~t99)은 0.39/0.01/gemini-3-flash로
 만들어진 것 → **오버라이드 없는 exp 실행에서만** 대조 가능.
+
+**실측 완료 (2026-08-27, 설계 단계에서 선행 확인)**: send를 예외 폭탄으로 바꾼
+100턴 재생을 두 건초더미 모두 완주 — 캐시 미스 0, LLM 콜 0, 프로브 9턴
+스냅샷 chatMemos 전부 일치 (fix-drm-r0 요약 18개, fix-van-r0 11개).
+검증 런 ₩0은 가정이 아니라 확인된 사실. 첫 압축이 70턴대에야 발동한 이유 =
+run_params maxContext 100000. 관찰 런 45000에선 훨씬 일찍 발동할 것.
 
 ## 2. 모듈 배치
 
