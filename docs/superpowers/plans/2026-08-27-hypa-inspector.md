@@ -1211,3 +1211,57 @@ Expected: 완주 + json/html 생성. `hypa.SUMMARY_COST` 합계를 후기에 기
 git add docs/superpowers/plans/2026-08-27-hypa-inspector.md
 git diff --cached --stat && git commit -m "docs(inspector): 실행 후기 — 실측 수치·핸드오프 전제 교정 박제"
 ```
+
+---
+
+## 실행 후기 (2026-08-27)
+
+### 핸드오프 전제 오류 (다음 핸드오프 작성 시 재발 방지)
+
+핸드오프(8/24)는 "RisuAI 기본값 `useExperimentalImpl: false` → 실사용 경로는
+main이니 포트를 main으로 다시 베껴라"였다. **export 파일을 직접 까보니
+`useExperimentalImpl: true`** — 병합(hypav3.ts:1819~1823)이 이 키를 받아들여
+뮈토스 하이파 V5 실사용자는 exp를 탄다. 기존 `hypa.py`의 exp 모델링은 실수가
+아니라 export에 충실한 것(파일 독스트링에 명시돼 있었다). 교훈: **설정
+파일의 실제 값을 읽지 않고 코드 기본값으로 실사용 경로를 추정하지 말 것.**
+결정: 사용자 선택으로 exp·main 양축 인스펙터.
+
+### 실측 수치
+
+| 런 | 조건 | 결과 |
+|---|---|---|
+| 검증 exp drm | 100K / 0.39 / 0.01 / gemini-3-flash 캐시 | 100턴, 요약 18, 미스 0, 스냅샷 9턴 일치, 첫 압축 74턴 |
+| 검증 exp van | 〃 | 100턴, 요약 11, 미스 0, 스냅샷 일치 |
+| 검증 main drm | 〃 | 요약 18, 미스 0, **배치 경계 exp와 완전 동일**(스킵 대상 없음 예측 적중) |
+| 관찰 4종 | 45K / 0.2 / 0.1 / flash-lite | drm 요약 23(첫 압축 27턴), van 18. 미스 drm 23·van 18건 → 실콜 총 ~45, 비용 < $0.1 |
+| 재실행 | 캐시-온리 | drm 미스 0 (캐시 적재 확인) |
+
+관찰 소득 2건:
+- **100K/0.39 조건에선 similar가 한 번도 요약을 못 고른다** — recent(60%)가
+  18개 전부 흡수. 26턴 전부 `skipped: no_chunks`. 45K/0.2에선 65턴이 similar
+  선택 수행, exp↔main의 similar 선택이 10턴에서 갈라짐(쿼리 구성 차이 실증).
+- **flash-lite 폭주 배치 1건**: van m32~m39 요약에서 temp 0 결정론 폭주
+  (finish_reason=length, 완주 8192tok/44KB 반복). 절단본은 설계대로 캐시
+  미기록 → 이 배치만 영구 미스로 남는다(실행당 1콜, $0.004). 폭주 요약은
+  크기 때문에 어떤 선택 예산에도 안 들어가 관찰 유효성 무손상.
+
+### 플랜 결함과 교정 (구현자 발견)
+
+1. **테스트 픽스처 3건 오산** — (a) trace similar 테스트: 기본 세팅에선
+   important+recent가 후보를 전부 흡수해 similar 이벤트 미발생 → 큰 요약으로
+   recent 예산 조기 소진 픽스처로 교정. (b) plan_batches 테스트의
+   `tot+10_000`은 보호구간 에러 경로로 빠짐 → `10_050`으로 교정.
+   (c) main 고정창 테스트의 exp 비교 호출 `tot*2`도 동일 문제 → `tot*1.1`.
+2. **디스크 캐시 오염** — 플랜 테스트가 `summarize` 기본 cache_dir
+   (dreaming_data/eval/hypa-cache)에 가짜 요약을 씀 → 후속 테스트가 히트해
+   오염 실패. autouse 픽스처(tmp 캐시 래핑)로 격리 + 오염 6파일 삭제.
+   교훈: **summarize를 부르는 테스트는 반드시 캐시를 격리하라.**
+3. **`__main__` 블록 순서** — heredoc append가 render_html을 `if __name__`
+   뒤에 붙여 `-m` 실행만 NameError (import 경로 테스트는 통과). 블록을 파일
+   끝으로 이동. 교훈: append 방식 구현은 실행 진입점이 항상 파일 끝인지 확인.
+4. **similar 후보 0 관찰 공백** — 이벤트가 `if queries and chunks:` 안에만
+   있어 "recent가 전부 흡수한 턴"이 안 보였다 → skipped 사유를 단 빈 이벤트
+   추가 (로직 무접촉).
+5. **.env 부재** — 새 워크트리에 API 키 파일이 없어 --allow-llm이 즉사.
+   자격증명이라 에이전트가 복사 불가(권한 차단) → 사용자가 수동 복사.
+   워크트리 셋업 체크리스트에 .env 추가할 것.
