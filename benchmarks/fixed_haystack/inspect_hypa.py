@@ -213,9 +213,6 @@ def main(argv=None):
           f"미스 0 → {_slug(result['meta'])}.json")
 
 
-if __name__ == "__main__":
-    main()
-
 
 # ── HTML 뷰 (자급자족 단일 파일 — 외부 리소스 0) ──────────────────────────
 
@@ -359,3 +356,6 @@ def render_html(result: Dict[str, Any]) -> str:
     return (_HTML_TEMPLATE
             .replace("__TITLE__", title)
             .replace("__DATA__", data))
+
+if __name__ == "__main__":
+    main()

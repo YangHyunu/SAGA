@@ -117,6 +117,12 @@ def select_summaries_main(
                      rrf_rank=[hypa._index_of(summaries, s) for s in ranked],
                      picked=[hypa._index_of(summaries, s) for s in sel_sim],
                      reserved=reserved_similar, used=used_similar)
+        else:
+            # 후보/쿼리 없음 — recent가 전부 흡수한 턴도 관찰돼야 한다
+            hypa._tr(trace, ev="similar", queries=queries, chunk_scores=[],
+                     cc_rank=[], rrf_rank=[], picked=[],
+                     reserved=reserved_similar, used=0,
+                     skipped=("no_chunks" if not chunks else "no_queries"))
 
     # (d) random — 고정 export ratio 0, 도달 불가 가드 (1470~1520)
     if random_ratio > 0:
