@@ -250,6 +250,27 @@ _HTML_TEMPLATE = """<!doctype html>
   <div class="legend">● 압축 발동 턴 · <span style="color:#36c">요약 개수</span> ·
     <span style="color:#c33">kept_start_msg</span> ·
     <span style="color:#999">wire_tokens(우축)</span></div>
+  <details style="font-size:12px; margin:4px 0 10px; color:#444">
+    <summary style="cursor:pointer">용어 설명 (펼치기)</summary>
+    <ul style="margin:6px 0; padding-left:18px; line-height:1.6">
+      <li><b>요약 N</b> — 이 턴 종료 시점까지 쌓인 요약 카드 수.
+        카드 1장 = 옛 메시지 최대 8개를 접은 것.</li>
+      <li><b>원문시작(kept_start) N</b> — N번 메시지부터만 원문이 프롬프트에
+        남음. 그 앞(m0~m(N−1))은 프롬프트에서 사라지고 요약으로만 존재.</li>
+      <li><b>wire N</b> — 이 턴에 LLM으로 나간 전체 프롬프트 토큰
+        (프리셋+카드+메모리 카드+남은 원문). max_ctx 대비로 읽을 것.</li>
+      <li><b>압축 배치</b> — 이 턴에 요약으로 접힌 메시지 묶음(memo 목록)과
+        접히기 전 원문 토큰 수.</li>
+      <li><b>important / recent / similar</b> — 메모리 카드에 넣을 요약을
+        고르는 3단계. 숫자는 요약 인덱스(0부터). reserved=그 단계 토큰 예산,
+        used=실제 사용.</li>
+      <li><b>chunk / cos</b> — similar 검색 근거. chunk "a-b" = 후보 a번째
+        요약의 b번째 문단, cos = 그 문단과 쿼리(최근 메시지)의 코사인 유사도
+        (1에 가까울수록 닮음, 0.3 이하는 사실상 무관).</li>
+      <li><b>skipped: no_chunks</b> — similar 차례에 후보 요약이 0장
+        (important·recent가 전부 가져감) → 검색 자체가 일 없음.</li>
+    </ul>
+  </details>
   <div id="turns"></div>
 </div>
 <div id="right"><em style="font-size:13px">턴을 클릭하면 상세.</em></div>
@@ -291,9 +312,9 @@ list.innerHTML = T.map((r, i) => {
   const nb = r.events.filter(e => e.ev === "batch").length;
   return `<div class="turnrow" data-i="${i}">
     <span>t${r.turn}</span>
-    <span>요약 ${r.n_summaries}</span>
-    <span>ksm ${r.kept_start_msg}</span>
-    ${nb ? `<span class="b">압축×${nb}</span>` : ""}
+    <span title="누적 요약 카드 수">요약 ${r.n_summaries}</span>
+    <span title="원문이 남는 시작 메시지 인덱스">원문시작 ${r.kept_start_msg}</span>
+    ${nb ? `<span class="b" title="이 턴에 압축 발동">압축×${nb}</span>` : ""}
     ${r.error ? `<span class="b">ERR</span>` : ""}</div>`;
 }).join("");
 list.addEventListener("click", ev => {
@@ -308,40 +329,53 @@ function evTable(rows, cols) {
     rows.map(r => `<tr>${cols.map(c=>`<td>${esc(r[c] ?? "")}</td>`).join("")}</tr>`).join("") +
     `</table>`;
 }
+const STOP_KO = {target_reached: "목표 토큰 도달", over_summarize_break: "과요약 직전 중단(배치 미요약)",
+                 min_messages_break: "보호구간 도달(최근 메시지 불가침)"};
 function show(r) {
   let h = `<h1>턴 ${r.turn}</h1>`;
-  h += `<div><span class="tag">요약 ${r.n_summaries}</span>` +
-       `<span class="tag">kept_start ${r.kept_start_msg}</span>` +
-       `<span class="tag">wire ${r.wire_tokens ?? "-"}</span></div>`;
+  h += `<div><span class="tag" title="누적 요약 카드 수">요약 카드 ${r.n_summaries}장</span>` +
+       `<span class="tag" title="이 앞 메시지는 프롬프트에서 사라지고 요약으로만 존재">원문시작 m${r.kept_start_msg}</span>` +
+       `<span class="tag" title="이 턴에 LLM으로 나간 전체 프롬프트 토큰">wire ${r.wire_tokens ?? "-"} tok</span></div>`;
+  h += `<div class="legend">m0~m${Math.max(0, r.kept_start_msg-1)}은 접혀서 아래 memory_text로만 전달됨. ` +
+       `wire = 프리셋+카드+메모리 카드+남은 원문 합계 토큰.</div>`;
   if (r.error) h += `<pre>ERROR: ${esc(r.error)}</pre>`;
   const batches = r.events.filter(e => e.ev === "batch");
   if (batches.length) {
-    h += `<h3 style="font-size:13px">압축 배치</h3>` +
-      evTable(batches.map(b => ({memos: b.idx.join(" "), tokens: b.tokens})),
-              ["memos", "tokens"]);
+    h += `<h3 style="font-size:13px">압축 배치 — 이 턴에 요약으로 접힌 메시지들</h3>` +
+      evTable(batches.map(b => ({"접힌 메시지": b.idx.join(" "), "원문 토큰": b.tokens})),
+              ["접힌 메시지", "원문 토큰"]);
   }
   const stops = r.events.filter(e => e.ev === "batch_stop");
-  if (stops.length) h += `<div class="legend">중단: ${stops.map(s=>s.reason).join(", ")}</div>`;
+  if (stops.length) h += `<div class="legend">압축 중단 사유: ${stops.map(s=>STOP_KO[s.reason]||s.reason).join(", ")}</div>`;
   const res = r.events.find(e => e.ev === "reserve");
-  if (res) h += `<div class="legend">예약: available ${res.available}, current ${res.current}</div>`;
+  if (res) h += `<div class="legend">메모리 예산: 카드에 쓸 수 있는 토큰 ${res.available} (예약 후 current ${res.current})</div>`;
   for (const stage of ["important", "recent"]) {
     const e = r.events.find(x => x.ev === stage);
     if (e && (e.picked.length || e.ev === "recent"))
-      h += `<div class="legend">${stage}: [${e.picked}]` +
-           (e.reserved !== undefined ? ` (reserved ${e.reserved}, used ${e.used})` : "") + `</div>`;
+      h += `<div class="legend">${stage} 선택: 요약 [${e.picked}]` +
+           (e.reserved !== undefined ? ` (예산 ${e.reserved} 중 ${e.used} 사용)` : "") + `</div>`;
   }
   const sim = r.events.find(x => x.ev === "similar");
   if (sim) {
-    h += `<h3 style="font-size:13px">similar — picked [${sim.picked}] (reserved ${sim.reserved}, used ${sim.used})</h3>`;
-    h += `<div class="legend">rrf_rank: [${sim.rrf_rank}]</div>`;
-    sim.queries.forEach((q, qi) => {
-      const top = (sim.chunk_scores[qi] || []).slice(0, 5);
-      h += `<div class="legend">q${qi} (w=${q.weight.toFixed(3)}): ${esc(q.content.slice(0, 90))}</div>`;
-      h += evTable(top.map(([id, sc]) => ({chunk: id, cos: sc})), ["chunk", "cos"]);
-    });
+    if (sim.skipped) {
+      h += `<h3 style="font-size:13px">similar(검색) — 실행 안 됨</h3>` +
+           `<div class="legend">사유: ${sim.skipped === "no_chunks"
+             ? "후보 요약 0장 (important·recent가 전부 가져감)"
+             : "쿼리 없음"} · 예산 ${sim.reserved}는 미사용</div>`;
+    } else {
+      h += `<h3 style="font-size:13px">similar(검색) — 요약 [${sim.picked}] 선택 (예산 ${sim.reserved} 중 ${sim.used} 사용)</h3>`;
+      h += `<div class="legend">부모 요약 최종 순위(RRF): [${sim.rrf_rank}] — 이 순서대로 예산에 담김</div>`;
+      sim.queries.forEach((q, qi) => {
+        const top = (sim.chunk_scores[qi] || []).slice(0, 5);
+        h += `<div class="legend">쿼리 q${qi} (가중치 ${q.weight.toFixed(3)}): "${esc(q.content.slice(0, 90))}"</div>`;
+        h += evTable(top.map(([id, sc]) => ({"문단 조각": id, "코사인 유사도": sc})),
+                     ["문단 조각", "코사인 유사도"]);
+      });
+    }
   }
   if (r.metrics) h += `<pre>${esc(JSON.stringify(r.metrics))}</pre>`;
-  h += `<h3 style="font-size:13px">memory_text</h3><pre>${esc(r.memory_text || "(없음)")}</pre>`;
+  h += `<h3 style="font-size:13px">memory_text — 이 턴 프롬프트에 실제로 붙은 메모리 카드 전문</h3>` +
+       `<pre>${esc(r.memory_text || "(없음)")}</pre>`;
   document.getElementById("right").innerHTML = h;
 }
 </script>
