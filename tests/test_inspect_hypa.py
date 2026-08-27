@@ -64,3 +64,30 @@ def test_outputs_written_when_clean(tmp_path):
     js = list(tmp_path.glob("hypa-inspect-*.json"))
     assert len(js) == 1
     assert json.loads(js[0].read_text())["turns"][0]["turn"] == 1
+
+
+def test_render_html_selfcontained():
+    res = {"meta": {"impl": "main", "hsid": "mini", "max_ctx": 45000,
+                    "summary_model": "x", "settings": {"memory_tokens_ratio": 0.2},
+                    "snapshot_mismatch": []},
+           "turns": [
+               {"turn": 1, "memory_text": "", "kept_start_msg": 0,
+                "n_summaries": 0, "wire_tokens": 100, "events": [], "metrics": None,
+                "error": None},
+               {"turn": 2, "memory_text": "<Past Events Summary>\nA\n</Past Events Summary>",
+                "kept_start_msg": 4, "n_summaries": 1, "wire_tokens": 90,
+                "events": [{"ev": "batch", "idx": ["m0"], "tokens": 5}],
+                "metrics": None, "error": None}],
+           "misses": []}
+    html = inspect_hypa.render_html(res)
+    assert "const DATA" in html                 # 데이터 인라인
+    assert "Past Events Summary" in html        # memory_text 포함
+    assert "<script src=" not in html           # 외부 의존 0
+
+
+def test_write_outputs_also_writes_html(tmp_path):
+    res = {"meta": {"impl": "exp", "hsid": "mini", "max_ctx": 1, "summary_model": "x",
+                    "settings": {}, "snapshot_mismatch": []},
+           "turns": [], "misses": []}
+    inspect_hypa.write_outputs(res, out_dir=tmp_path)
+    assert list(tmp_path.glob("*.html"))

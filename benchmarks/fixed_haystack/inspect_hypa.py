@@ -146,6 +146,7 @@ def write_outputs(result: Dict[str, Any], out_dir: pathlib.Path = OUT_DIR) -> bo
     slug = _slug(result["meta"])
     (out_dir / f"{slug}.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out_dir / f"{slug}.html").write_text(render_html(result), encoding="utf-8")
     return True
 
 
@@ -214,3 +215,147 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
+
+# ── HTML 뷰 (자급자족 단일 파일 — 외부 리소스 0) ──────────────────────────
+
+_HTML_TEMPLATE = """<!doctype html>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; display: flex;
+         height: 100vh; color: #222; }
+  #left { width: 46%; overflow-y: auto; border-right: 1px solid #ccc;
+          padding: 12px; box-sizing: border-box; }
+  #right { flex: 1; overflow-y: auto; padding: 12px; box-sizing: border-box; }
+  h1 { font-size: 16px; margin: 4px 0 8px; }
+  table.meta td { font-size: 12px; padding: 1px 8px 1px 0; color: #444;
+                  vertical-align: top; }
+  svg { width: 100%; background: #fafafa; border: 1px solid #ddd; }
+  .legend { font-size: 11px; color: #555; margin: 4px 0 10px; }
+  .turnrow { padding: 3px 6px; font-size: 12px; cursor: pointer;
+             border-bottom: 1px solid #eee; display: flex; gap: 8px; }
+  .turnrow:hover { background: #eef; }
+  .turnrow.sel { background: #dde6ff; }
+  .turnrow .b { color: #c33; font-weight: bold; }
+  pre { white-space: pre-wrap; background: #f6f6f6; padding: 8px;
+        font-size: 12px; border: 1px solid #e0e0e0; }
+  table.ev { border-collapse: collapse; font-size: 11px; margin: 6px 0; }
+  table.ev td, table.ev th { border: 1px solid #ddd; padding: 2px 6px;
+                             text-align: left; }
+  .tag { display: inline-block; background: #e8e8e8; border-radius: 3px;
+         padding: 0 5px; margin-right: 4px; font-size: 11px; }
+</style>
+<div id="left">
+  <h1>hypa 인스펙터 — <span id="t-hsid"></span> / <span id="t-impl"></span></h1>
+  <table class="meta" id="meta"></table>
+  <svg id="chart" viewBox="0 0 800 260" preserveAspectRatio="none"></svg>
+  <div class="legend">● 압축 발동 턴 · <span style="color:#36c">요약 개수</span> ·
+    <span style="color:#c33">kept_start_msg</span> ·
+    <span style="color:#999">wire_tokens(우축)</span></div>
+  <div id="turns"></div>
+</div>
+<div id="right"><em style="font-size:13px">턴을 클릭하면 상세.</em></div>
+<script>
+const DATA = __DATA__;
+const T = DATA.turns;
+function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+// meta
+document.getElementById("t-hsid").textContent = DATA.meta.hsid;
+document.getElementById("t-impl").textContent = DATA.meta.impl;
+document.getElementById("meta").innerHTML =
+  Object.entries({max_ctx: DATA.meta.max_ctx, summary_model: DATA.meta.summary_model,
+                  ...DATA.meta.settings})
+    .map(([k,v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
+// chart
+(function () {
+  if (!T.length) return;
+  const W = 800, H = 260, P = 28;
+  const xs = t => P + (W - 2*P) * (t - T[0].turn) / Math.max(1, T[T.length-1].turn - T[0].turn);
+  const maxSum = Math.max(1, ...T.map(r => r.n_summaries));
+  const maxKsm = Math.max(1, ...T.map(r => r.kept_start_msg));
+  const maxWire = Math.max(1, ...T.map(r => r.wire_tokens || 0));
+  const y = (v, m) => H - P - (H - 2*P) * v / m;
+  const line = (pts, color, w) =>
+    `<polyline fill="none" stroke="${color}" stroke-width="${w}" points="${pts}"/>`;
+  let svg = "";
+  svg += line(T.map(r => `${xs(r.turn)},${y(r.wire_tokens||0, maxWire)}`).join(" "), "#bbb", 1);
+  svg += line(T.map(r => `${xs(r.turn)},${y(r.kept_start_msg, maxKsm)}`).join(" "), "#c33", 1.5);
+  svg += line(T.map(r => `${xs(r.turn)},${y(r.n_summaries, maxSum)}`).join(" "), "#36c", 2);
+  for (const r of T)
+    if (r.events.some(e => e.ev === "batch"))
+      svg += `<circle cx="${xs(r.turn)}" cy="${y(r.n_summaries, maxSum)}" r="4" fill="#c33"/>`;
+  svg += `<text x="${P}" y="14" font-size="10" fill="#666">요약 max ${maxSum} · ksm max ${maxKsm} · wire max ${maxWire}</text>`;
+  document.getElementById("chart").innerHTML = svg;
+})();
+// turn list
+const list = document.getElementById("turns");
+list.innerHTML = T.map((r, i) => {
+  const nb = r.events.filter(e => e.ev === "batch").length;
+  return `<div class="turnrow" data-i="${i}">
+    <span>t${r.turn}</span>
+    <span>요약 ${r.n_summaries}</span>
+    <span>ksm ${r.kept_start_msg}</span>
+    ${nb ? `<span class="b">압축×${nb}</span>` : ""}
+    ${r.error ? `<span class="b">ERR</span>` : ""}</div>`;
+}).join("");
+list.addEventListener("click", ev => {
+  const row = ev.target.closest(".turnrow");
+  if (!row) return;
+  document.querySelectorAll(".turnrow.sel").forEach(e => e.classList.remove("sel"));
+  row.classList.add("sel");
+  show(T[+row.dataset.i]);
+});
+function evTable(rows, cols) {
+  return `<table class="ev"><tr>${cols.map(c=>`<th>${c}</th>`).join("")}</tr>` +
+    rows.map(r => `<tr>${cols.map(c=>`<td>${esc(r[c] ?? "")}</td>`).join("")}</tr>`).join("") +
+    `</table>`;
+}
+function show(r) {
+  let h = `<h1>턴 ${r.turn}</h1>`;
+  h += `<div><span class="tag">요약 ${r.n_summaries}</span>` +
+       `<span class="tag">kept_start ${r.kept_start_msg}</span>` +
+       `<span class="tag">wire ${r.wire_tokens ?? "-"}</span></div>`;
+  if (r.error) h += `<pre>ERROR: ${esc(r.error)}</pre>`;
+  const batches = r.events.filter(e => e.ev === "batch");
+  if (batches.length) {
+    h += `<h3 style="font-size:13px">압축 배치</h3>` +
+      evTable(batches.map(b => ({memos: b.idx.join(" "), tokens: b.tokens})),
+              ["memos", "tokens"]);
+  }
+  const stops = r.events.filter(e => e.ev === "batch_stop");
+  if (stops.length) h += `<div class="legend">중단: ${stops.map(s=>s.reason).join(", ")}</div>`;
+  const res = r.events.find(e => e.ev === "reserve");
+  if (res) h += `<div class="legend">예약: available ${res.available}, current ${res.current}</div>`;
+  for (const stage of ["important", "recent"]) {
+    const e = r.events.find(x => x.ev === stage);
+    if (e && (e.picked.length || e.ev === "recent"))
+      h += `<div class="legend">${stage}: [${e.picked}]` +
+           (e.reserved !== undefined ? ` (reserved ${e.reserved}, used ${e.used})` : "") + `</div>`;
+  }
+  const sim = r.events.find(x => x.ev === "similar");
+  if (sim) {
+    h += `<h3 style="font-size:13px">similar — picked [${sim.picked}] (reserved ${sim.reserved}, used ${sim.used})</h3>`;
+    h += `<div class="legend">rrf_rank: [${sim.rrf_rank}]</div>`;
+    sim.queries.forEach((q, qi) => {
+      const top = (sim.chunk_scores[qi] || []).slice(0, 5);
+      h += `<div class="legend">q${qi} (w=${q.weight.toFixed(3)}): ${esc(q.content.slice(0, 90))}</div>`;
+      h += evTable(top.map(([id, sc]) => ({chunk: id, cos: sc})), ["chunk", "cos"]);
+    });
+  }
+  if (r.metrics) h += `<pre>${esc(JSON.stringify(r.metrics))}</pre>`;
+  h += `<h3 style="font-size:13px">memory_text</h3><pre>${esc(r.memory_text || "(없음)")}</pre>`;
+  document.getElementById("right").innerHTML = h;
+}
+</script>
+"""
+
+
+def render_html(result: Dict[str, Any]) -> str:
+    """자급자족 HTML — DATA 인라인, 외부 리소스 0."""
+    data = json.dumps(result, ensure_ascii=False)
+    data = data.replace("</", "<\\/")          # </script> 조기 종료 방지
+    title = _slug(result["meta"])
+    return (_HTML_TEMPLATE
+            .replace("__TITLE__", title)
+            .replace("__DATA__", data))
