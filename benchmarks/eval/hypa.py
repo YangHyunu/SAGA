@@ -97,6 +97,18 @@ def to_risu_chats(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+# --- 관찰 훅 (인스펙터 전용) ---
+
+
+def _tr(trace: Optional[list], **ev: Any) -> None:
+    """trace가 리스트면 이벤트 append, None이면 no-op — 로직 무접촉 관찰 창.
+
+    스키마: docs/superpowers/specs/2026-08-27-hypa-inspector-design.md §4.
+    """
+    if trace is not None:
+        trace.append(ev)
+
+
 # --- 요약 배치 계획 (hypav3.ts:253-378, §2 의사코드) ---
 
 _SKIP_MEMOS = ("NewChatExample", "NewChat")
@@ -116,6 +128,7 @@ def plan_batches(
     current_tokens: int,
     max_ctx: int,
     S: HypaSettings,
+    trace: Optional[list] = None,
 ) -> Tuple[List[List[Dict[str, Any]]], float, int, Optional[str]]:
     """요약할 배치 목록을 계획한다 — 순수 함수.
 
@@ -141,10 +154,12 @@ def plan_batches(
 
     while True:
         if current_tokens <= target_tokens:
+            _tr(trace, ev="batch_stop", reason="target_reached")
             break
         if len(chats) - start_idx <= S.query_chat_count:
             # 마지막 queryChatCount개는 불가침 — 더는 줄일 수단이 없다.
             if current_tokens <= max_ctx:
+                _tr(trace, ev="batch_stop", reason="min_messages_break")
                 break
             # 원본은 계획된 배치를 버리고 요청을 실패시킨다 — 요약은 한 번도
             # 호출되지 않으므로 배치를 돌려주면 없던 비용이 생긴다.
@@ -165,10 +180,13 @@ def plan_batches(
 
         # 과요약 방지 (hypav3.ts:352-362)
         if current_tokens <= max_ctx and current_tokens - batch_tokens < target_tokens:
+            _tr(trace, ev="batch_stop", reason="over_summarize_break")
             break
 
         if batch:                              # 요약 0개 배치는 안 넣는다
             batches.append(batch)
+            _tr(trace, ev="batch", idx=[c["memo"] for c in batch],
+                tokens=batch_tokens)
         current_tokens -= batch_tokens
         start_idx = i
 
@@ -443,6 +461,7 @@ def select_summaries(
     recent_chats: List[Dict[str, Any]],
     S: HypaSettings,
     embed: Optional[Callable[[List[str]], Any]] = None,
+    trace: Optional[list] = None,
 ) -> List[Dict[str, Any]]:
     """important → recent → similar → (random 스킵) 그리디 채우기.
 
@@ -459,10 +478,14 @@ def select_summaries(
                 break
             selected.append(s)
             available -= t
+    _tr(trace, ev="important",
+        picked=[_index_of(summaries, s) for s in selected],
+        available_after=available)
 
     # (b) recent — 최신부터 역순, 초과 시 break (§7 #5)
     reserved_recent = math.floor(available * S.recent_memory_ratio)
     used_recent = 0
+    n_before_recent = len(selected)
     if S.recent_memory_ratio > 0:
         for s in reversed(_unused(summaries, selected)):
             t = _summary_tokens(s)
@@ -470,6 +493,9 @@ def select_summaries(
                 break
             selected.append(s)
             used_recent += t
+    _tr(trace, ev="recent",
+        picked=[_index_of(summaries, s) for s in selected[n_before_recent:]],
+        reserved=reserved_recent, used=used_recent)
 
     # (c) similar
     random_ratio = 1 - S.recent_memory_ratio - S.similar_memory_ratio
@@ -509,12 +535,23 @@ def select_summaries(
                 for qv in query_vecs
             ]
             ranked = simple_cc(scored_lists, [q["weight"] for q in queries])
-            for s in child_to_parent_rrf(ranked, key=lambda ch: ch["meta"]):
+            # 이벤트와 선택 루프가 같은 실체를 쓰도록 리스트로 고정
+            ranked_parents = child_to_parent_rrf(ranked, key=lambda ch: ch["meta"])
+            picked_similar: List[Dict[str, Any]] = []
+            for s in ranked_parents:
                 t = _summary_tokens(s)
                 if t + used_similar > reserved_similar:
                     break              # ★ break (§7 #5)
                 selected.append(s)
+                picked_similar.append(s)
                 used_similar += t
+            _tr(trace, ev="similar", queries=queries,
+                chunk_scores=[[[ch["id"], round(sc, 6)] for ch, sc in lst]
+                              for lst in scored_lists],
+                cc_rank=[ch["id"] for ch in ranked],
+                rrf_rank=[_index_of(summaries, s) for s in ranked_parents],
+                picked=[_index_of(summaries, s) for s in picked_similar],
+                reserved=reserved_similar, used=used_similar)
 
     # (d) random — 고정 export는 ratio 0.0이라 도달 불가 (hypav3.ts:806-869)
     if random_ratio > 0:
@@ -543,6 +580,7 @@ def hypa_step(
     send: Optional[Callable[[List[Dict[str, str]]], str]],
     max_ctx: int,
     max_response: int,
+    trace: Optional[list] = None,
 ) -> Tuple[Optional[str], List[Dict[str, Any]], int, Dict[str, Any], Optional[str]]:
     """한 턴 분의 HypaV3 — 요약 생성(쓰기)과 선택(읽기)이 같은 패스에서 돈다.
 
@@ -576,9 +614,11 @@ def hypa_step(
     available = memory_tokens - empty_mem_tokens if should_reserve else 0
     if should_reserve:
         current += memory_tokens
+    _tr(trace, ev="reserve", should_reserve=should_reserve,
+        available=available, current=current)
 
     batches, current, start_idx, error = plan_batches(
-        chats, start_idx, current, max_ctx, S)
+        chats, start_idx, current, max_ctx, S, trace=trace)
     if error:
         return None, history[start_idx:], start_idx, data, error
 
@@ -592,7 +632,7 @@ def hypa_step(
     if not summaries:                       # 요약 0개면 미삽입 (§7 #9)
         return None, history[start_idx:], start_idx, data, None
 
-    selected = select_summaries(summaries, available, chats, S)
+    selected = select_summaries(summaries, available, chats, S, trace=trace)
     memory = wrap_xml(MEMORY_TAG, SUMMARY_SEP.join(s["text"] for s in selected))
 
     # 의도적 생략: §2 227-229 최종 토큰 정산
