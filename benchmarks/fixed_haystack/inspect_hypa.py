@@ -122,6 +122,9 @@ def run_inspection(hs, preset: Dict, card: Dict, impl: str,
                  "settings": {k: getattr(S, k) for k in vars(S)},
                  "snapshot_mismatch": snap_mismatch},
         "turns": turns,
+        # 대화 원문 — HTML에서 memo 클릭 → 접힌 메시지 확인용
+        "messages": [{"memo": f"m{i}", "role": m["role"], "content": m["content"]}
+                     for i, m in enumerate(hist)],
         "misses": cache_only.misses if cache_only else [],
     }
 
@@ -245,6 +248,8 @@ _HTML_TEMPLATE = """<!doctype html>
 </style>
 <div id="left">
   <h1>hypa 인스펙터 — <span id="t-hsid"></span> / <span id="t-impl"></span></h1>
+  <div id="filedesc" style="font-size:12px; background:#f2f5ff; border:1px solid #ccd6f2;
+       border-radius:6px; padding:8px 10px; margin:6px 0; line-height:1.55"></div>
   <table class="meta" id="meta"></table>
   <svg id="chart" viewBox="0 0 800 260" preserveAspectRatio="none"></svg>
   <div class="legend">● 압축 발동 턴 · <span style="color:#36c">요약 개수</span> ·
@@ -268,7 +273,17 @@ _HTML_TEMPLATE = """<!doctype html>
         요약의 b번째 문단, cos = 그 문단과 쿼리(최근 메시지)의 코사인 유사도
         (1에 가까울수록 닮음, 0.3 이하는 사실상 무관).</li>
       <li><b>skipped: no_chunks</b> — similar 차례에 후보 요약이 0장
-        (important·recent가 전부 가져감) → 검색 자체가 일 없음.</li>
+        (important·recent가 전부 가져감) → 검색 자체가 일 없음.
+        예산이 넉넉하면(메토비 큼) recent가 다 먹어 RAG가 아사하는 역설.</li>
+      <li><b>과요약 직전 중단</b> — 다음 배치를 접기 직전 "이미 한도 안이고,
+        이 배치까지 접으면 목표(max_ctx×(1−추가요약비율)) 아래로 뚫는다" 싶으면
+        접지 않고 원문으로 살려둠. 과잉 압축 방지 브레이크.</li>
+      <li><b>memo(m숫자)</b> — 메시지 일련번호이자 요약 카드의 출처 영수증
+        (chatMemos). 카드마다 "어느 메시지들을 접었나"가 붙어 재개 지점 계산과
+        원문 삭제 시 카드 무효화에 쓰임.</li>
+      <li><b>캐시 관점</b> — 압축 턴엔 ①메모리 카드 내용 변경 ②원문 창 점프가
+        동시에 일어나 프리픽스 캐시가 깨짐. 요약 없는 턴도 similar 선택이
+        바뀌면 카드가 변해 깨질 수 있음.</li>
     </ul>
   </details>
   <div id="turns"></div>
@@ -278,13 +293,42 @@ _HTML_TEMPLATE = """<!doctype html>
 const DATA = __DATA__;
 const T = DATA.turns;
 function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+// 대화 원문 인덱스 (memo -> 메시지)
+const MSG = {};
+(DATA.messages || []).forEach(m => MSG[m.memo] = m);
 // meta
+const IMPL_KO = {
+  exp: "실험 구현(exp) — 뮈토스 하이파 V5 export가 실제로 켜는 경로(useExperimentalImpl=true). 검색 쿼리를 문단 단위로 쪼갬.",
+  main: "기본 구현(main) — 프리셋 없이 쓰는 유저의 기본 경로. 검색 쿼리를 메시지 통짜로 사용, 요약 0개여도 빈 메모리 카드 삽입.",
+};
+const HS_KO = {
+  "fix-drm-r0": "dreaming 변형이 생성한 100턴 고정 RP 대화",
+  "fix-van-r0": "vanilla(무기억) 변형이 생성한 100턴 고정 RP 대화",
+};
+const S_KO = {
+  memory_tokens_ratio: "메토비 — 메모리 카드 토큰 예산 = max_ctx × 이 값",
+  extra_summarization_ratio: "추가요약비율 — 압축 발동 시 max_ctx×(1−값)까지 몰아서 접음(히스테리시스)",
+  max_chats_per_summary: "카드 1장에 접는 메시지 수",
+  query_chat_count: "검색 쿼리로 쓰는 최근 메시지 수 = 절대 요약되지 않는 보호구간",
+  recent_memory_ratio: "예산 중 recent(최신 요약부터) 몫",
+  similar_memory_ratio: "예산 중 similar(유사도 검색) 몫 — recent가 먼저 집으므로 남는 요약이 없으면 아사",
+  do_not_summarize_user_message: "유저 메시지 요약 제외 여부",
+  summarization_prompt: "요약 프롬프트(빈 값 = RisuAI 기본 프롬프트)",
+  summary_chunk_separator: "요약을 검색 조각으로 쪼개는 구분자",
+  max_ctx: "컨텍스트 한도 — 이걸 넘으면 압축 발동",
+  summary_model: "요약을 만든 LLM",
+};
 document.getElementById("t-hsid").textContent = DATA.meta.hsid;
 document.getElementById("t-impl").textContent = DATA.meta.impl;
+document.getElementById("filedesc").innerHTML =
+  `<b>이 파일:</b> ${HS_KO[DATA.meta.hsid] || DATA.meta.hsid}를 ` +
+  `<b>${DATA.meta.impl}</b> 구현으로 한 턴씩 재생하며 압축·검색 내부를 기록한 것.<br>` +
+  `${IMPL_KO[DATA.meta.impl] || ""}`;
 document.getElementById("meta").innerHTML =
   Object.entries({max_ctx: DATA.meta.max_ctx, summary_model: DATA.meta.summary_model,
                   ...DATA.meta.settings})
-    .map(([k,v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
+    .map(([k,v]) => `<tr><td><b>${esc(k)}</b> = ${esc(v)}</td>` +
+                    `<td>${esc(S_KO[k] || "")}</td></tr>`).join("");
 // chart
 (function () {
   if (!T.length) return;
@@ -338,12 +382,25 @@ function show(r) {
        `<span class="tag" title="이 턴에 LLM으로 나간 전체 프롬프트 토큰">wire ${r.wire_tokens ?? "-"} tok</span></div>`;
   h += `<div class="legend">m0~m${Math.max(0, r.kept_start_msg-1)}은 접혀서 아래 memory_text로만 전달됨. ` +
        `wire = 프리셋+카드+메모리 카드+남은 원문 합계 토큰.</div>`;
+  // 이 턴의 대화 원문 (m0=인사, 턴 t: user=m(2t-1), assistant=m(2t))
+  const um = MSG["m" + (2*r.turn - 1)], am = MSG["m" + (2*r.turn)];
+  if (um || am) {
+    h += `<details><summary style="cursor:pointer;font-size:13px">이 턴의 대화 원문</summary>` +
+         (um ? `<pre><b>user (m${2*r.turn-1}):</b>\n${esc(um.content)}</pre>` : "") +
+         (am ? `<pre><b>assistant (m${2*r.turn}):</b>\n${esc(am.content)}</pre>` : "") +
+         `</details>`;
+  }
   if (r.error) h += `<pre>ERROR: ${esc(r.error)}</pre>`;
   const batches = r.events.filter(e => e.ev === "batch");
   if (batches.length) {
     h += `<h3 style="font-size:13px">압축 배치 — 이 턴에 요약으로 접힌 메시지들</h3>` +
-      evTable(batches.map(b => ({"접힌 메시지": b.idx.join(" "), "원문 토큰": b.tokens})),
-              ["접힌 메시지", "원문 토큰"]);
+         `<div class="legend">memo를 클릭하면 접히기 전 원문이 열림</div>`;
+    batches.forEach(b => {
+      h += `<div style="margin:4px 0">` +
+           b.idx.map(m => `<span class="tag" style="cursor:pointer;background:#dbe7ff" data-memo="${m}">${m}</span>`).join("") +
+           `<span class="tag">원문 ${b.tokens} tok → 카드 1장</span></div>`;
+    });
+    h += `<div id="memoview"></div>`;
   }
   const stops = r.events.filter(e => e.ev === "batch_stop");
   if (stops.length) h += `<div class="legend">압축 중단 사유: ${stops.map(s=>STOP_KO[s.reason]||s.reason).join(", ")}</div>`;
@@ -378,6 +435,17 @@ function show(r) {
        `<pre>${esc(r.memory_text || "(없음)")}</pre>`;
   document.getElementById("right").innerHTML = h;
 }
+// 압축 배치 memo 클릭 → 원문 토글
+document.getElementById("right").addEventListener("click", ev => {
+  const memo = ev.target.getAttribute && ev.target.getAttribute("data-memo");
+  if (!memo) return;
+  const box = document.getElementById("memoview");
+  const m = MSG[memo];
+  if (!box) return;
+  box.innerHTML = m
+    ? `<pre><b>${memo} (${esc(m.role)}):</b>\n${esc(m.content)}</pre>`
+    : `<pre>${memo}: 원문 없음 (이 json은 원문 미포함 — 재생성 필요)</pre>`;
+});
 </script>
 """
 
