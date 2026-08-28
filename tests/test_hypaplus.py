@@ -532,3 +532,26 @@ def test_build_query_uses_last_n_messages():
     S = hp.PlusSettings(embedding_context_messages=3)
     msgs = [{"role": "user", "content": str(i)} for i in range(10)]
     assert hp.build_query(msgs, S) == "7\n8\n9"
+
+
+def test_failure_reason_is_recorded_not_swallowed():
+    """실패 사유를 버리면 '전부 failed'만 남고 원인을 못 가린다 — 실제로 당함."""
+    S = _settings()
+    st = hp.new_state()
+    msgs = [{"role": "user", "content": f"m{i}"} for i in range(30)]
+
+    def no_key(_m):
+        raise FileNotFoundError("/repo/.env")
+
+    ev = hp.run_summarization(msgs, st, S, no_key)
+    assert ev["status"] == "failed"
+    assert "FileNotFoundError" in ev["fail_reason"]
+    assert st["chunks"][0]["fail_reason"] == ev["fail_reason"]
+
+
+def test_empty_response_reason():
+    S = _settings()
+    st = hp.new_state()
+    msgs = [{"role": "user", "content": f"m{i}"} for i in range(30)]
+    ev = hp.run_summarization(msgs, st, S, lambda _m: "")
+    assert ev["fail_reason"] == "empty_response"

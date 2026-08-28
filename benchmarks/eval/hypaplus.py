@@ -346,6 +346,10 @@ def parse_chatml(prompt: str) -> Optional[List[Dict[str, str]]]:
 
 CACHE_DIR = ROOT / "dreaming_data" / "fixed_haystack" / "hypa-cache"
 
+# 마지막 요약 실패 사유 (hypa._TRUNCATED와 같은 계열의 전역 신호).
+# 원본은 fail-open이라 예외를 삼키는데, 사유까지 버리면 진단이 불가능하다.
+LAST_ERROR: Optional[str] = None
+
 
 def summary_cache_key(batch: List[Dict[str, Any]], S: PlusSettings) -> str:
     """hypa 캐시와 같은 디렉터리를 쓰되 `system` 판별자로 절대 충돌하지 않는다."""
@@ -379,13 +383,21 @@ def summarize_chunk(batch: List[Dict[str, Any]], S: PlusSettings,
         {"role": "user", "content": S.summary_prompt.replace("{{slot}}", text)}]
 
     hypa._TRUNCATED = False
+    global LAST_ERROR
+    LAST_ERROR = None
     try:
         resp = send(messages)
-    except Exception:                     # 원본 1526-1529: 로그 찍고 None
+    except Exception as e:                # 원본 1526-1529: 로그 찍고 None
+        # 원본은 콘솔에 찍는다. 포트가 사유를 버리면 "전부 failed"만 남고
+        # 원인(키 없음/4xx/타임아웃)을 못 가린다 — 실제로 한 번 당했다.
+        LAST_ERROR = f"{type(e).__name__}: {e}"
         return None
     out = hypa._THOUGHTS_RE.sub("", resp or "").strip()
     if not out:
+        LAST_ERROR = "empty_response"
         return None
+    if hypa._TRUNCATED:
+        LAST_ERROR = "truncated_not_cached"
     if cached is not None and not hypa._TRUNCATED:
         cached.parent.mkdir(parents=True, exist_ok=True)
         cached.write_text(out, encoding="utf-8")
@@ -446,12 +458,16 @@ def run_summarization(msgs: List[Dict[str, Any]], state: Dict[str, Any],
     raw = summarize_chunk(batch, S, send, cache_dir)
     if raw is None:
         chunk["summarized"] = "failed"    # 인덱스는 이미 소비됐다 (1596-1599)
+        chunk["fail_reason"] = LAST_ERROR or "unknown"
     else:
         chunk["nodes"] = parse_nodes(raw, state)
         chunk["summarized"] = "done"
-    return {"ev": "chunk", "chunk_id": chunk["id"], "start": start,
-            "end": start + len(window) - 1, "n_msgs": len(batch),
-            "status": chunk["summarized"], "n_nodes": len(chunk["nodes"])}
+    ev = {"ev": "chunk", "chunk_id": chunk["id"], "start": start,
+          "end": start + len(window) - 1, "n_msgs": len(batch),
+          "status": chunk["summarized"], "n_nodes": len(chunk["nodes"])}
+    if chunk["summarized"] == "failed":
+        ev["fail_reason"] = chunk["fail_reason"]
+    return ev
 
 
 def track(msgs: List[Dict[str, Any]], state: Dict[str, Any], S: PlusSettings,

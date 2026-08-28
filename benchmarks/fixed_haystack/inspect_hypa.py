@@ -286,6 +286,17 @@ def _main_plus(a, hs, preset: Dict, card: Dict) -> None:
         for m in result["misses"]:
             print(f"  {m['key'][:12]}… msgs={m['n_msgs']}")
         sys.exit(1)
+    # 요약 실패도 미완성 관찰이다 — 캐시 미스와 같은 등급으로 막는다.
+    # (플랜 결함 교정: 키 부재로 24콜이 전부 조용히 failed 처리됐는데도
+    #  misses가 0이라 "완주"로 기록될 뻔했다.)
+    fails = [e for t_ in result["turns"] for e in t_["events"]
+             if e["ev"] == "chunk" and e["status"] == "failed"]
+    if fails:
+        print(f"요약 실패 청크 {len(fails)}건 — 출력 안 씀.")
+        for f in fails:
+            print(f"  청크 #{f['chunk_id']} m{f['start']}~m{f['end']}: "
+                  f"{f.get('fail_reason')}")
+        sys.exit(3)
     write_outputs(result, pathlib.Path(a.out_dir), hs.ledger)
     last = result["turns"][-1]
     print(f"완주 {len(result['turns'])}턴, 노드 {last['n_summaries']}개, "
