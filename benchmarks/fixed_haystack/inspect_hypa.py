@@ -297,6 +297,16 @@ def _main_plus(a, hs, preset: Dict, card: Dict) -> None:
             print(f"  청크 #{f['chunk_id']} m{f['start']}~m{f['end']}: "
                   f"{f.get('fail_reason')}")
         sys.exit(3)
+    # 절단본은 캐시되지 않는다 → 다음 런이 다른 요약을 받는다. 축 간 비교가
+    # 오염되므로 재현 불가 관찰로 간주하고 막는다 (실측으로 당한 결함).
+    trunc = [e for t_ in result["turns"] for e in t_["events"]
+             if e["ev"] == "chunk" and e.get("truncated")]
+    if trunc:
+        print(f"절단된 요약 {len(trunc)}건 — 출력 안 씀 (재현 불가). "
+              f"hypaplus.SUMMARY_MAX_TOKENS를 올릴 것.")
+        for f in trunc:
+            print(f"  청크 #{f['chunk_id']} m{f['start']}~m{f['end']}")
+        sys.exit(4)
     write_outputs(result, pathlib.Path(a.out_dir), hs.ledger)
     last = result["turns"][-1]
     print(f"완주 {len(result['turns'])}턴, 노드 {last['n_summaries']}개, "

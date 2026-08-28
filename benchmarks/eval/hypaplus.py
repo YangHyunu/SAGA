@@ -350,6 +350,13 @@ CACHE_DIR = ROOT / "dreaming_data" / "fixed_haystack" / "hypa-cache"
 # 원본은 fail-open이라 예외를 삼키는데, 사유까지 버리면 진단이 불가능하다.
 LAST_ERROR: Optional[str] = None
 
+# 출력 한도 — 원본은 이 값을 **설정하지 않는다**(RisuAI 보조모델 슬롯 기본값).
+# hypa의 8192는 hypav3 WebLLM 경로(hypav3.ts:1754)에서 온 값인데, "가능한 한
+# 많이 기록하라"는 HypaPlus 프롬프트 + 30메시지 입력에는 부족해 실측에서
+# 6청크 중 2개가 절단됐다. 절단본은 캐시하지 않으므로 리런마다 요약이 달라져
+# 관찰 축(embed none/minilm) 비교가 오염된다 → 캡을 올려 절단을 없앤다.
+SUMMARY_MAX_TOKENS = 16384
+
 
 def summary_cache_key(batch: List[Dict[str, Any]], S: PlusSettings) -> str:
     """hypa 캐시와 같은 디렉터리를 쓰되 `system` 판별자로 절대 충돌하지 않는다."""
@@ -357,7 +364,7 @@ def summary_cache_key(batch: List[Dict[str, Any]], S: PlusSettings) -> str:
         {"system": "hypaplus",
          "chats": [{"role": c["role"], "content": c["content"]} for c in batch],
          "prompt": S.summary_prompt, "model": hypa._lucid_model(),
-         "max_tokens": hypa.SUMMARY_MAX_TOKENS, "temp": hypa.SUMMARY_TEMPERATURE},
+         "max_tokens": SUMMARY_MAX_TOKENS, "temp": hypa.SUMMARY_TEMPERATURE},
         ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -385,6 +392,8 @@ def summarize_chunk(batch: List[Dict[str, Any]], S: PlusSettings,
     hypa._TRUNCATED = False
     global LAST_ERROR
     LAST_ERROR = None
+    orig_cap = hypa.SUMMARY_MAX_TOKENS
+    hypa.SUMMARY_MAX_TOKENS = SUMMARY_MAX_TOKENS   # _summarize_call_once가 읽는다
     try:
         resp = send(messages)
     except Exception as e:                # 원본 1526-1529: 로그 찍고 None
@@ -392,6 +401,8 @@ def summarize_chunk(batch: List[Dict[str, Any]], S: PlusSettings,
         # 원인(키 없음/4xx/타임아웃)을 못 가린다 — 실제로 한 번 당했다.
         LAST_ERROR = f"{type(e).__name__}: {e}"
         return None
+    finally:
+        hypa.SUMMARY_MAX_TOKENS = orig_cap
     out = hypa._THOUGHTS_RE.sub("", resp or "").strip()
     if not out:
         LAST_ERROR = "empty_response"
@@ -464,7 +475,9 @@ def run_summarization(msgs: List[Dict[str, Any]], state: Dict[str, Any],
         chunk["summarized"] = "done"
     ev = {"ev": "chunk", "chunk_id": chunk["id"], "start": start,
           "end": start + len(window) - 1, "n_msgs": len(batch),
-          "status": chunk["summarized"], "n_nodes": len(chunk["nodes"])}
+          "status": chunk["summarized"], "n_nodes": len(chunk["nodes"]),
+          # 절단본은 캐시되지 않아 리런마다 달라진다 — 관찰이 재현 불가해진다
+          "truncated": LAST_ERROR == "truncated_not_cached"}
     if chunk["summarized"] == "failed":
         ev["fail_reason"] = chunk["fail_reason"]
     return ev
