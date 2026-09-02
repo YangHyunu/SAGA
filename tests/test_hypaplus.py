@@ -555,3 +555,15 @@ def test_empty_response_reason():
     msgs = [{"role": "user", "content": f"m{i}"} for i in range(30)]
     ev = hp.run_summarization(msgs, st, S, lambda _m: "")
     assert ev["fail_reason"] == "empty_response"
+
+
+def test_chunk_event_carries_nodes_by_type():
+    """HTML 청크 카드가 사건/사실로 나눠 보이려면 트레이스에 노드 원문이 있어야 한다."""
+    S = _settings()
+    st = hp.new_state()
+    msgs = [{"role": "user", "content": f"m{i}"} for i in range(30)]
+    ev = hp.run_summarization(msgs, st, S, lambda _m: RAW)
+    assert [n["type"] for n in ev["nodes"]] == ["event", "event", "facts"]
+    assert ev["nodes"][0]["location"] == "항구 창고"
+    assert ev["nodes"][0]["dialogues"][0]["speaker"] == "리안"
+    assert ev["nodes"][2]["dialogues"] is None

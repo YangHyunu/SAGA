@@ -705,10 +705,27 @@ function plusDetail(r) {
     chunks.forEach(c => {
       const memos = [];
       for (let i = c.start; i <= c.end; i++) memos.push("m" + i);
+      const nodes = c.nodes || [];          // 구 JSON엔 없다 — 개수만 보인다
+      const ev = nodes.filter(n => n.type === "event");
+      const fa = nodes.filter(n => n.type === "facts");
       h += `<div style="margin:4px 0"><span class="tag">청크 #${c.chunk_id} ` +
-           `(${c.status}) → 노드 ${c.n_nodes}개</span>` +
+           `(${c.status}) → 노드 ${c.n_nodes}개` +
+           (nodes.length ? ` = 사건 ${ev.length} + 사실 ${fa.length}` : "") + `</span>` +
            memos.map(m => `<span class="tag" style="cursor:pointer;background:#dbe7ff" ` +
                           `data-memo="${m}">${m}</span>`).join("") + `</div>`;
+      [["사건 &lt;event&gt;", ev, "#fff3e0"], ["사실 &lt;facts&gt;", fa, "#e8f5e9"]].forEach(([label, ns, bg]) => {
+        if (!ns.length) return;
+        h += `<details style="margin:2px 0 4px 8px"><summary style="cursor:pointer;font-size:12px">` +
+             `${label} ${ns.length}개</summary>`;
+        ns.forEach(n => {
+          const meta = [n.time, n.location, (n.characters || []).join(", ")].filter(Boolean).map(esc).join(" · ");
+          h += `<div style="margin:3px 0;padding:4px 6px;background:${bg};border-radius:4px;font-size:12px">` +
+               `<b>#${esc(n.id)}</b> <span class="legend">${meta}</span><div>${esc(n.content)}</div>` +
+               (n.dialogues || []).map(d => `<div class="legend">${esc(d.speaker)}: "${esc(d.text)}"</div>`).join("") +
+               `</div>`;
+        });
+        h += `</details>`;
+      });
       if (c.status === "failed")
         h += `<div class="legend" style="color:#b00">요약 실패 — 이 30개는 ` +
              `영구히 요약에서 빠지고 원문 창에서도 사라진다(기억 유실 경로).</div>`;

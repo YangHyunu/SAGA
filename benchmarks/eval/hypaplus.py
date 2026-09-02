@@ -477,7 +477,10 @@ def run_summarization(msgs: List[Dict[str, Any]], state: Dict[str, Any],
           "end": start + len(window) - 1, "n_msgs": len(batch),
           "status": chunk["summarized"], "n_nodes": len(chunk["nodes"]),
           # 절단본은 캐시되지 않아 리런마다 달라진다 — 관찰이 재현 불가해진다
-          "truncated": LAST_ERROR == "truncated_not_cached"}
+          "truncated": LAST_ERROR == "truncated_not_cached",
+          "nodes": [{k: n.get(k) for k in ("id", "type", "time", "location",
+                                            "characters", "content", "dialogues")}
+                    for n in chunk["nodes"]]}
     if chunk["summarized"] == "failed":
         ev["fail_reason"] = chunk["fail_reason"]
     return ev
